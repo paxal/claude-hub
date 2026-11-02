@@ -267,6 +267,9 @@ def render_md(text, box):
 
 def tool_detail(inp):
     inp = inp if isinstance(inp, dict) else {}
+    qs = inp.get("questions")  # AskUserQuestion : sa première question
+    if isinstance(qs, list) and qs and isinstance(qs[0], dict) and isinstance(qs[0].get("question"), str):
+        return " ".join(qs[0]["question"].split())[:160]
     detail = (inp.get("command") or inp.get("file_path") or inp.get("pattern")
               or inp.get("description") or inp.get("url") or inp.get("query")
               or next((v for v in inp.values() if isinstance(v, str) and v.strip()), ""))
@@ -563,6 +566,8 @@ textview.md, textview.md > text { background: none; }
 .plan-summary.refused { color: #e5534b; }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
+.questions { margin-bottom: 4px; }
+.question-option { margin-left: 8px; }
 .subagent { margin: 0 8px; }
 .subagent-kind { font-family: monospace; font-size: 0.85em; font-weight: bold; opacity: 0.8; }
 .agent-mark { font-weight: bold; opacity: 0.75; }
@@ -586,6 +591,11 @@ textview.md, textview.md > text { background: none; }
 .steps-summary { font-family: monospace; font-size: 0.85em; opacity: 0.65; }
 .tool-body { margin: 4px 0 4px 18px; }
 .tool-error { color: #e5534b; }
+/* Commandes « ! » (shell.py), en rose comme le mode bash du terminal de Claude Code */
+.msgs > .shell-block { margin: 0 8px; }
+.shell-mark { font-family: monospace; font-weight: bold; color: #c2408f; }
+.shell-cmd { font-family: monospace; font-size: 0.95em; }
+.composer.shell-mode { border-color: #c2408f; }
 .notice { opacity: 0.7; font-style: italic; margin: 4px 8px; }
 .error { color: #e5534b; margin: 4px 8px; }
 .sid { font-size: 0.85em; opacity: 0.6; }
@@ -723,6 +733,10 @@ textview.composer-input, textview.composer-input > text { background: none; }
 .strip.waiting .strip-label { color: #e5534b; }
 .strip spinner { color: #d4860b; }
 .strip-time { opacity: 0.7; font-feature-settings: "tnum"; }
+button.agents-pill { min-height: 22px; padding: 0 8px; border: none; border-radius: 6px; box-shadow: none;
+                     background: rgba(227, 162, 59, 0.16); color: #d4860b; font-weight: bold; }
+button.agents-pill:hover { background: rgba(227, 162, 59, 0.28); }
+button.agents-pill image { -gtk-icon-size: 14px; }
 button.stop { color: #e5534b; border: 1px solid rgba(229, 83, 75, 0.55); background: none;
               box-shadow: none; min-height: 24px; padding: 0 10px; font-weight: bold; }
 button.stop:hover { background: rgba(229, 83, 75, 0.12); }
@@ -761,7 +775,7 @@ DARK_CSS = """
 .sessions > row.session:selected { background-color: #1b313e; }
 .dot { background: #3daee9; }
 .row-time.unread { color: #3daee9; }
-.row-time.busy, .card-kind.busy, .pill.busy, .strip-label { color: #f0b85a; }
+.row-time.busy, .card-kind.busy, .pill.busy, .strip-label, button.agents-pill { color: #f0b85a; }
 .st-busy, .strip spinner, .tool-running { color: #e3a23b; }
 .row-time.action, .st-action, .card-kind.action, .pill.waiting, .strip.waiting .strip-label,
 .diff-del, .tool-failed, button.stop, .row-folder.missing { color: #f0716a; }
@@ -770,6 +784,8 @@ DARK_CSS = """
 .tagchip, button.tagchip, button.link-btn { color: #6cc0f0; }
 .queued-label { color: #8fd0f4; }
 .composer { border-color: #464b51; }
+.shell-mark { color: #f07dc0; }
+.composer.shell-mode { border-color: #f07dc0; }
 .home-card { background: #26292d; border-color: #3a3f45; }
 menubutton.chip > button { border-color: #3a3f45; color: #dfe3e7; }
 menubutton.chip.plan > button { color: #8fd0f4; }

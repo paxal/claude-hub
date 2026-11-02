@@ -73,16 +73,34 @@ def is_noise(t):
     t = t.strip()
     return not t or t.startswith("<") or t.startswith("Caveat:")
 
-def live_ids():
+def live_sessions():
+    """Fichiers ~/.claude/sessions/<pid>.json des claude en cours, par id de conversation."""
     out = {}
     for f in (C / "sessions").glob("*.json"):
         try:
             d = json.loads(f.read_text())
             os.kill(int(d["pid"]), 0)
-            out[d.get("sessionId")] = d.get("status") or "idle"
+            out[d.get("sessionId")] = d
         except Exception:
             pass
     return out
+
+def live_ids():
+    return {sid: d.get("status") or "idle" for sid, d in live_sessions().items()}
+
+def ms_of(v):
+    """Date en millisecondes du fichier de session (None si absente ou invalide)."""
+    return v if type(v) in (int, float) else None
+
+def cmd_live():
+    """État de chaque session en cours, et sous « <id>:since » la date (ms) où elle y est passée."""
+    out = {}
+    for sid, d in live_sessions().items():
+        out[sid] = d.get("status") or "idle"
+        since = ms_of(d.get("statusUpdatedAt"))
+        if since is not None:
+            out[sid + ":since"] = since
+    print(json.dumps(out))
 
 def msg_time(line):
     """Date (epoch) d'une ligne de message, None si elle n'est pas lisible."""
@@ -105,6 +123,27 @@ def command_text(t):
         return None
     a = COMMAND_ARGS.search(t)
     return " ".join((m.group(1) + " " + (a.group(1) if a else "")).split())
+
+BASH_TAG = re.compile(r"<(bash-input|bash-stdout|bash-stderr)>(.*?)</\1>", re.S)
+
+def bash_items(t, items):
+    """Commandes « ! » d'un message : mode bash du terminal (commande puis sortie, en deux
+    messages) ou envoyées par claude-hub (avant le texte). Ajoutées à items ({"role":
+    "bash", "command", "stdout", "stderr"}) ; renvoie le reste du texte."""
+    if "<bash-" not in t:
+        return t
+
+    def take(m):
+        tag, body = m.group(1), m.group(2)
+        if tag == "bash-input":
+            items.append({"role": "bash", "command": body.strip()})
+            return ""
+        key = "stdout" if tag == "bash-stdout" else "stderr"
+        if not (items and items[-1].get("role") == "bash" and key not in items[-1]):
+            items.append({"role": "bash", "command": ""})  # sortie sans sa commande
+        items[-1][key] = body
+        return ""
+    return BASH_TAG.sub(take, t).strip()
 
 def is_caveat(line):
     """Avertissement que claude écrit juste avant une commande locale (/rename, /copy…)."""
@@ -156,7 +195,7 @@ def summary(p):
             if t == "user":
                 s["cwd"] = s["cwd"] or r.get("cwd")
                 txt = text_of(r.get("message", {}).get("content"))
-                txt = command_text(txt) or txt
+                txt = bash_items(command_text(txt) or txt, [])
                 if not s["first"] and not r.get("isMeta") and not is_noise(txt):
                     s["first"] = " ".join(txt.split())[:200]
             elif t == "custom-title":
@@ -191,23 +230,104 @@ def cmd_list():
     res.sort(key=lambda s: -s["mtime"])
     print(json.dumps({"home": str(Path.home()), "sessions": res}))
 
-def last_bridge(p):
-    """Dernière session Remote Control (cse_…) associée à la conversation."""
-    bridge = None
+TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
+
+def scan_main(p, started):
+    """Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
+    lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
+    plus ancien est mort avec son processus) et pas encore notifiés comme finis, et lignes
+    écrites depuis la fin du dernier tour de Claude (None si aucun tour n'est fini)."""
+    bridge, launched, ended, tail = None, {}, set(), None
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
             if '"bridge-session"' in line:
                 try:
                     bridge = json.loads(line).get("bridgeSessionId") or bridge
-                except ValueError:
+                except (ValueError, AttributeError):
                     pass
-    return bridge
+            if '"local_workflow"' in line:
+                try:
+                    r = json.loads(line)
+                    res = r.get("toolUseResult")
+                    if (r.get("type") == "user" and not r.get("isSidechain") and isinstance(res, dict)
+                            and res.get("taskType") == "local_workflow"
+                            and res.get("status") == "async_launched" and res.get("taskId")):
+                        t = msg_time(line)
+                        if started is None or t is None or t * 1000 >= started:
+                            launched[str(res["taskId"])] = res
+                except (ValueError, AttributeError):
+                    pass
+            if "<task-notification>" in line:
+                ended.update(TASK_ID.findall(line))
+            if '"subtype":"turn_duration"' in line:
+                tail = []
+            elif tail is not None:
+                tail.append(line)
+    pending = [w for tid, w in launched.items() if tid not in ended]
+    return bridge, pending, tail
+
+def starts_turn(line):
+    """Vrai si la ligne montre Claude au travail : sa réponse, un résultat d'outil, ou un
+    message qui lance un tour (pas une commande locale comme /workflows)."""
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return False
+    if not isinstance(r, dict) or r.get("isSidechain"):
+        return False
+    if r.get("type") == "assistant":
+        return True
+    if r.get("type") != "user" or r.get("isMeta") or r.get("isCompactSummary"):
+        return False
+    content = (r.get("message") or {}).get("content")
+    if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                         for b in content):
+        return True
+    t = text_of(content).lstrip()
+    return bool(t) and not t.startswith(("<command-", "<local-command-"))
+
+def workflow_progress(w, p):
+    """Avancement d'un workflow d'après son journal (une ligne « started » puis « result »
+    par agent) : nom, agents lancés et finis, et ceux qui tournent (libellé, phase)."""
+    d = w.get("transcriptDir")
+    if not isinstance(d, str) or not d:
+        d = os.path.join(str(p)[:-len(".jsonl")], "subagents", "workflows", str(w.get("runId")))
+    started, done = {}, set()
+    try:
+        with open(os.path.join(d, "journal.jsonl"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                if r.get("type") == "started":
+                    started[str(r.get("agentId") or r.get("key"))] = r
+                elif r.get("type") == "result":
+                    done.add(str(r.get("agentId") or r.get("key")))
+    except OSError:
+        pass
+    running = [{"label": r.get("label") if isinstance(r.get("label"), str) else "",
+                "phase": r.get("phase") if isinstance(r.get("phase"), str) else ""}
+               for k, r in started.items() if k not in done]
+    name = w.get("workflowName")
+    return {"name": name if isinstance(name, str) else "", "total": len(started),
+            "done": len(started) - len(running), "running": running}
 
 def cmd_stat(sid):
     p = find(sid)
     st = p.stat() if p else None
-    print(json.dumps({"size": st.st_size if st else 0, "live": live_ids().get(sid),
-                      "bridge": last_bridge(p) if p else None}))
+    sess = live_sessions().get(sid)
+    bridge, pending, tail = scan_main(p, ms_of((sess or {}).get("startedAt"))) if p else (None, [], None)
+    workflows = [workflow_progress(w, p) for w in pending] if sess else []
+    print(json.dumps({"size": st.st_size if st else 0,
+                      "live": (sess.get("status") or "idle") if sess else None, "bridge": bridge,
+                      "since": ms_of(sess.get("statusUpdatedAt")) if sess else None,
+                      "workflows": workflows,
+                      # Claude a fini son tour et attend la fin des workflows
+                      "waiting": bool(workflows) and tail is not None
+                      and not any(starts_turn(l) for l in tail)}))
 
 TODO_TOOLS = ("TodoWrite", "TaskCreate", "TaskUpdate")
 
@@ -258,7 +378,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 # Message envoyé pendant une réponse : claude l'a lu entre deux étapes.
                 a = r.get("attachment") or {}
                 if a.get("type") == "queued_command" and a.get("commandMode", "prompt") == "prompt":
-                    txt, imgs = text_of(a.get("prompt")), images_of(a.get("prompt"))
+                    txt, imgs = bash_items(text_of(a.get("prompt")), items), images_of(a.get("prompt"))
                     if imgs or not is_noise(txt):
                         items.append({"role": "user", "text": "" if is_noise(txt) else txt,
                                       "images": imgs, "queued": True})
@@ -284,6 +404,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 txt = text_of(content)
                 if not local:  # commande tapée (skill, /plan …) : affichée comme dans le terminal
                     txt = command_text(txt) or txt
+                txt = bash_items(txt, items)  # commandes « ! », avant le texte du message
                 imgs = images_of(content)
                 if imgs or not is_noise(txt):
                     items.append({"role": "user", "text": "" if is_noise(txt) else txt,
@@ -350,8 +471,9 @@ def agent_summary(path, meta):
     """État d'un sous-agent d'après sa transcription : début, dernière étape, fini ou non.
 
     Fini : son dernier message est une réponse de Claude sans appel d'outil (il a rendu
-    la main) ; interrompu : c'est la marque d'interruption de claude ; sinon il attend un
-    outil ou la suite du modèle.
+    la main), ou le résultat d'un outil qui termine l'agent (« toolEndsTurn » :
+    StructuredOutput des agents de workflow) ; interrompu : c'est la marque
+    d'interruption de claude ; sinon il attend un outil ou la suite du modèle.
     """
     name = os.path.basename(path)[:-len(".jsonl")]
     a = {"id": name[len("agent-"):] if name.startswith("agent-") else name,
@@ -360,6 +482,7 @@ def agent_summary(path, meta):
          "depth": meta.get("spawnDepth") or 1, "background": meta.get("requestShape") == "background",
          "size": os.path.getsize(path), "start": None, "end": None, "steps": 0,
          "done": False, "interrupted": False, "last": None}
+    ended = False  # un outil a terminé l'agent (le résultat d'un appel parallèle peut suivre)
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             if '"type":"user"' not in line and '"type":"assistant"' not in line:
@@ -376,10 +499,11 @@ def agent_summary(path, meta):
             content = r.get("message", {}).get("content")
             blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
             if r["type"] == "user":
-                a["done"] = False
+                ended = ended or r.get("toolEndsTurn") is True
+                a["done"] = ended
                 a["interrupted"] = text_of(content).startswith("[Request interrupted by user")
                 continue
-            a["interrupted"] = False
+            ended = a["interrupted"] = False
             tools = [b for b in blocks if b.get("type") == "tool_use"]
             texts = [b["text"] for b in blocks if b.get("type") == "text" and (b.get("text") or "").strip()]
             a["steps"] += len(tools)
@@ -648,7 +772,7 @@ a = sys.argv[1:]
 {"list": lambda: cmd_list(), "stat": lambda: cmd_stat(a[1]),
  "exists": lambda: print(json.dumps({d: os.path.isdir(d) for d in json.loads(a[1])})),
  "search": lambda: cmd_search(a[1], int(a[2])),
- "live": lambda: print(json.dumps(live_ids())),
+ "live": lambda: cmd_live(),
  "dirs": lambda: cmd_dirs(a[1]),
  "defaults": lambda: cmd_defaults(),
  "read": lambda: cmd_read(a[1]),

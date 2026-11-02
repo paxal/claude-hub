@@ -55,16 +55,79 @@ function peerItem(body) {
 }
 const isNoise = t => { t = t.trim(); return !t || t.startsWith("<") || t.startsWith("Caveat:"); };
 
-function liveIds() {
+function liveSessions() {  // fichiers ~/.claude/sessions/<pid>.json des claude en cours, par id
   const out = {}, d = path.join(C, "sessions");
   for (const f of ls(d).filter(f => f.endsWith(".json"))) {
     try {
       const s = JSON.parse(fs.readFileSync(path.join(d, f), "utf8"));
       process.kill(Number(s.pid), 0);
-      out[s.sessionId] = s.status || "idle";
+      out[s.sessionId] = s;
     } catch (e) {}
   }
   return out;
+}
+function liveIds() {
+  const out = {};
+  for (const [sid, s] of Object.entries(liveSessions())) out[sid] = s.status || "idle";
+  return out;
+}
+const msOf = v => typeof v === "number" ? v : null;  // date (ms) du fichier de session
+
+// Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
+// lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
+// plus ancien est mort avec son processus) et pas encore notifiés comme finis, et lignes
+// écrites depuis la fin du dernier tour de Claude (null si aucun tour n'est fini).
+function scanMain(p, started) {
+  let bridge = null, tail = null;
+  const launched = new Map(), ended = new Set();
+  for (const line of lines(p)) {
+    if (!line) continue;
+    if (line.includes('"bridge-session"')) { const r = parse(line); if (r && r.bridgeSessionId) bridge = r.bridgeSessionId; }
+    if (line.includes('"local_workflow"')) {
+      const r = parse(line), res = r && r.toolUseResult;
+      if (r && r.type === "user" && !r.isSidechain && res && typeof res === "object" && !Array.isArray(res)
+          && res.taskType === "local_workflow" && res.status === "async_launched" && res.taskId) {
+        const t = msgTime(line);
+        if (started === null || t === null || t * 1000 >= started) launched.set(String(res.taskId), res);
+      }
+    }
+    if (line.includes("<task-notification>"))
+      for (const m of line.matchAll(/<task-id>([^<]+)<\/task-id>/g)) ended.add(m[1]);
+    if (line.includes('"subtype":"turn_duration"')) tail = [];
+    else if (tail !== null) tail.push(line);
+  }
+  return {bridge, pending: [...launched].filter(([tid]) => !ended.has(tid)).map(([, w]) => w), tail};
+}
+// Vrai si la ligne montre Claude au travail : sa réponse, un résultat d'outil, ou un
+// message qui lance un tour (pas une commande locale comme /workflows).
+function startsTurn(line) {
+  const r = parse(line);
+  if (!r || typeof r !== "object" || r.isSidechain) return false;
+  if (r.type === "assistant") return true;
+  if (r.type !== "user" || r.isMeta || r.isCompactSummary) return false;
+  const content = (r.message || {}).content;
+  if (Array.isArray(content) && content.some(b => b && b.type === "tool_result")) return true;
+  const t = textOf(content).trimStart();
+  return !!t && !t.startsWith("<command-") && !t.startsWith("<local-command-");
+}
+// Avancement d'un workflow d'après son journal (une ligne « started » puis « result »
+// par agent) : nom, agents lancés et finis, et ceux qui tournent (libellé, phase).
+function workflowProgress(w, p) {
+  let d = w.transcriptDir;
+  if (typeof d !== "string" || !d) d = path.join(p.slice(0, -".jsonl".length), "subagents", "workflows", String(w.runId));
+  const started = new Map(), done = new Set();
+  let text = "";
+  try { text = fs.readFileSync(path.join(d, "journal.jsonl"), "utf8"); } catch (e) {}
+  for (const line of text.split("\n")) {
+    const r = parse(line);
+    if (!r || typeof r !== "object") continue;
+    if (r.type === "started") started.set(String(r.agentId || r.key), r);
+    else if (r.type === "result") done.add(String(r.agentId || r.key));
+  }
+  const running = [...started].filter(([k]) => !done.has(k)).map(([, r]) => ({
+    label: typeof r.label === "string" ? r.label : "", phase: typeof r.phase === "string" ? r.phase : ""}));
+  return {name: typeof w.workflowName === "string" ? w.workflowName : "", total: started.size,
+          done: started.size - running.length, running};
 }
 
 function allFiles() {
@@ -91,6 +154,23 @@ function commandText(t) {
   if (!m) return null;
   const a = /<command-args>([\s\S]*?)<\/command-args>/.exec(t);
   return (m[1] + " " + (a ? a[1] : "")).split(/\s+/).filter(Boolean).join(" ");
+}
+// Commandes « ! » d'un message : mode bash du terminal (commande puis sortie, en deux
+// messages) ou envoyées par claude-hub (avant le texte). Ajoutées à items ({role:
+// "bash", command, stdout, stderr}) ; renvoie le reste du texte.
+function bashItems(t, items) {
+  if (!t.includes("<bash-")) return t;
+  return t.replace(/<(bash-input|bash-stdout|bash-stderr)>([\s\S]*?)<\/\1>/g, (_m, tag, body) => {
+    if (tag === "bash-input") {
+      items.push({role: "bash", command: body.trim()});
+      return "";
+    }
+    const key = tag === "bash-stdout" ? "stdout" : "stderr";
+    const last = items[items.length - 1];
+    if (!(last && last.role === "bash" && !(key in last))) items.push({role: "bash", command: ""});  // sortie sans sa commande
+    items[items.length - 1][key] = body;
+    return "";
+  }).trim();
 }
 // Avertissement que claude écrit juste avant une commande locale (/rename, /copy…).
 const isCaveat = line => line.includes("<local-command-caveat>") && line.includes('"type":"user"');
@@ -136,7 +216,7 @@ function summary(p) {
     if (r.type === "user") {
       s.cwd = s.cwd || r.cwd || null;
       let t = textOf((r.message || {}).content);
-      t = commandText(t) || t;
+      t = bashItems(commandText(t) || t, []);
       if (!s.first && !r.isMeta && !isNoise(t)) s.first = t.split(/\s+/).join(" ").trim().slice(0, 200);
     } else if (r.type === "custom-title") s.title = r.customTitle || s.title;
     else if (r.type === "agent-name") s.title = r.agentName || s.title;
@@ -193,7 +273,7 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
     if (r.type === "attachment") {  // message envoyé pendant une réponse, lu entre deux étapes
       const a = r.attachment || {};
       if (a.type === "queued_command" && (a.commandMode === undefined ? "prompt" : a.commandMode) === "prompt") {
-        const t = textOf(a.prompt), imgs = imagesOf(a.prompt);
+        const t = bashItems(textOf(a.prompt), items), imgs = imagesOf(a.prompt);
         if (imgs.length || !isNoise(t)) items.push({role: "user", text: isNoise(t) ? "" : t, images: imgs, queued: true});
       }
       continue;
@@ -219,6 +299,7 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
       if (ev) todos.push(ev);
       let t = textOf(c);
       if (!local) t = commandText(t) || t;  // commande tapée (skill, /plan …) : affichée comme dans le terminal
+      t = bashItems(t, items);  // commandes « ! », avant le texte du message
       const imgs = imagesOf(c);
       if (imgs.length || !isNoise(t)) {
         items.push({role: "user", text: isNoise(t) ? "" : t, images: imgs});
@@ -298,6 +379,7 @@ function agentSummary(p, meta) {
     tool: meta.toolUseId ?? null, parent: meta.parentAgentId ?? null,
     depth: meta.spawnDepth || 1, background: meta.requestShape === "background",
     size: fs.statSync(p).size, start: null, end: null, steps: 0, done: false, interrupted: false, last: null};
+  let ended = false;  // un outil a terminé l'agent (le résultat d'un appel parallèle peut suivre)
   for (const line of lines(p)) {
     if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue;
     const r = parse(line);
@@ -308,11 +390,12 @@ function agentSummary(p, meta) {
     const content = (r.message || {}).content;
     const blocks = Array.isArray(content) ? content.filter(b => b && typeof b === "object" && !Array.isArray(b)) : [];
     if (r.type === "user") {
-      a.done = false;
+      ended = ended || r.toolEndsTurn === true;
+      a.done = ended;
       a.interrupted = textOf(content).startsWith("[Request interrupted by user");
       continue;
     }
-    a.interrupted = false;
+    ended = a.interrupted = false;
     const tools = blocks.filter(b => b.type === "tool_use");
     const texts = blocks.filter(b => b.type === "text" && (b.text || "").trim()).map(b => b.text);
     a.steps += tools.length;
@@ -526,17 +609,24 @@ if (a[0] === "list") {
     .sort((x, y) => y.mtime - x.mtime);
   out = {home: os.homedir(), sessions};
 } else if (a[0] === "stat") {
-  const p = find(a[1]);
-  let bridge = null;
-  if (p) for (const line of lines(p))
-    if (line.includes('"bridge-session"')) { const r = parse(line); if (r && r.bridgeSessionId) bridge = r.bridgeSessionId; }
-  out = {size: p ? fs.statSync(p).size : 0, live: liveIds()[a[1]] || null, bridge};
+  const p = find(a[1]), sess = liveSessions()[a[1]] || null;
+  const scan = p ? scanMain(p, msOf((sess || {}).startedAt)) : {bridge: null, pending: [], tail: null};
+  const workflows = sess ? scan.pending.map(w => workflowProgress(w, p)) : [];
+  out = {size: p ? fs.statSync(p).size : 0, live: sess ? sess.status || "idle" : null, bridge: scan.bridge,
+         since: sess ? msOf(sess.statusUpdatedAt) : null, workflows,
+         // Claude a fini son tour et attend la fin des workflows
+         waiting: workflows.length > 0 && scan.tail !== null && !scan.tail.some(startsTurn)};
 } else if (a[0] === "search") {
   out = search(a[1], Number(a[2]));
 } else if (a[0] === "exists") {
   out = Object.fromEntries(JSON.parse(a[1]).map(d => [d, isDir(d)]));
 } else if (a[0] === "live") {
-  out = liveIds();
+  // état de chaque session en cours, et sous « <id>:since » la date (ms) où elle y est passée
+  out = {};
+  for (const [sid, s] of Object.entries(liveSessions())) {
+    out[sid] = s.status || "idle";
+    if (msOf(s.statusUpdatedAt) !== null) out[sid + ":since"] = s.statusUpdatedAt;
+  }
 } else if (a[0] === "history") {
   out = history(a[1], Number(a[2]));
 } else if (a[0] === "agent") {

@@ -87,6 +87,12 @@ l'afficherait comme venant d'une autre session (« Another Claude session sent a
 message ») et ne le prendrait pas pour une réponse de l'utilisateur, par exemple
 pour accepter une permission.
 
+Une question, un plan ou une autorisation en attente dans ce terminal se répond
+aussi depuis claude-hub (voir « Mode plan, demandes de Claude et
+sous-agents ») : la demande est lue dans l'API
+(`external_metadata.pending_actions` de la session), la réponse part en
+`control_response`, par le même chemin et avec le même en-tête.
+
 ## Accueil et nouvelle conversation
 
 Sans conversation affichée (au lancement, ou avec le bouton « Nouvelle »), la
@@ -242,6 +248,36 @@ titre tant que claude n'en a pas généré. Les commandes locales du terminal
 (`/copy`, `/rename`…, précédées d'un avertissement dans la transcription) ne
 sont ni un message ni une activité.
 
+## Commandes « ! »
+
+Comme dans le terminal, un message qui commence par `!` est une commande shell
+(le cadre de la saisie passe en rose) : `! ./run_tintes2.sh` la lance avec
+Entrée, dans le dossier de la conversation et sur son hôte (`bash -lc`, par SSH
+pour un hôte distant). `claude -p` ne connaît pas ce mode : c'est claude-hub qui
+lance la commande.
+
+- Sa sortie s'affiche dans le fil au fil de l'eau, avec son code de retour ;
+  au-delà d'une quinzaine de lignes, elle défile dans un cadre de hauteur fixe.
+  Le bouton ■ l'arrête, × la retire (elle ne sera pas envoyée).
+- Claude ne répond pas tout de suite : la commande et sa sortie partent avec le
+  message suivant, dans les balises que le terminal enregistre
+  (`<bash-input>`, `<bash-stdout>`, `<bash-stderr>`). **Entrée** sur une saisie
+  vide les envoie seules : Claude reprend avec le résultat. Un code de retour
+  non nul (`Exit code 2`) ou un arrêt est ajouté aux erreurs.
+- Claude reçoit au plus 30 000 caractères de chaque sortie (début et fin), comme
+  dans le terminal.
+- Tant qu'elles ne sont pas envoyées, les commandes n'existent que dans
+  claude-hub (la conversation est marquée « brouillon ») : fermer claude-hub,
+  ou reprendre la conversation dans un terminal avant d'écrire, les perd.
+- La commande n'a pas de terminal : une commande qui attend une saisie (mot de
+  passe…) échoue, comme dans Claude Code.
+- Pas de commande « ! » pour une conversation claude.ai ou Cursor, ni pour une
+  conversation ouverte dans un terminal (Remote Control) : la taper là-bas.
+- Sur un hôte SSH, ■ coupe la connexion ; la commande distante peut continuer
+  tant qu'elle n'écrit rien.
+
+Les commandes `!` tapées dans un terminal s'affichent aussi dans le fil.
+
 ## Tags et filtres
 
 Le bouton étiquette d'une conversation (dans la liste ou dans l'en-tête) ajoute
@@ -366,10 +402,28 @@ Une session de terminal qui attend une réponse (état `waiting` de claude) est
 traitée de même. Les décisions ne sont jamais
 enregistrées dans les réglages de claude.
 
+Si cette session de terminal est reliée à Remote Control (ou si c'est une
+session claude.ai), ses demandes s'affichent avec les mêmes cartes, et on y
+répond d'ici comme sur claude.ai : le Claude du terminal reprend avec la
+réponse, et sa boîte de dialogue se ferme. Une réponse donnée entre-temps dans
+le terminal retire la carte au relevé suivant. Sans Remote Control, la question
+est seulement dépliée dans le fil, en lecture seule : on y répond dans le
+terminal.
+
 Chaque sous-agent (outil Agent) a son bloc dépliable : type, description,
 avancement et jetons en direct, puis sa consigne et son travail. Dans
-l'historique, sa transcription est lue à l'ouverture du bloc. Le bandeau
-indique le nombre de sous-agents actifs.
+l'historique, sa transcription est lue à l'ouverture du bloc.
+
+Tant que des sous-agents travaillent, le bandeau d'activité de la saisie porte
+une pastille « 🤖 3 sous-agents », suivie de l'étape de celui qui a agi en dernier
+(« Review fix › Bash cargo test… ») quand Claude lui-même n'a rien de plus précis
+à dire : pendant un appel Agent, quand il attend ses sous-agents (« Claude attend
+ses sous-agents »), ou quand la conversation tourne dans un terminal (sauf
+workflow en cours, dont l'avancement reste affiché). L'info-bulle de la pastille
+liste les sous-agents au travail et leur dernière étape ; un clic ouvre le volet
+**Sous-agents**. Pour une réponse lancée d'ici, la pastille et l'étape suivent le
+flux de claude en direct ; sinon, la liste relue sur l'hôte toutes les 4 s.
+Conversations Claude Code seulement (ce PC, SSH), pas le cloud ni Cursor.
 
 Le bouton « sous-agents » de l'en-tête (icône d'arbre et nombre ; conversations
 Claude Code, locales ou SSH)
@@ -442,6 +496,15 @@ demandes en attente sont abandonnés, et la conversation porte la mention
 « ⏹ Interrompu ». Si claude ne s'arrête pas, un second clic (ou 10 s
 d'attente) tue le processus.
 
+Pour une conversation ouverte dans un terminal, le bandeau dit « Claude travaille
+(dans un terminal) », avec la durée depuis que claude s'est mis au travail (d'après
+son fichier `~/.claude/sessions/<pid>.json`, pas depuis l'ouverture dans le hub).
+Si Claude a fini son tour mais attend un workflow lancé en arrière-plan (outil
+Workflow, par exemple `/review`), la pastille et le bandeau disent « Claude attend
+un workflow », suivi de l'avancement lu dans le journal du workflow : son nom, les
+agents finis sur les agents lancés, et celui qui tourne avec sa phase
+(« review · 151/152 agents · review_style #5 : r5 · pass1 · General Rust 1/2 »).
+
 ## Fin des réponses
 
 Quand Claude a fini de répondre (un `claude -p` lancé depuis le hub, ou une
@@ -482,6 +545,12 @@ python3 -m unittest discover -s tests
 Les tests d'interface tournent hors écran, sur une KWin virtuelle :
 `tests/ecran-virtuel.sh commande…` (captures avec `spectacle -b -n -f -o …`).
 
+Pour piloter l'appli elle-même : `tests/piloter.sh script.py` lance une instance
+séparée sur l'écran virtuel, avec une config temporaire et un faux `claude`
+(`tests/faux-claude`) qui rejoue un scénario (réponse longue, plan, autorisation,
+question, sous-agent, erreur). Le script s'écrit avec `tests/pilote.py`. Mode
+d'emploi dans `.claude/skills/piloter-claude-hub/SKILL.md`.
+
 ## Organisation du code
 
 | Module | Rôle |
@@ -513,6 +582,7 @@ Les tests d'interface tournent hors écran, sur une KWin virtuelle :
 | `tags.py` | stockage des tags, analyse de la recherche (`#tag`, `dir:`) |
 | `tagui.py` | pastilles, éditeur de tags, menus de filtre |
 | `commands.py` | complétion des commandes « / » (liste demandée à `claude`, filtrage, suggestions) |
+| `shell.py` | commandes « ! » : lancement sur l'hôte, bloc du fil, texte joint au message suivant |
 | `rename.py` | renommage par `/rename` (commande sur l'hôte, popover) |
 | `window.py` | fenêtre principale |
 | `app.py` | application GTK et point d'entrée |

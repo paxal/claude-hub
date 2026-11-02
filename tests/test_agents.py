@@ -56,6 +56,23 @@ class TestAgents(unittest.TestCase):
             + msg("user", 10, [{"type": "text", "text": "[Request interrupted by user for tool use]"}]))
         (sub / "agent-a3.meta.json").write_text(json.dumps({"description": "attente", "toolUseId": "toolu_w0"}))
         (sub / "agent-orphelin.jsonl").write_text(msg("user", 9, "sans meta"))
+        # agent de workflow : fini par StructuredOutput (« toolEndsTurn »), puis le résultat
+        # d'un appel parallèle s'écrit après
+        wf = sub / "workflows" / "wf_1"
+        wf.mkdir(parents=True)
+        out = msg("user", 13, [{"type": "tool_result", "tool_use_id": "toolu_s",
+                                "content": "Structured output provided successfully"}])
+        (wf / "agent-a4.jsonl").write_text(
+            msg("user", 11, "vérifie")
+            + msg("assistant", 12, [{"type": "tool_use", "id": "toolu_s", "name": "StructuredOutput",
+                                     "input": {"ok": True}},
+                                    {"type": "tool_use", "id": "toolu_t", "name": "Bash",
+                                     "input": {"command": "true"}}])
+            + out[:-2] + ',"toolEndsTurn":true}\n'
+            + msg("user", 14, [{"type": "tool_result", "tool_use_id": "toolu_t", "content": "ok"}]))
+        (wf / "agent-a4.meta.json").write_text(json.dumps(
+            {"agentType": "review_verifier", "description": "r1 · verify",
+             "workflowPhase": "▸ review #1", "spawnDepth": 1, "requestShape": "foreground"}))
 
     @classmethod
     def tearDownClass(cls):
@@ -70,7 +87,8 @@ class TestAgents(unittest.TestCase):
     def test_liste(self):
         res = self.run_helper("python3", "helper.py", "agents", SID)
         self.assertEqual(res["live"], None)
-        a1, a2, a3 = res["agents"]
+        a1, a2, a3, a4 = res["agents"]
+        self.assertEqual((a4["id"], a4["done"], a4["interrupted"]), ("a4", True, False))
         self.assertEqual((a3["done"], a3["interrupted"]), (False, True))
         self.assertFalse(a2["interrupted"])
         self.assertEqual((a1["id"], a1["type"], a1["tool"], a1["parent"], a1["background"]),
@@ -89,7 +107,7 @@ class TestAgents(unittest.TestCase):
 
     def test_historique(self):
         res = self.run_helper("python3", "helper.py", "history", SID, "50")
-        self.assertEqual([a["id"] for a in res["agents"]], ["a1", "a2", "a3"])
+        self.assertEqual([a["id"] for a in res["agents"]], ["a1", "a2", "a3", "a4"])
 
     def test_inconnue(self):
         for interp, script in (("python3", "helper.py"), ("node", "helper.js")):
@@ -112,6 +130,33 @@ class TestVolet(unittest.TestCase):
         self.assertEqual(agent_state({"end": 1000}, False, now=1100), "running")
         self.assertEqual(agent_state({"end": 1000}, False, now=99999), "idle")
         self.assertEqual((duration(42), duration(185), duration(3725)), ("42 s", "3 min", "1 h 02"))
+
+    def test_bandeau(self):
+        """Pastille et étape des sous-agents dans le bandeau d'activité de la saisie."""
+        from claude_hub.agentsview import agent_line, agents_tooltip, running_agents
+        agents = [
+            {"id": "a1", "type": "Explore", "description": "Trouver  les\ntests", "start": 10, "end": 50,
+             "last": {"role": "tool", "name": "Grep", "input": {"pattern": "set_sort_func"}}},
+            {"id": "a2", "type": "general-purpose", "description": "Review fix", "start": 20, "end": 90,
+             "last": {"role": "tool", "name": "Bash", "input": {"command": "cargo test\n  -p shipments"}}},
+            {"id": "a3", "description": "fini", "done": True, "end": 95},
+            {"id": "a4", "description": "arrêté", "interrupted": True, "end": 96},
+            {"id": "a5", "type": "Plan", "start": 30, "last": {"role": "assistant", "text": "Je  lis\nle code"}},
+        ]
+        run = running_agents(agents, alive=True)
+        self.assertEqual([a["id"] for a in run], ["a2", "a1", "a5"])  # le plus récemment actif d'abord
+        self.assertEqual([a["id"] for a in running_agents(agents, False, now=100)], ["a2", "a1", "a5"])
+        self.assertEqual(running_agents(agents, False, now=99999), [])  # session arrêtée depuis longtemps
+        self.assertEqual(running_agents(None, True), [])
+        self.assertEqual(agent_line(run[0]), "Review fix › Bash cargo test -p shipments")
+        self.assertEqual(agent_line(run[1]), "Trouver les tests › Grep set_sort_func")
+        self.assertEqual(agent_line(run[2]), "Plan › Je lis le code")  # sans description : le type
+        self.assertEqual(agent_line({"id": "x"}), "Agent")
+        tip = agents_tooltip(run).splitlines()
+        self.assertEqual(tip[0], "general-purpose · Review fix › Bash cargo test -p shipments")
+        self.assertEqual(tip[-1], "Clic : volet des sous-agents")
+        many = agents_tooltip([{"id": str(i), "description": f"d{i}"} for i in range(11)], limit=8)
+        self.assertEqual(many.splitlines()[-2:], ["… et 3 autres", "Clic : volet des sous-agents"])
 
 
 if __name__ == "__main__":

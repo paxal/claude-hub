@@ -120,19 +120,12 @@ def remote_connected(sid):
     return d.get("connection_status") == "connected"
 
 
-def remote_send(sid, text, images):
-    """Envoie à une session Remote Control un message que l'utilisateur a tapé : c'est le
-    Claude déjà lancé (terminal) qui le traite, comme un message écrit sur claude.ai.
-    Ne jamais passer par ici un texte que l'utilisateur n'a pas écrit (voir HUMAN_PLATFORM).
-    Pas de `claude -p --cloud` : la CLI n'envoie pas la plateforme, et le terminal
-    présenterait le message comme venant d'une autre session."""
+def post_event(sid, event):
+    """Poste un événement à une session, au nom de l'utilisateur (voir HUMAN_PLATFORM)."""
     import urllib.error
     import urllib.request
-    content = [{"type": "image", "source": {"type": "base64", "media_type": img["type"], "data": img["data"]}}
-               for img in images] + ([{"type": "text", "text": text}] if text else [])
     cse = to_cse(sid)
-    event = {"uuid": str(uuid.uuid4()), "session_id": cse, "type": "user", "parent_tool_use_id": None,
-             "message": {"role": "user", "content": content}}
+    event = {"uuid": str(uuid.uuid4()), "session_id": cse, **event}
     req = urllib.request.Request(f"{CLOUD_API}/v1/code/sessions/{cse}/events", method="POST",
                                  data=json.dumps({"events": [{"payload": event}]}).encode(), headers={
                                      **cloud_auth(), "anthropic-client-platform": HUMAN_PLATFORM,
@@ -141,6 +134,71 @@ def remote_send(sid, text, images):
         urllib.request.urlopen(req, timeout=30).read()
     except urllib.error.HTTPError as e:
         raise cloud_error(e)
+
+
+def remote_send(sid, text, images):
+    """Envoie à une session Remote Control un message que l'utilisateur a tapé : c'est le
+    Claude déjà lancé (terminal) qui le traite, comme un message écrit sur claude.ai.
+    Ne jamais passer par ici un texte que l'utilisateur n'a pas écrit (voir HUMAN_PLATFORM).
+    Pas de `claude -p --cloud` : la CLI n'envoie pas la plateforme, et le terminal
+    présenterait le message comme venant d'une autre session."""
+    content = [{"type": "image", "source": {"type": "base64", "media_type": img["type"], "data": img["data"]}}
+               for img in images] + ([{"type": "text", "text": text}] if text else [])
+    post_event(sid, {"type": "user", "parent_tool_use_id": None,
+                     "message": {"role": "user", "content": content}})
+
+
+def pending_requests(detail):
+    """Demandes en attente d'une session (réponse de /v1/code/sessions/<id>), au format
+    des control_request « can_use_tool » de claude -p : [(request_id, demande)].
+
+    Le Claude relié les publie dans external_metadata.pending_actions. Pour une question
+    ou un plan, request_id est vide et l'identifiant est dans suppressed_request_id (il
+    sert aux notifications mobiles : pas de réponse d'un bouton, il faut ouvrir la session).
+    Vide si son Claude n'est pas relié : il ne recevrait pas la réponse.
+    """
+    d = detail.get("response_shape", detail)
+    if d.get("connection_status") != "connected":
+        return []
+    meta = d.get("external_metadata") or {}
+    actions = meta.get("pending_actions") or ([meta["pending_action"]] if meta.get("pending_action") else [])
+    details = {a.get("tool_use_id"): a for a in d.get("requires_action_details_list") or []
+               if isinstance(a, dict)}
+    out = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        rid = a.get("request_id") or a.get("suppressed_request_id")
+        tool = a.get("tool_name")
+        if not (isinstance(rid, str) and rid and isinstance(tool, str)) or tool.startswith("dialog:"):
+            continue  # dialog:… : boîte de dialogue du terminal, pas une demande d'outil
+        if any(r == rid for r, _ in out):
+            continue
+        desc = a.get("action_description")
+        req = {"subtype": "can_use_tool", "tool_name": tool,
+               "display_name": a.get("display_tool_name") or tool,
+               "input": a.get("input") if isinstance(a.get("input"), dict) else {},
+               "tool_use_id": a.get("tool_use_id"),
+               "permission_suggestions": (details.get(a.get("tool_use_id")) or {}).get(
+                   "permission_suggestions") or []}
+        if desc and desc != a.get("raw_command") and tool not in ("AskUserQuestion", "ExitPlanMode"):
+            req["description"] = desc
+        out.append((rid, req))
+    return out
+
+
+def remote_pending(sid):
+    """Demandes (question, plan, permission) qu'attend le Claude d'une session Remote
+    Control ou claude.ai : [(request_id, demande)]."""
+    return pending_requests(cloud_get(f"/v1/code/sessions/{to_cse(sid)}"))
+
+
+def remote_respond(sid, request_id, response):
+    """Répond à une demande de la session, comme claude.ai : le Claude du terminal la
+    prend pour la décision de l'utilisateur. response : celle de permissions.allow/deny,
+    toujours issue d'un choix fait dans claude-hub (bouton, texte tapé)."""
+    post_event(sid, {"type": "control_response", "response": {
+        "subtype": "success", "request_id": request_id, "response": response}})
 
 
 def cloud_history(sid, limit):

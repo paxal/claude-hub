@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Faux `claude` pour les tests d'interface de claude-hub : rejoue un scénario en
+stream-json et parle le même protocole que le vrai `claude -p` lancé par le hub.
+
+Mis dans le PATH par tests/piloter.sh (sous le nom `claude`). Variables :
+
+  FAUX_CLAUDE_SCENARIO  nom d'un scénario ci-dessous (« simple » par défaut), ou
+                        chemin d'un fichier JSON : liste d'étapes (voir ETAPES).
+  FAUX_CLAUDE_VITESSE   multiplie les pauses (0 : aucune pause ; 2 : deux fois plus lent).
+  FAUX_CLAUDE_JOURNAL   fichier où noter chaque appel (argv) et chaque ligne reçue sur
+                        l'entrée, pour vérifier ce que le hub a envoyé.
+  FAUX_CLAUDE_TITRE     titre renvoyé à generate_session_title.
+
+Ce qu'il fait :
+- lit son entrée ligne à ligne, sans attendre qu'elle soit fermée (le hub la garde
+  ouverte pendant la réponse) ; chaque message de l'utilisateur lance le scénario ;
+- répond à generate_session_title, set_permission_mode, interrupt et initialize ;
+- pour les étapes « autorisation », « plan » et « question », envoie une demande
+  can_use_tool et attend la réponse du hub (allow ou deny) ;
+- se termine quand le hub ferme son entrée, comme le vrai ;
+- `/rename` en mode `--output-format json` : répond comme claude.
+
+Transcription : si HOME n'est pas le vrai dossier personnel (tests/piloter.sh
+--faux-home), il écrit aussi ~/.claude/projects/…/<session>.jsonl, que le hub relit
+à la fin de la réponse. Il n'écrit jamais dans le vrai ~/.claude.
+
+Étapes d'un scénario (une par dict) :
+  {"texte": "…"}                                      message de Claude (Markdown)
+  {"outil": "Read", "entree": {…}, "resultat": "…"}   appel d'outil et son résultat
+  {"pause": 0.5}                                       secondes (× FAUX_CLAUDE_VITESSE)
+  {"autorisation": "Bash", "entree": {…}}              demande de permission, puis l'outil
+  {"plan": "# Plan…"}                                  validation du plan (ExitPlanMode)
+  {"question": "…", "options": ["A", "B"]}             AskUserQuestion
+  {"sous_agent": "Explore", "description": "…", "etapes": [{"texte"…}, {"outil"…}]}
+  {"erreur": "…"}                                      fin en erreur (is_error)
+"""
+import json
+import os
+import pwd
+import re
+import sys
+import threading
+import time
+import uuid
+
+SCENARIOS = {
+    "simple": [
+        {"pause": 0.3},
+        {"texte": "Voici la réponse **finale** du faux claude."},
+    ],
+    # réponse longue, avec code, tableau et outils : défilement, rendu, bandeau d'activité
+    "long": [
+        {"pause": 0.3},
+        {"texte": "Je regarde comment c'est construit."},
+        {"outil": "Read", "entree": {"file_path": "/tmp/projet/src/app.py"}, "resultat": "…"},
+        {"pause": 0.6},
+        {"outil": "Grep", "entree": {"pattern": "def main"}, "resultat": "app.py:12"},
+        {"pause": 0.6},
+        {"texte": "Un paragraphe de réponse assez long pour passer à la ligne plusieurs fois "
+                  "dans la zone des messages, afin que sa hauteur dépende de la largeur. " * 4
+                  + "\n\n```python\ndef main():\n    print('bonjour')\n```\n\n"
+                  "| fichier | lignes | rôle |\n|---|---|---|\n| app.py | 120 | entrée |\n"
+                  "| window.py | 3400 | fenêtre |"},
+        {"outil": "TodoWrite", "entree": {"todos": [
+            {"content": "Lire le code", "status": "completed", "activeForm": "Lecture du code"},
+            {"content": "Modifier", "status": "in_progress", "activeForm": "Modification"}]},
+         "resultat": "ok"},
+        {"outil": "Edit", "entree": {"file_path": "/tmp/projet/src/app.py", "old_string": "a\nb",
+                                     "new_string": "a\nb\nc"}, "resultat": "ok"},
+        {"pause": 1.0},
+        {"outil": "Bash", "entree": {"command": "python3 -m unittest", "description": "Tests"},
+         "resultat": "Ran 12 tests\n\nOK"},
+        {"pause": 0.6},
+        {"texte": "**RÉPONSE FINALE** : c'est fait, les tests passent."},
+    ],
+    "plan": [
+        {"pause": 0.3},
+        {"texte": "J'ai regardé le code ; voici ce que je propose."},
+        {"plan": "# Plan : exemple\n\n1. Lire `app.py`\n2. Ajouter la fonction\n3. Lancer les tests\n"},
+        {"outil": "Write", "entree": {"file_path": "/tmp/projet/hello.py", "content": "print('bonjour')\n"},
+         "resultat": "File created"},
+        {"texte": "Plan exécuté."},
+    ],
+    "autorisation": [
+        {"pause": 0.3},
+        {"autorisation": "Bash", "entree": {"command": "rm -rf build", "description": "Nettoyer"},
+         "resultat": ""},
+        {"texte": "Dossier nettoyé."},
+    ],
+    "question": [
+        {"pause": 0.3},
+        {"question": "Quelle base de données ?", "options": ["SQLite", "PostgreSQL"]},
+        {"texte": "Entendu."},
+    ],
+    "sous-agent": [
+        {"pause": 0.3},
+        {"texte": "Je lance un sous-agent pour explorer."},
+        {"sous_agent": "Explore", "description": "Explorer le dépôt", "etapes": [
+            {"outil": "Glob", "entree": {"pattern": "**/*.py"}, "resultat": "app.py\nwindow.py"},
+            {"pause": 1.0},
+            {"outil": "Read", "entree": {"file_path": "/tmp/projet/app.py"}, "resultat": "…"},
+            {"pause": 1.0},
+            {"texte": "Deux modules : app.py et window.py."}]},
+        {"texte": "Le sous-agent a trouvé deux modules."},
+    ],
+    "erreur": [
+        {"pause": 0.3},
+        {"erreur": "API Error: 529 overloaded (faux claude)"},
+    ],
+    # réponse qui dure : bandeau d'activité, animation, « Arrêter », file d'attente
+    "lent": [{"pause": 0.3}] + [
+        step for i in range(10) for step in (
+            {"outil": "Bash", "entree": {"command": f"sleep 1  # étape {i + 1}"}, "resultat": ""},
+            {"pause": 1.0})
+    ] + [{"texte": "Fini après dix étapes."}],
+}
+
+RENAMED = "Session renamed to: "
+args = sys.argv[1:]
+speed = float(os.environ.get("FAUX_CLAUDE_VITESSE", "1"))
+journal = os.environ.get("FAUX_CLAUDE_JOURNAL")
+lock = threading.Lock()
+
+
+def note(**entry):
+    if journal:
+        with lock, open(journal, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def arg(name, default=None):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else default
+
+
+note(argv=sys.argv[1:], cwd=os.getcwd())
+
+# `/rename` : `claude -p --resume <id> --output-format json "/rename nom"`
+if arg("--output-format") == "json":
+    name = next((a for a in args if a.startswith("/rename")), None)
+    if name is None:
+        print(json.dumps({"type": "result", "is_error": True, "result": "faux claude : commande inconnue"}))
+        sys.exit(1)
+    name = name[len("/rename"):].strip() or "nom-choisi-par-le-faux-claude"
+    print(json.dumps({"type": "result", "is_error": False, "result": RENAMED + name}))
+    sys.exit(0)
+
+sid = arg("--session-id") or arg("--resume") or str(uuid.uuid4())
+if "--fork-session" in args:
+    sid = str(uuid.uuid4())
+state = {"mode": arg("--permission-mode", "default")}  # changé par set_permission_mode
+model = {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5",
+         "fable": "claude-fable-5-1"}.get(arg("--model"), arg("--model") or "claude-opus-5-5")
+
+# Transcription, seulement hors du vrai dossier personnel.
+real_home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+home = os.path.realpath(os.environ.get("HOME", real_home))
+transcript = None
+if home != real_home and "--no-session-persistence" not in args:
+    project = os.path.join(home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+    os.makedirs(project, exist_ok=True)
+    transcript = os.path.join(project, sid + ".jsonl")
+last_uuid = None
+
+
+def record(kind, message, **extra):
+    """Ligne de transcription, au format compact de claude (les helpers cherchent "type":"user")."""
+    global last_uuid
+    if not transcript:
+        return
+    u = str(uuid.uuid4())
+    line = {"type": kind, "message": message, "uuid": u, "parentUuid": last_uuid,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+            "cwd": os.getcwd(), "sessionId": sid, "permissionMode": state["mode"], **extra}
+    last_uuid = u
+    with lock, open(transcript, "a") as f:
+        f.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def meta(line):
+    if transcript:
+        with lock, open(transcript, "a") as f:
+            f.write(json.dumps(dict(line, sessionId=sid), separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def out(**ev):
+    with lock:
+        print(json.dumps(ev, ensure_ascii=False), flush=True)
+
+
+answers = {}          # request_id -> réponse du hub
+answered = threading.Condition()
+inbox = []            # messages de l'utilisateur pas encore traités
+closed = threading.Event()
+interrupted = threading.Event()
+
+
+def reader():
+    for line in sys.stdin:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        note(recu=ev)
+        t = ev.get("type")
+        req = ev.get("request") or {}
+        if t == "user":
+            with answered:
+                inbox.append(ev)
+                answered.notify_all()
+        elif t == "control_response":
+            resp = ev.get("response") or {}
+            with answered:
+                answers[resp.get("request_id")] = resp
+                answered.notify_all()
+        elif t == "control_request":
+            rid, sub = ev.get("request_id"), req.get("subtype")
+            ok = {"subtype": "success", "request_id": rid}
+            if sub == "generate_session_title":
+                title = os.environ.get("FAUX_CLAUDE_TITRE") or (
+                    " ".join((req.get("description") or "").split()[:6]) or "Conversation de test")
+                if req.get("persist"):
+                    meta({"type": "ai-title", "aiTitle": title})
+                out(type="control_response", response=dict(ok, response={"title": title}))
+            elif sub == "set_permission_mode":
+                state["mode"] = req.get("mode")
+                out(type="control_response", response=dict(ok, response={}))
+                out(type="system", subtype="status", permissionMode=state["mode"], session_id=sid)
+            elif sub == "interrupt":
+                interrupted.set()
+                out(type="control_response", response=dict(ok, response={}))
+                with answered:
+                    answered.notify_all()
+            elif sub == "initialize":
+                out(type="control_response", response=dict(ok, response={"commands": [
+                    {"name": "compact", "description": "Résume la conversation (faux claude)",
+                     "argumentHint": "[consigne]"},
+                    {"name": "rename", "description": "Renomme la conversation", "argumentHint": "[nom]"},
+                    {"name": "review", "description": "Relit une PR (faux claude)", "argumentHint": ""}]}))
+            else:
+                out(type="control_response", response={"subtype": "error", "request_id": rid,
+                                                       "error": f"faux claude : {sub} non géré"})
+    closed.set()
+    with answered:
+        answered.notify_all()
+
+
+def pause(seconds):
+    end = time.monotonic() + seconds * speed
+    while not interrupted.is_set() and time.monotonic() < end:
+        time.sleep(0.05)
+
+
+def assistant(content, parent=None):
+    msg = {"id": f"msg_{uuid.uuid4().hex[:20]}", "type": "message", "role": "assistant", "model": model,
+           "content": content, "usage": {"input_tokens": 1200, "output_tokens": 80,
+                                         "cache_read_input_tokens": 30000}}
+    out(type="assistant", message=msg, parent_tool_use_id=parent, session_id=sid, uuid=str(uuid.uuid4()))
+    record("assistant", msg, **({"isSidechain": True} if parent else {}))
+
+
+def tool_result(tid, result, parent=None, is_error=False):
+    msg = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid,
+                                        "content": result, "is_error": is_error}]}
+    out(type="user", message=msg, parent_tool_use_id=parent, session_id=sid)
+    record("user", msg, **({"isSidechain": True} if parent else {}))
+
+
+def ask(tool, inp, tid):
+    """Demande can_use_tool ; renvoie la réponse du hub (None : entrée fermée ou interruption)."""
+    rid = str(uuid.uuid4())
+    out(type="control_request", request_id=rid, request={
+        "subtype": "can_use_tool", "tool_name": tool, "display_name": tool, "input": inp,
+        "tool_use_id": tid, "description": inp.get("description") or "",
+        "permission_suggestions": [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}]})
+    with answered:
+        while rid not in answers and not closed.is_set() and not interrupted.is_set():
+            answered.wait(0.2)
+    if rid not in answers:
+        out(type="control_cancel_request", request_id=rid)
+        return None
+    return (answers[rid].get("response") or {})
+
+
+def play(steps, parent=None):
+    """Joue les étapes ; renvoie le texte d'erreur éventuel."""
+    for st in steps:
+        if interrupted.is_set():
+            return None
+        if "pause" in st:
+            pause(st["pause"])
+        elif "texte" in st:
+            assistant([{"type": "text", "text": st["texte"]}], parent)
+        elif "outil" in st:
+            tid = f"toolu_{uuid.uuid4().hex[:20]}"
+            assistant([{"type": "tool_use", "id": tid, "name": st["outil"], "input": st.get("entree", {})}], parent)
+            pause(st.get("duree", 0.3))
+            tool_result(tid, st.get("resultat", "ok"), parent)
+        elif "autorisation" in st or "plan" in st or "question" in st:
+            if "plan" in st:
+                name, inp = "ExitPlanMode", {"plan": st["plan"], "planFilePath": "/tmp/faux-claude-plan.md"}
+            elif "question" in st:
+                name, inp = "AskUserQuestion", {"questions": [{
+                    "question": st["question"], "header": "Question", "multiSelect": False,
+                    "options": [{"label": o, "description": f"Choisir {o}"} for o in st.get("options", [])]}]}
+            else:
+                name, inp = st["autorisation"], st.get("entree", {})
+            tid = f"toolu_{uuid.uuid4().hex[:20]}"
+            assistant([{"type": "tool_use", "id": tid, "name": name, "input": inp}], parent)
+            resp = ask(name, inp, tid)
+            if resp is None:
+                return None
+            if resp.get("behavior") == "allow":
+                upd = resp.get("updatedInput") or inp
+                for p in resp.get("updatedPermissions") or []:
+                    if p.get("type") == "setMode":
+                        state["mode"] = p.get("mode")
+                        out(type="system", subtype="status", permissionMode=state["mode"], session_id=sid)
+                if name == "ExitPlanMode":
+                    text = "User has approved your plan. You can now start coding."
+                elif name == "AskUserQuestion":
+                    text = "The user answered: " + json.dumps(upd.get("answers") or {}, ensure_ascii=False)
+                else:
+                    text = st.get("resultat", "ok")
+                tool_result(tid, text, parent)
+            else:
+                tool_result(tid, resp.get("message") or "refusé", parent, is_error=True)
+                if name == "ExitPlanMode":  # Claude révise son plan et redemande
+                    retry = dict(st, plan=st["plan"] + "\n4. (révisé après la remarque)\n")
+                    err = play([{"texte": "Je révise le plan."}, retry], parent)
+                    if err or interrupted.is_set():
+                        return err
+                    continue
+                assistant([{"type": "text", "text": "D'accord, je ne le fais pas."}], parent)
+        elif "sous_agent" in st:
+            tid = f"toolu_{uuid.uuid4().hex[:20]}"
+            task = uuid.uuid4().hex[:8]
+            inp = {"description": st.get("description", ""), "subagent_type": st["sous_agent"],
+                   "prompt": st.get("description", "")}
+            assistant([{"type": "tool_use", "id": tid, "name": "Agent", "input": inp}], parent)
+            out(type="system", subtype="task_started", task_id=task, tool_use_id=tid,
+                description=inp["description"], subagent_type=st["sous_agent"], is_backgrounded=True,
+                spawn_depth=1, prompt=inp["prompt"], session_id=sid)
+            started = time.monotonic()
+            for i, sub in enumerate(st.get("etapes", [])):
+                play([sub], tid)
+                if "pause" in sub:
+                    continue
+                out(type="system", subtype="task_progress", task_id=task, tool_use_id=tid,
+                    description=f"Running {sub.get('outil') or 'texte'}", last_tool_name=sub.get("outil"),
+                    tool_uses=i + 1, duration_ms=int((time.monotonic() - started) * 1000),
+                    usage={"total_tokens": 1500 * (i + 1)}, session_id=sid)
+            summary = next((s["texte"] for s in reversed(st.get("etapes", [])) if "texte" in s), "Terminé.")
+            out(type="system", subtype="task_notification", task_id=task, tool_use_id=tid, status="completed",
+                summary=summary, usage={"total_tokens": 4000}, session_id=sid)
+            tool_result(tid, summary, parent)
+        elif "erreur" in st:
+            return st["erreur"]
+    return None
+
+
+def scenario():
+    name = os.environ.get("FAUX_CLAUDE_SCENARIO", "simple")
+    if name in SCENARIOS:
+        return SCENARIOS[name]
+    with open(name) as f:
+        return json.load(f)
+
+
+threading.Thread(target=reader, daemon=True).start()
+steps = scenario()
+pause(0.1)
+out(type="system", subtype="init", session_id=sid, model=model, permissionMode=state["mode"], cwd=os.getcwd(),
+    tools=["Read", "Edit", "Write", "Bash", "Agent"], claude_code_version="faux")
+stopped = False  # dernier tour interrompu : claude sort alors en code 1
+while True:
+    with answered:
+        while not inbox and not closed.is_set():
+            answered.wait(0.2)
+        if not inbox:
+            break
+        msg = inbox.pop(0)
+    interrupted.clear()
+    record("user", msg.get("message") or {})
+    started = time.monotonic()
+    error = play(steps)
+    duration = int((time.monotonic() - started) * 1000)
+    stopped = interrupted.is_set()
+    if stopped:
+        out(type="result", subtype="error_during_execution", is_error=True, result="", session_id=sid,
+            duration_ms=duration, total_cost_usd=0.001)
+        continue
+    final = next((s["texte"] for s in reversed(steps) if "texte" in s), "")
+    out(type="result", subtype="success" if not error else "error", is_error=bool(error),
+        result=error or final, session_id=sid, duration_ms=duration, num_turns=1, total_cost_usd=0.0123,
+        modelUsage={model: {"contextWindow": 200000}})
+    meta({"type": "system", "subtype": "turn_duration", "durationMs": duration,
+          "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())})
+sys.exit(1 if stopped else 0)

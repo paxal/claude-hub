@@ -45,6 +45,47 @@ def last_step(a):
     return " ".join(str(last.get("text") or "").split())
 
 
+def running_agents(agents, alive, now=None):
+    """Sous-agents qui travaillent, le plus récemment actif en premier."""
+    run = [a for a in agents or () if agent_state(a, alive, now) == "running"]
+    return sorted(run, key=lambda a: -(a.get("end") or a.get("start") or 0))
+
+
+def agent_line(a):
+    """Un sous-agent en une ligne, pour le bandeau : « Review fix › Bash cargo test… »."""
+    name = " ".join(str(a.get("description") or a.get("type") or "Agent").split())
+    step = " ".join(last_step(a).split())
+    return f"{name} › {step}" if step else name
+
+
+def agents_tooltip(agents, limit=8):
+    """Info-bulle de la pastille du bandeau : un sous-agent par ligne (type · ligne)."""
+    lines = [f"{a.get('type') or 'Agent'} · {agent_line(a)}"[:160] for a in agents[:limit]]
+    if len(agents) > limit:
+        lines.append(f"… et {len(agents) - limit} autres")
+    return "\n".join(lines + ["Clic : volet des sous-agents"])
+
+
+def workflow_text(workflows):
+    """Avancement des workflows en arrière-plan (commande « stat »), pour le bandeau :
+    « review · 151/152 agents · review_style #5 : r5 · pass1 · General Rust 1/2 »."""
+    parts = []
+    for w in workflows or ():
+        t = w.get("name") or "workflow"
+        if w.get("total"):
+            t += f" · {w.get('done', 0)}/{w['total']} agents"
+        run = w.get("running") or []
+        phases = {" ".join(str(r.get("phase") or "").lstrip("▸").split()) for r in run}
+        phase = phases.pop() if len(phases) == 1 else ""
+        labels = ", ".join(" ".join(str(r.get("label") or "").split()) or "?" for r in run)
+        if len(run) == 1:
+            t += " · " + (f"{phase} : " if phase else "") + labels
+        elif run:
+            t += f" · {len(run)} en cours" + (f" ({phase})" if phase else "") + " : " + labels
+        parts.append(t)
+    return " — ".join(parts)
+
+
 def tree(agents):
     """Agents dans l'ordre de l'arbre : chacun suivi de ceux qu'il a lancés."""
     ids = {a["id"] for a in agents}

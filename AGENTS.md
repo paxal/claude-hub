@@ -36,6 +36,12 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `claude -p --cloud`), le Claude du terminal reçoit « Another Claude session
   sent a message » et ne prend pas le texte pour celui de l'utilisateur.
   Ce chemin ne doit transmettre que du texte que l'utilisateur a tapé.
+  Les demandes en attente (question, plan, autorisation) se lisent dans
+  `external_metadata.pending_actions` (`remote_pending`) et se répondent par une
+  `control_response` sur le même chemin (`remote_respond`), toujours après un
+  clic de l'utilisateur. Un `claude` de test lancé depuis une session Claude
+  Code doit perdre les variables `CLAUDE*` : sinon il se croit sous-session et
+  n'écrit pas sa transcription.
 - **Plusieurs conversations à la fois** : chaque conversation a son propre
   processus `claude -p` (`Hub.streams`, par id de session). Ne pas réintroduire
   d'état global « le processus en cours » : c'était la cause du bug où le
@@ -82,28 +88,15 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   son propre bus D-Bus. Rien ne s'affiche chez l'utilisateur, et le
   presse-papier est isolé du sien. Ne lancer l'appli sur le vrai écran que si
   l'utilisateur le demande.
-- Lancer l'appli **dans une instance séparée** pour ne pas toucher à celle que
-  l'utilisateur a ouverte. Le script de pilotage est à mettre dans un dossier
-  temporaire :
-
-  ```python
-  import subprocess
-  from claude_hub.app import App
-  from claude_hub.gtk import Gio, GLib
-  app = App(); app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
-  # piloter la fenêtre avec GLib.timeout_add(...) ; capturer au bon moment :
-  # subprocess.run(["spectacle", "-b", "-n", "-f", "-o", "/tmp/…/capture.png"])
-  # puis app.quit()
-  app.run(None)
-  ```
-
-  ```bash
-  cd src && PYTHONPATH=$PWD timeout 60 ../tests/ecran-virtuel.sh \
-      python3 /tmp/…/pilote.py 2>&1 | grep -v GtkGizmo
-  ```
-
-  La taille de l'écran se règle avec `LARGEUR` et `HAUTEUR` (1280×800 par
-  défaut). Pour regarder une capture, ouvrir le PNG avec l'outil de lecture.
+- Lancer l'appli **dans une instance séparée**, pour ne pas toucher à celle que
+  l'utilisateur a ouverte, avec `tests/piloter.sh script.py` : config
+  temporaire (qui garde le thème du bureau), faux `claude` dans le PATH, écran
+  virtuel, puis vérification que `~/.config/claude-hub` n'a pas changé. Le
+  script, dans un dossier temporaire, s'écrit avec `tests/pilote.py` ; le faux
+  claude (`tests/faux-claude`) rejoue un scénario au choix (plan, autorisation,
+  sous-agent…). Mode d'emploi : skill `piloter-claude-hub`
+  (`.claude/skills/piloter-claude-hub/SKILL.md`). Pour regarder une capture,
+  ouvrir le PNG avec l'outil de lecture.
 - **Ne pas toucher à la config réelle** : pour les tests qui écrivent des tags,
   des hôtes ou des préférences, pointer `XDG_CONFIG_HOME` vers un dossier
   temporaire (attention : la base Cursor est alors introuvable, car `cursor.py`

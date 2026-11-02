@@ -175,6 +175,74 @@ processus, sans considérer le premier `result` comme la fin.
   d'après le binaire) ;
 - sortie temporaire : `/tmp/claude-<uid>/<projet>/<session>/tasks/<agentId>.output`.
 
+## Workflows en arrière-plan (observé, claude 2.1.304)
+
+L'outil Workflow lance des agents en série ou en parallèle, en arrière-plan. Le
+tour de Claude se termine aussitôt, mais le fichier de session
+(`~/.claude/sessions/<pid>.json`) reste à `"status":"busy"` jusqu'à la fin du
+workflow ; `statusUpdatedAt` (ms) garde l'heure du passage à `busy`.
+
+- **Lancement** : ligne `user` (`tool_result` de l'outil) avec
+  `toolUseResult: {"status":"async_launched","taskId":"wm8uxc1as","taskType":"local_workflow","workflowName":"review","runId":"wf_f820461f-80e","summary":…,"transcriptDir":…,"scriptPath":…}`.
+- **Fin du tour** : `{"type":"system","subtype":"turn_duration",…,"pendingWorkflowCount":1}`.
+  Une commande locale tapée ensuite (`/workflows`) écrit des lignes `user`
+  (`<command-name>`, `<local-command-stdout>`) sans relancer de tour.
+- **Journal** : `<session>/subagents/workflows/<runId>/journal.jsonl`, une ligne
+  `{"type":"launched"}`, puis par agent `{"type":"started","key":…,"agentId":…,"label":"r5 · pass1 · General Rust 1/2","phase":"▸ review_style #5"}`
+  et `{"type":"result","key":…,"agentId":…,"result":…}`. Les agents eux-mêmes
+  sont à côté (`agent-<agentId>.jsonl` et `.meta.json`, avec `workflowPhase`).
+  Un agent à schéma finit par un appel `StructuredOutput` : pas de réponse texte
+  finale, mais le résultat de cet outil porte `"toolEndsTurn":true` (le résultat
+  d'un appel parallèle peut s'écrire après lui). La commande `agents` le compte
+  comme fini. Le « 151/152 » du terminal compte les `result` sur les `started`. **Aucune
+  ligne ne marque la fin** : un workflow interrompu ressemble à un workflow fini.
+- **Fin** : une `<task-notification>` avec `<task-id>` = `taskId` (lignes
+  `queue-operation` puis `user` ou `attachment` `queued_command`), qui relance un
+  tour de Claude.
+
+Dans claude-hub, la commande `stat` des scripts distants renvoie les workflows
+lancés depuis le démarrage du processus claude (`startedAt` ; les plus anciens
+sont morts avec leur processus) et pas encore notifiés, leur avancement, et
+`waiting` (Claude a fini son tour : aucune ligne `assistant`, résultat d'outil ou
+message qui lance un tour depuis le dernier `turn_duration`).
+
+## Demandes d'un terminal relié à Remote Control (vérifié, claude 2.1.312)
+
+Un `claude` interactif relié à Remote Control publie chaque demande
+`can_use_tool` dans les événements de sa session (`type: control_request`,
+même forme qu'avec `claude -p`) et dans les métadonnées de la session :
+
+```
+GET /v1/code/sessions/cse_…  →  response_shape.external_metadata.pending_actions
+[{"tool_name": "AskUserQuestion", "display_tool_name": "Question",
+  "action_description": "Review scope", "input": {…l'input complet…},
+  "tool_use_id": "toolu_…", "request_id": "",
+  "suppressed_request_id": "6cd1dcec-…"}]
+```
+
+- Pour une question ou un plan, `request_id` est vide et l'identifiant est dans
+  `suppressed_request_id` : il sert aux notifications mobiles, où l'on ne peut
+  pas répondre d'un bouton (le client de claude prend l'un ou l'autre). Les
+  `permission_suggestions` sont dans `requires_action_details_list`.
+- `tool_name` en `dialog:…` : boîte de dialogue du terminal, pas un outil.
+- **Réponse** (celle que claude.ai envoie) : un événement posté sur
+  `/v1/code/sessions/cse_…/events`, avec l'en-tête
+  `anthropic-client-platform: web_claude_ai` :
+  `{"type":"control_response","response":{"subtype":"success","request_id":"6cd1dcec-…","response":{"behavior":"allow","updatedInput":{…,"answers":{"<question>":"<réponse>"}}}}}`.
+  Le terminal ferme sa boîte de dialogue (`control_cancel_request` dans les
+  événements) et reprend : `tool_result` « User answered Claude's questions… »
+  (« Your questions have been answered… » selon la version).
+- Essai : vrai `claude --model haiku --remote-control` dans un pseudo-terminal,
+  question posée, réponse « Blue » cliquée dans claude-hub : reçue, Claude a
+  répondu « BLUE ». Le `claude` de test ne doit pas hériter des variables
+  `CLAUDE*` d'une session Claude Code (sinon pas de transcription ni de fichier
+  `~/.claude/sessions/<pid>.json`).
+
+Dans claude-hub : `remote_pending` et `remote_respond` (`cloud.py`) ; la fenêtre
+les lit quand la conversation affichée passe en attente (`load_requests`), et
+les range dans `Hub.pending` avec `remote` (l'id Remote Control) pour que les
+cartes, le volet du plan et l'accueil fonctionnent comme pour `claude -p`.
+
 ## Ce que fait l'extension VS Code (doc officielle)
 
 Pour s'en inspirer (voir aussi la conversation « regarde l'extension claude

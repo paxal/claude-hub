@@ -1,0 +1,265 @@
+"""Commandes « ! » de la saisie, comme le mode bash du terminal de Claude Code.
+
+claude -p ne connaît pas ce mode (il transmettrait le texte tel quel) : claude-hub
+lance la commande lui-même, dans le dossier de la conversation et sur son hôte, et
+l'affiche dans le fil. Comme dans le terminal, Claude ne répond pas tout de suite :
+la commande et sa sortie partent avec le message suivant, dans les balises que
+Claude Code enregistre pour elles (<bash-input>, <bash-stdout>, <bash-stderr>).
+"""
+import os
+import re
+import shlex
+import signal
+import subprocess
+import threading
+
+from .gtk import GLib, Gtk, Pango
+from .hosts import SSH_OPTS
+from .listrow import BUSY_ICON
+from .render import copy_button
+
+SENT_LIMIT = 30000    # caractères de chaque sortie transmis à Claude (début et fin), comme Claude Code
+SHOWN_LIMIT = 100000  # caractères de sortie affichés dans le fil, comme pour les outils
+OUTPUT_LINES = 15     # au-delà, la sortie défile dans une hauteur fixe…
+OUTPUT_HEIGHT = 300   # … de tant de pixels
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+EXIT = re.compile(r"(?:^|\n)Exit code (-?\d+)$")
+STOPPED = "[commande arrêtée par l'utilisateur]"
+
+
+def shell_command(text):
+    """Commande d'une saisie « ! commande » ("" pour « ! » seul), sinon None."""
+    return text[1:].strip() if text.startswith("!") else None
+
+
+def clean(text):
+    """Sortie lisible : sans codes de couleur ni retours chariot (barres de progression :
+    seul le dernier état de la ligne reste)."""
+    text = ANSI.sub("", text).replace("\r\n", "\n")
+    return "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))
+
+
+def shell_argv(host, cwd, command):
+    """(argv, dossier local) pour lancer command dans cwd sur host, dans un shell de login
+    (comme claude). Sur un hôte distant, un dossier introuvable fait échouer la commande
+    plutôt que de la lancer ailleurs. Le exec final garde le code de retour et évite
+    ~/.bash_logout (souvent un « clear », dont les codes finiraient dans la sortie)."""
+    line = f'{command}\nexec "$BASH" -c "exit $?"'
+    if host == "local":
+        return ["bash", "-lc", line], cwd
+    line = f"cd {shlex.quote(cwd)} || exit 1\n{line}"
+    return ["ssh", *SSH_OPTS, host, "bash -lc " + shlex.quote(line)], None
+
+
+class Capture:
+    """Ce qu'on garde d'une sortie pour Claude : son début et sa fin dans la limite
+    SENT_LIMIT, et sa longueur totale (mémoire bornée, même pour une sortie énorme)."""
+
+    def __init__(self, limit=SENT_LIMIT):
+        self.head, self.tail, self.total, self.half = "", "", 0, limit // 2
+
+    def add(self, chunk):
+        self.total += len(chunk)
+        room = self.half - len(self.head)
+        if room > 0:
+            self.head, chunk = self.head + chunk[:room], chunk[room:]
+        if chunk:
+            self.tail = (self.tail + chunk)[-self.half:]
+
+    def text(self):
+        cut = self.total - len(self.head) - len(self.tail)
+        if cut <= 0:
+            return self.head + self.tail
+        return f"{self.head}\n[… {cut} caractères coupés …]\n{self.tail}"
+
+
+def claude_blocks(command, stdout, stderr):
+    """Blocs de texte d'une commande pour le message de Claude, tels que le terminal les
+    enregistre (commande, puis sorties sans retour à la ligne final)."""
+    return [{"type": "text", "text": f"<bash-input>{command}</bash-input>"},
+            {"type": "text", "text": f"<bash-stdout>{stdout.rstrip(chr(10))}</bash-stdout>"
+                                     f"<bash-stderr>{stderr.rstrip(chr(10))}</bash-stderr>"}]
+
+
+class ShellBlock(Gtk.Box):
+    """Commande « ! » dans le fil : la commande, sa sortie et son code de retour.
+
+    Lancée d'ici (start), sa sortie s'affiche au fil de l'eau ; tant qu'elle n'est pas
+    partie avec un message, elle se retire du fil (et n'est pas envoyée). Lue dans
+    l'historique (from_item), elle s'affiche telle quelle.
+    """
+
+    def __init__(self, command, output="", code=None, stopped=False, done=True):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4, css_classes=["shell-block"])
+        self.command, self.code, self.proc = command, code, None
+        self.done, self.stopped, self.sent = done, stopped, False
+        self.out, self.err = Capture(), Capture()
+        self.shown, self.flushing, self.on_done = output, 0, None
+
+        head = Gtk.Box(spacing=8)
+        head.append(Gtk.Label(label="!", css_classes=["shell-mark"]))
+        head.append(Gtk.Label(label=command or "(commande inconnue)", xalign=0, hexpand=True,
+                              ellipsize=Pango.EllipsizeMode.END, tooltip_text=command or None,
+                              css_classes=["shell-cmd"]))
+        self.indicator = Gtk.Box(valign=Gtk.Align.CENTER, spacing=4)
+        head.append(self.indicator)
+        self.note = Gtk.Label(css_classes=["sid"], visible=False)
+        head.append(self.note)
+        self.stop_btn = Gtk.Button(icon_name="media-playback-stop-symbolic", visible=False,
+                                   css_classes=["flat", "copy"], tooltip_text="Arrêter la commande")
+        self.stop_btn.connect("clicked", lambda _b: self.stop())
+        head.append(self.stop_btn)
+        self.copy_box = Gtk.Box()
+        head.append(self.copy_box)
+        self.drop_btn = Gtk.Button(icon_name="window-close-symbolic", visible=False,
+                                   css_classes=["flat", "copy"],
+                                   tooltip_text="Retirer la commande : elle ne sera pas envoyée à Claude")
+        head.append(self.drop_btn)
+        self.append(head)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["codeblock"])
+        # Lignes longues renvoyées à la ligne (comme dans un terminal) ; une sortie courte
+        # prend sa hauteur, une longue défile (hauteur fixe : pas de mesure du texte, faussée
+        # tant que le bloc n'est pas dans la fenêtre).
+        self.label = Gtk.Label(xalign=0, yalign=0, selectable=True, wrap=True,
+                               wrap_mode=Pango.WrapMode.WORD_CHAR, css_classes=["code"])
+        self.scroll = Gtk.ScrolledWindow(child=self.label, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.scroll.get_vadjustment().connect("changed", self.follow)
+        box.append(self.scroll)
+        self.append(box)
+        self.show_output()
+        self.show_state()
+
+    @classmethod
+    def from_item(cls, item):
+        """Bloc d'une commande lue dans l'historique ({"command", "stdout", "stderr"})."""
+        out, err = clean(item.get("stdout") or "").rstrip("\n"), clean(item.get("stderr") or "")
+        code, stopped = None, err.endswith(STOPPED)
+        m = EXIT.search(err)  # code de retour ou arrêt, ajoutés par claude-hub à la fin des erreurs
+        if m:
+            code, err = int(m.group(1)), err[:m.start()]
+        elif stopped:
+            err = err[:-len(STOPPED)]
+        err = err.rstrip("\n")
+        return cls(item.get("command") or "", "\n".join(t for t in (out, err) if t), code, stopped)
+
+    # -- exécution --
+    def start(self, argv, cwd, on_done):
+        """Lance la commande (bloc créé avec done=False) ; on_done(bloc) à la fin. OSError si
+        elle ne peut pas partir."""
+        self.on_done = on_done
+        self.proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, errors="replace",
+                                     start_new_session=True)  # Arrêter tue aussi ses enfants
+        err = threading.Thread(target=self.read, args=(self.proc.stderr, self.err), daemon=True)
+        err.start()
+
+        def run():
+            self.read(self.proc.stdout, self.out)
+            err.join()
+            GLib.idle_add(self.finish, self.proc.wait())
+        threading.Thread(target=run, daemon=True).start()
+
+    def read(self, stream, capture):
+        for line in stream:
+            GLib.idle_add(self.add, capture, clean(line))
+
+    def add(self, capture, text):
+        capture.add(text)
+        if len(self.shown) < SHOWN_LIMIT:
+            self.shown += text
+            if len(self.shown) >= SHOWN_LIMIT:
+                self.shown = self.shown[:SHOWN_LIMIT] + "\n[… affichage limité, la suite n'est pas montrée …]"
+            if not self.flushing:  # un affichage tous les dixièmes de seconde, pas par ligne
+                self.flushing = GLib.timeout_add(100, self.flush)
+
+    def flush(self):
+        self.flushing = 0
+        self.show_output()
+        return False
+
+    def stop(self):
+        if self.done or not self.proc:
+            return
+        self.stopped = True
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    def finish(self, code):
+        self.done, self.code = True, code
+        if self.flushing:
+            GLib.source_remove(self.flushing)
+            self.flushing = 0
+        self.show_output()
+        self.show_state()
+        if self.on_done:
+            self.on_done(self)
+
+    def fail(self, message):
+        """La commande n'a pas pu partir : le bloc garde le message, sans rien à envoyer."""
+        self.shown, self.code, self.done = message, None, True
+        self.show_output()
+        self.show_state()
+        self.indicator.append(Gtk.Image(icon_name="dialog-error-symbolic", css_classes=["tool-failed"],
+                                        tooltip_text="Commande non lancée"))
+
+    # -- envoi à Claude --
+    def set_pending(self, on_drop):
+        """Commande en attente du prochain message ; on_drop(bloc) : bouton « retirer »."""
+        self.drop_btn.connect("clicked", lambda _b: on_drop(self))
+        self.drop_btn.set_visible(True)
+        self.show_state()
+
+    def mark_sent(self):
+        self.sent = True
+        self.drop_btn.set_visible(False)
+        self.show_state()
+
+    def blocks(self):
+        """Blocs de la commande pour le message de Claude."""
+        err = self.err.text().rstrip("\n")
+        if self.stopped:
+            err += ("\n" if err else "") + STOPPED
+        elif self.code:
+            err += ("\n" if err else "") + f"Exit code {self.code}"
+        return claude_blocks(self.command, self.out.text(), err)
+
+    # -- affichage --
+    def show_output(self):
+        text = self.shown.rstrip("\n")
+        self.label.set_text(text or ("…" if not self.done else "(aucune sortie)"))
+        self.label.set_css_classes(["code"] if text else ["code", "dim"])
+        tall = text.count("\n") >= OUTPUT_LINES
+        self.scroll.set_policy(Gtk.PolicyType.NEVER,
+                               Gtk.PolicyType.AUTOMATIC if tall else Gtk.PolicyType.NEVER)
+        self.scroll.set_min_content_height(OUTPUT_HEIGHT if tall else -1)
+
+    def show_state(self):
+        ind = self.indicator
+        while (child := ind.get_first_child()):
+            ind.remove(child)
+        running = not self.done
+        self.stop_btn.set_visible(running)
+        if running:  # roue fixe : une animation dans le fil coûte du CPU (rendu cairo)
+            ind.append(Gtk.Image(icon_name=BUSY_ICON, css_classes=["tool-running"], tooltip_text="En cours"))
+        elif self.stopped:
+            ind.append(Gtk.Label(label="arrêtée", css_classes=["tool-error", "sid"]))
+        elif self.code:
+            ind.append(Gtk.Image(icon_name="dialog-error-symbolic", css_classes=["tool-failed"]))
+            ind.append(Gtk.Label(label=f"code {self.code}", css_classes=["tool-error", "sid"]))
+        elif self.code == 0:
+            ind.append(Gtk.Image(icon_name="object-select-symbolic", css_classes=["tool-ok"],
+                                 tooltip_text="Terminée"))
+        if self.done and self.copy_box.get_first_child() is None:
+            text = f"$ {self.command}\n{self.shown.rstrip(chr(10))}".rstrip("\n")
+            self.copy_box.append(copy_button(text, "Copier la commande et sa sortie"))
+        pending = self.drop_btn.get_visible()
+        self.note.set_visible(pending)
+        self.note.set_text("partira avec ton prochain message")
+
+    def follow(self, adj):
+        """Pendant l'exécution, la sortie défile avec ce qui arrive."""
+        if not self.done:
+            adj.set_value(adj.get_upper() - adj.get_page_size())

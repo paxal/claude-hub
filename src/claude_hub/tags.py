@@ -13,7 +13,8 @@ from collections import Counter
 from .hosts import CONFIG
 
 TAGS_FILE = CONFIG / "tags.json"
-VOLATILE = ("live", "search", "new", "host")  # champs de session à ne pas garder
+VOLATILE = ("live", "live_since", "workflows", "workflows_waiting", "search", "new",
+            "host")  # champs de session à ne pas garder
 RE_TOKEN = re.compile(r'dir:"[^"]*"|\S+')
 
 

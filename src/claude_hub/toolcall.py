@@ -9,7 +9,7 @@ import re
 
 from .gtk import Gtk, Pango, in_thread
 from .changes import diff_block, input_hunks
-from .render import code_block, copy_button, tool_detail, tool_line
+from .render import code_block, copy_button, esc, make_label, tool_detail, tool_line
 from .listrow import BUSY_ICON
 from .todos import TODO_TOOLS, todo_detail
 
@@ -29,6 +29,27 @@ def result_text(content):
     return "\n".join(parts)
 
 
+def questions_box(inp):
+    """Questions d'un AskUserQuestion, en lecture seule : intitulé, question, puis les
+    choix et leur description. On répond à une question en attente par sa carte
+    (RequestCard), ou dans le terminal si son Claude n'est pas relié à Remote Control."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, css_classes=["questions"])
+    for q in inp.get("questions") or []:
+        if not isinstance(q, dict):
+            continue
+        head = f"<b>{esc(str(q['header']))}</b> · " if q.get("header") else ""
+        box.append(make_label(head + esc(str(q.get("question") or "")), "card-question"))
+        mark = "☐" if q.get("multiSelect") else "○"
+        for opt in q.get("options") or []:
+            opt = opt if isinstance(opt, dict) else {"label": str(opt)}
+            box.append(make_label(f"{mark} {esc(str(opt.get('label') or ''))}", "question-option"))
+            if opt.get("description"):
+                desc = make_label(esc(str(opt["description"])), "sid")
+                desc.set_margin_start(22)
+                box.append(desc)
+    return box if box.get_first_child() else None
+
+
 class ToolCall(Gtk.Box):
     """Ligne d'appel d'outil dépliable ; loader : fonction (appelée dans un thread) qui
     renvoie la sortie {"found", "text", "error", "length"}, None si elle n'arrive qu'en direct."""
@@ -36,6 +57,7 @@ class ToolCall(Gtk.Box):
     def __init__(self, item, loader=None, live=False):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["toolcall"])
         self.loader, self.loaded, self.output = loader, False, None
+        self.name = item.get("name")
         # Un texte sur plusieurs lignes est mal mesuré dans l'en-tête d'un Gtk.Expander (il
         # déborde sur la ligne suivante) : une seule ligne, tronquée, complète en info-bulle.
         self.line = tool_line(item)
@@ -48,6 +70,9 @@ class ToolCall(Gtk.Box):
         cmd = inp.get("command") if item.get("name") == "Bash" else None
         if isinstance(cmd, str) and (len(cmd) > 60 or "\n" in cmd.strip()):  # coupée sur la ligne
             self.body.append(code_block(cmd.strip(), "bash"))
+        questions = questions_box(inp) if self.name == "AskUserQuestion" else None
+        if questions:
+            self.body.append(questions)
         # Edit, MultiEdit, Write : leur diff, avant la sortie (calculé au premier dépliage)
         self.edit = (item.get("name"), inp) if item.get("name") in ("Edit", "MultiEdit", "Write") else None
         self.state = Gtk.Label(label="Pas encore de sortie.", xalign=0, css_classes=["notice"])
@@ -71,6 +96,9 @@ class ToolCall(Gtk.Box):
             return
         if not res.get("found"):
             self.loaded = False  # outil en cours : on réessaiera au prochain dépliage
+            if self.name == "AskUserQuestion":
+                return self.state.set_text("Pas encore de réponse (question en attente, "
+                                           "ou interrompue).")
             return self.state.set_text("Pas encore de sortie (outil en cours ou interrompu).")
         self.show(res.get("text") or "", bool(res.get("error")), res.get("length") or 0)
 
