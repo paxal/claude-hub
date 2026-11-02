@@ -73,16 +73,58 @@ function liveIds() {
 }
 const msOf = v => typeof v === "number" ? v : null;  // date (ms) du fichier de session
 
+// Ligne « user » de la conversation principale (pas d'un sous-agent), null sinon.
+function userRecord(line) {
+  const r = parse(line);
+  return r && typeof r === "object" && r.type === "user" && !r.isSidechain ? r : null;
+}
+const isDict = v => !!v && typeof v === "object" && !Array.isArray(v);
+// Shell passé en arrière-plan ou arrêté d'après une ligne : ["start", id, appel Bash,
+// commande], ["stop", id] ou null ; et la dernière commande « ! » tapée. Arrière-plan :
+// run_in_background, délai dépassé, Ctrl+B (backgroundTaskId), ou commande « ! » renvoyée
+// en arrière-plan. Arrêt : résultat de TaskStop (ou de l'ancien KillShell), qui n'écrit
+// pas de <task-notification>.
+function shellEvent(line, lastInput) {
+  if (!(line.includes('"backgroundTaskId"') || line.includes("<bash-") || line.includes("Successfully")))
+    return [null, lastInput];
+  const r = userRecord(line);
+  if (!r) return [null, lastInput];
+  const res = r.toolUseResult, content = (r.message || {}).content;
+  if (isDict(res) && res.backgroundTaskId) {
+    const b = (Array.isArray(content) ? content : []).find(b => isDict(b) && b.type === "tool_result");
+    return [["start", String(res.backgroundTaskId), b ? b.tool_use_id || null : null, null], lastInput];
+  }
+  if (isDict(res) && String(res.message || "").startsWith("Successfully")) {
+    const tid = res.task_id || res.shell_id;
+    return [tid ? ["stop", String(tid)] : null, lastInput];
+  }
+  const t = textOf(content);
+  let m = /<bash-input>([\s\S]*?)<\/bash-input>/.exec(t);
+  if (m) lastInput = m[1].trim();
+  m = /<bash-stdout>Command was manually backgrounded by user with ID: (\w+)/.exec(t);
+  return [m ? ["start", m[1], null, lastInput] : null, lastInput];
+}
+
 // Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
 // lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
-// plus ancien est mort avec son processus) et pas encore notifiés comme finis, et lignes
-// écrites depuis la fin du dernier tour de Claude (null si aucun tour n'est fini).
+// plus ancien est mort avec son processus) et pas encore notifiés comme finis, lignes
+// écrites depuis la fin du dernier tour de Claude (null si aucun tour n'est fini), et
+// shells passés en arrière-plan depuis started, ni notifiés comme finis ni arrêtés
+// ({id, tool : appel Bash, command : commande « ! », start : epoch}).
 function scanMain(p, started) {
-  let bridge = null, tail = null;
-  const launched = new Map(), ended = new Set();
+  let bridge = null, tail = null, lastInput = null;
+  const launched = new Map(), ended = new Set(), shells = [];
   for (const line of lines(p)) {
     if (!line) continue;
     if (line.includes('"bridge-session"')) { const r = parse(line); if (r && r.bridgeSessionId) bridge = r.bridgeSessionId; }
+    let ev;
+    [ev, lastInput] = shellEvent(line, lastInput);
+    if (ev && ev[0] === "stop") ended.add(ev[1]);
+    else if (ev) {
+      const t = msgTime(line);
+      if (started === null || t === null || t * 1000 >= started)
+        shells.push({id: ev[1], tool: ev[2], command: ev[3], start: t});
+    }
     if (line.includes('"local_workflow"')) {
       const r = parse(line), res = r && r.toolUseResult;
       if (r && r.type === "user" && !r.isSidechain && res && typeof res === "object" && !Array.isArray(res)
@@ -96,7 +138,62 @@ function scanMain(p, started) {
     if (line.includes('"subtype":"turn_duration"')) tail = [];
     else if (tail !== null) tail.push(line);
   }
-  return {bridge, pending: [...launched].filter(([tid]) => !ended.has(tid)).map(([, w]) => w), tail};
+  return {bridge, pending: [...launched].filter(([tid]) => !ended.has(tid)).map(([, w]) => w), tail,
+          shells: shells.filter(sh => !ended.has(sh.id))};
+}
+// Ids des tâches dont la sortie (…/tasks/<id>.output) est ouverte par un descendant du
+// processus claude pid : ses commandes Bash qui tournent, au premier plan comme en
+// arrière-plan. null si /proc ne permet pas de le savoir (macOS…).
+function taskOutputs(pid) {
+  const root = Number(pid);
+  if (!Number.isInteger(root)) return null;
+  const out = new Set(), todo = [root], seen = new Set();
+  while (todo.length && seen.size < 1000) {
+    const p = todo.pop();
+    if (seen.has(p)) continue;
+    seen.add(p);
+    try {
+      for (const t of fs.readdirSync(`/proc/${p}/task`))
+        for (const c of fs.readFileSync(`/proc/${p}/task/${t}/children`, "utf8").split(/\s+/))
+          if (c) todo.push(Number(c));
+    } catch (e) {
+      if (p === root) return null;  // pas de /proc, ou noyau sans la liste des fils
+    }
+    for (const fd of p !== root ? ["1", "2"] : []) {
+      let link;
+      try { link = fs.readlinkSync(`/proc/${p}/fd/${fd}`); } catch (e) { continue; }
+      const name = path.basename(link);
+      if (path.basename(path.dirname(link)) === "tasks" && name.endsWith(".output"))
+        out.add(name.slice(0, -".output".length));
+    }
+  }
+  return out;
+}
+// Description et commande des appels Bash qui ont lancé les shells (seconde passe,
+// faite seulement quand un shell tourne).
+function shellInputs(p, shells) {
+  const want = new Map(shells.filter(sh => sh.tool).map(sh => [sh.tool, sh]));
+  if (!want.size) return;
+  for (const line of lines(p)) {
+    if (!line.includes('"tool_use"') || ![...want.keys()].some(t => line.includes(t))) continue;
+    const r = parse(line), content = r && isDict(r) && isDict(r.message) ? r.message.content : null;
+    for (const b of Array.isArray(content) ? content : []) {
+      if (!isDict(b) || b.type !== "tool_use" || !want.has(b.id)) continue;
+      const inp = isDict(b.input) ? b.input : {}, sh = want.get(b.id);
+      sh.description = typeof inp.description === "string" ? inp.description : "";
+      if (typeof inp.command === "string") sh.command = inp.command;
+    }
+  }
+}
+// Shells en arrière-plan qui tournent encore : ceux de la transcription dont la sortie
+// est encore ouverte (un shell arrêté depuis le terminal ne laisse aucune trace dans la
+// transcription), ou tous si /proc ne le dit pas. {id, description, command, start}.
+function runningShells(p, shells, pid) {
+  const alive = shells.length ? taskOutputs(pid) : null;
+  shells = shells.filter(sh => alive === null || alive.has(sh.id));
+  shellInputs(p, shells);
+  return shells.map(sh => ({id: sh.id, description: sh.description || "", command: sh.command || "",
+                            start: sh.start}));
 }
 // Vrai si la ligne montre Claude au travail : sa réponse, un résultat d'outil, ou un
 // message qui lance un tour (pas une commande locale comme /workflows).
@@ -610,10 +707,12 @@ if (a[0] === "list") {
   out = {home: os.homedir(), sessions};
 } else if (a[0] === "stat") {
   const p = find(a[1]), sess = liveSessions()[a[1]] || null;
-  const scan = p ? scanMain(p, msOf((sess || {}).startedAt)) : {bridge: null, pending: [], tail: null};
+  const scan = p ? scanMain(p, msOf((sess || {}).startedAt)) : {bridge: null, pending: [], tail: null, shells: []};
   const workflows = sess ? scan.pending.map(w => workflowProgress(w, p)) : [];
   out = {size: p ? fs.statSync(p).size : 0, live: sess ? sess.status || "idle" : null, bridge: scan.bridge,
          since: sess ? msOf(sess.statusUpdatedAt) : null, workflows,
+         // shells en arrière-plan (« 1 shell » du terminal)
+         shells: sess ? runningShells(p, scan.shells, sess.pid) : [],
          // Claude a fini son tour et attend la fin des workflows
          waiting: workflows.length > 0 && scan.tail !== null && !scan.tail.some(startsTurn)};
 } else if (a[0] === "search") {

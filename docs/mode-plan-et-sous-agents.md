@@ -206,6 +206,44 @@ sont morts avec leur processus) et pas encore notifiés, leur avancement, et
 `waiting` (Claude a fini son tour : aucune ligne `assistant`, résultat d'outil ou
 message qui lance un tour depuis le dernier `turn_duration`).
 
+## Shells en arrière-plan (observé, claude 2.1.304 à 2.1.316)
+
+Le « 1 shell » du terminal. Le fichier de session (`~/.claude/sessions/<pid>.json`)
+n'en dit rien : il passe à `idle` à la fin du tour, shell ou pas.
+
+- **Lancement**, dans la transcription (lignes `user` de la conversation principale) :
+  - outil Bash avec `run_in_background`, commande passée en arrière-plan après son
+    délai (`timedOutAfterMs`) ou par Ctrl+B (`backgroundedByUser`) : `tool_result`
+    avec `toolUseResult.backgroundTaskId` ; la description et la commande sont dans
+    le `tool_use` correspondant ;
+  - commande « ! » du terminal renvoyée en arrière-plan : message
+    `<bash-stdout>Command was manually backgrounded by user with ID: <id>.…`, la
+    commande étant dans le `<bash-input>` qui précède.
+- **Fin** : `<task-notification>` avec ce `<task-id>` (`completed`, `failed`,
+  `stopped`), écrite dès la fin (`queue-operation`), même si Claude ne travaille
+  pas. Un claude relancé écrit `stopped` pour les shells de la session précédente.
+- **Arrêt par Claude** (`TaskStop`, autrefois `KillShell`) : pas de notification,
+  seulement le résultat de l'outil, `toolUseResult: {"message":"Successfully stopped
+  task: …","task_id":…,"task_type":"local_bash",…}`.
+- **Arrêt depuis l'interface du terminal** : aucune trace (la notification d'un
+  claude relancé le dit : « stopped via the UI … leave no transcript marker »).
+- **Processus** : chaque commande Bash, au premier plan comme en arrière-plan, est
+  un `bash -c` fils direct du processus claude, sa sortie (fd 1 et 2) ouverte sur
+  `/tmp/claude-<uid>/<projet>/<session>/tasks/<id>.output`.
+
+Dans claude-hub, la commande `stat` renvoie `shells` : les shells lancés depuis le
+démarrage du processus claude, ni notifiés ni arrêtés, et (sous Linux) dont la
+sortie est encore ouverte par un descendant du processus (`/proc/<pid>/task/*/children`,
+`/proc/<fils>/fd/1`) ; sans `/proc`, la transcription seule.
+
+Avec `claude -p` (stream-json), le flux le dit directement :
+`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":…,"task_type":"local_bash","description":…}]}`
+à chaque changement (liste vide à la fin), plus `task_started`
+(`task_type: "local_bash"`, `is_backgrounded`), `task_updated` et
+`task_notification`, comme pour un sous-agent. claude-hub garde l'entrée de claude
+ouverte jusqu'à la notification (la tâche compte dans `tasks`), puis claude relance
+un tour pour en rendre compte.
+
 ## Demandes d'un terminal relié à Remote Control (vérifié, claude 2.1.312)
 
 Un `claude` interactif relié à Remote Control publie chaque demande

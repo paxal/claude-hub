@@ -5,6 +5,8 @@ lance la commande lui-même, dans le dossier de la conversation et sur son hôte
 l'affiche dans le fil. Comme dans le terminal, Claude ne répond pas tout de suite :
 la commande et sa sortie partent avec le message suivant, dans les balises que
 Claude Code enregistre pour elles (<bash-input>, <bash-stdout>, <bash-stderr>).
+
+Aussi : textes de la pastille de l'en-tête pour les shells qui tournent en arrière-plan.
 """
 import os
 import re
@@ -12,6 +14,7 @@ import shlex
 import signal
 import subprocess
 import threading
+import time
 
 from .gtk import GLib, Gtk, Pango
 from .hosts import SSH_OPTS
@@ -30,6 +33,41 @@ STOPPED = "[commande arrêtée par l'utilisateur]"
 def shell_command(text):
     """Commande d'une saisie « ! commande » ("" pour « ! » seul), sinon None."""
     return text[1:].strip() if text.startswith("!") else None
+
+
+def background_label(shells):
+    """Pastille de l'en-tête pour les shells qui tournent en arrière-plan (« 1 shell en
+    cours », le « 1 shell » du terminal) ; "" s'il n'y en a pas."""
+    n = len(shells or ())
+    return f"{n} shell{'s' if n > 1 else ''} en cours" if n else ""
+
+
+def since_text(seconds):
+    """Durée à la minute près, pour une info-bulle qui ne change pas à chaque relevé."""
+    minutes = max(0, int(seconds)) // 60
+    if minutes < 1:
+        return "moins d'une minute"
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d}"
+
+
+def background_tooltip(shells, now=None, limit=8):
+    """Info-bulle de la pastille : par shell, sa description (ou sa commande) et depuis
+    quand il tourne, puis la première ligne de sa commande."""
+    now = time.time() if now is None else now
+    lines = []
+    for sh in (shells or ())[:limit]:
+        desc = " ".join(str(sh.get("description") or "").split())
+        cmd = " ".join(str(sh.get("command") or "").strip().split("\n")[0].split())
+        what = desc or cmd or str(sh.get("id") or "shell")
+        start = sh.get("start")
+        if isinstance(start, (int, float)) and not isinstance(start, bool):
+            what += f" · depuis {since_text(now - start)}"
+        lines.append(what[:160])
+        if desc and cmd:
+            lines.append(f"  $ {cmd[:120]}{'…' if len(cmd) > 120 else ''}")
+    if len(shells or ()) > limit:
+        lines.append(f"… et {len(shells) - limit} autres")
+    return "\n".join(lines)
 
 
 def clean(text):

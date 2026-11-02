@@ -231,13 +231,54 @@ def cmd_list():
     print(json.dumps({"home": str(Path.home()), "sessions": res}))
 
 TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
+BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
+USER_BACKGROUNDED = re.compile(r"<bash-stdout>Command was manually backgrounded by user with ID: (\w+)")
+
+def user_record(line):
+    """Ligne « user » de la conversation principale (pas d'un sous-agent), None sinon."""
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return None
+    return r if isinstance(r, dict) and r.get("type") == "user" and not r.get("isSidechain") else None
+
+def shell_event(line, last_input):
+    """Shell passé en arrière-plan ou arrêté d'après une ligne : (« start », id, appel Bash,
+    commande), (« stop », id, None, None) ou None ; et la dernière commande « ! » tapée.
+    Arrière-plan : run_in_background, délai dépassé, Ctrl+B (backgroundTaskId), ou commande
+    « ! » renvoyée en arrière-plan. Arrêt : résultat de TaskStop (ou de l'ancien KillShell),
+    qui n'écrit pas de <task-notification>."""
+    if not ('"backgroundTaskId"' in line or "<bash-" in line or "Successfully" in line):
+        return None, last_input
+    r = user_record(line)
+    if r is None:
+        return None, last_input
+    res, content = r.get("toolUseResult"), (r.get("message") or {}).get("content")
+    if isinstance(res, dict) and res.get("backgroundTaskId"):
+        tool = None
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                tool = b.get("tool_use_id")
+                break
+        return ("start", str(res["backgroundTaskId"]), tool, None), last_input
+    if isinstance(res, dict) and str(res.get("message") or "").startswith("Successfully"):
+        tid = res.get("task_id") or res.get("shell_id")
+        return (("stop", str(tid), None, None) if tid else None), last_input
+    t = text_of(content)
+    m = BASH_INPUT.search(t)
+    if m:
+        last_input = m.group(1).strip()
+    m = USER_BACKGROUNDED.search(t)
+    return (("start", m.group(1), None, last_input) if m else None), last_input
 
 def scan_main(p, started):
     """Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
     lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
-    plus ancien est mort avec son processus) et pas encore notifiés comme finis, et lignes
-    écrites depuis la fin du dernier tour de Claude (None si aucun tour n'est fini)."""
-    bridge, launched, ended, tail = None, {}, set(), None
+    plus ancien est mort avec son processus) et pas encore notifiés comme finis, lignes
+    écrites depuis la fin du dernier tour de Claude (None si aucun tour n'est fini), et
+    shells passés en arrière-plan depuis started, ni notifiés comme finis ni arrêtés
+    ({"id", "tool" : appel Bash, "command" : commande « ! », "start" : epoch})."""
+    bridge, launched, ended, tail, shells, last_input = None, {}, set(), None, [], None
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
             if '"bridge-session"' in line:
@@ -245,6 +286,13 @@ def scan_main(p, started):
                     bridge = json.loads(line).get("bridgeSessionId") or bridge
                 except (ValueError, AttributeError):
                     pass
+            ev, last_input = shell_event(line, last_input)
+            if ev and ev[0] == "stop":
+                ended.add(ev[1])
+            elif ev:
+                t = msg_time(line)
+                if started is None or t is None or t * 1000 >= started:
+                    shells.append({"id": ev[1], "tool": ev[2], "command": ev[3], "start": t})
             if '"local_workflow"' in line:
                 try:
                     r = json.loads(line)
@@ -264,7 +312,71 @@ def scan_main(p, started):
             elif tail is not None:
                 tail.append(line)
     pending = [w for tid, w in launched.items() if tid not in ended]
-    return bridge, pending, tail
+    return bridge, pending, tail, [sh for sh in shells if sh["id"] not in ended]
+
+def task_outputs(pid):
+    """Ids des tâches dont la sortie (…/tasks/<id>.output) est ouverte par un descendant du
+    processus claude pid : ses commandes Bash qui tournent, au premier plan comme en
+    arrière-plan. None si /proc ne permet pas de le savoir (macOS…)."""
+    try:
+        root = int(pid)
+    except (TypeError, ValueError):
+        return None
+    out, todo, seen = set(), [root], set()
+    while todo and len(seen) < 1000:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            for t in os.listdir("/proc/%d/task" % p):
+                with open("/proc/%d/task/%s/children" % (p, t)) as f:
+                    todo.extend(int(c) for c in f.read().split())
+        except (OSError, ValueError):
+            if p == root:  # pas de /proc, ou noyau sans la liste des fils
+                return None
+        for fd in (("1", "2") if p != root else ()):
+            try:
+                d, name = os.path.split(os.readlink("/proc/%d/fd/%s" % (p, fd)))
+            except OSError:
+                continue
+            if os.path.basename(d) == "tasks" and name.endswith(".output"):
+                out.add(name[:-len(".output")])
+    return out
+
+def shell_inputs(p, shells):
+    """Description et commande des appels Bash qui ont lancé les shells (seconde passe,
+    faite seulement quand un shell tourne)."""
+    want = {}
+    for sh in shells:
+        if sh.get("tool"):
+            want[sh["tool"]] = sh
+    if not want:
+        return
+    with open(str(p), encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"tool_use"' not in line or not any(t in line for t in want):
+                continue
+            try:
+                content = json.loads(line).get("message", {}).get("content")
+            except (ValueError, AttributeError):
+                continue
+            for b in content if isinstance(content, list) else []:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in want:
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    sh = want[b["id"]]
+                    sh["description"] = inp.get("description") if isinstance(inp.get("description"), str) else ""
+                    sh["command"] = inp.get("command") if isinstance(inp.get("command"), str) else sh["command"]
+
+def running_shells(p, shells, pid):
+    """Shells en arrière-plan qui tournent encore : ceux de la transcription dont la sortie
+    est encore ouverte (un shell arrêté depuis le terminal ne laisse aucune trace dans la
+    transcription), ou tous si /proc ne le dit pas. {"id", "description", "command", "start"}."""
+    alive = task_outputs(pid) if shells else None
+    shells = [sh for sh in shells if alive is None or sh["id"] in alive]
+    shell_inputs(p, shells)
+    return [{"id": sh["id"], "description": sh.get("description") or "",
+             "command": sh.get("command") or "", "start": sh["start"]} for sh in shells]
 
 def starts_turn(line):
     """Vrai si la ligne montre Claude au travail : sa réponse, un résultat d'outil, ou un
@@ -319,12 +431,15 @@ def cmd_stat(sid):
     p = find(sid)
     st = p.stat() if p else None
     sess = live_sessions().get(sid)
-    bridge, pending, tail = scan_main(p, ms_of((sess or {}).get("startedAt"))) if p else (None, [], None)
+    bridge, pending, tail, shells = (scan_main(p, ms_of((sess or {}).get("startedAt"))) if p
+                                     else (None, [], None, []))
     workflows = [workflow_progress(w, p) for w in pending] if sess else []
     print(json.dumps({"size": st.st_size if st else 0,
                       "live": (sess.get("status") or "idle") if sess else None, "bridge": bridge,
                       "since": ms_of(sess.get("statusUpdatedAt")) if sess else None,
                       "workflows": workflows,
+                      # shells en arrière-plan (« 1 shell » du terminal)
+                      "shells": running_shells(p, shells, sess.get("pid")) if sess else [],
                       # Claude a fini son tour et attend la fin des workflows
                       "waiting": bool(workflows) and tail is not None
                       and not any(starts_turn(l) for l in tail)}))

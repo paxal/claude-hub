@@ -32,6 +32,7 @@ Transcription : si HOME n'est pas le vrai dossier personnel (tests/piloter.sh
   {"plan": "# Plan…"}                                  validation du plan (ExitPlanMode)
   {"question": "…", "options": ["A", "B"]}             AskUserQuestion
   {"sous_agent": "Explore", "description": "…", "etapes": [{"texte"…}, {"outil"…}]}
+  {"shell": "cargo build", "description": "…", "duree": 5}  Bash en arrière-plan, fini duree s après
   {"erreur": "…"}                                      fin en erreur (is_error)
 """
 import json
@@ -113,6 +114,12 @@ SCENARIOS = {
             {"outil": "Bash", "entree": {"command": f"sleep 1  # étape {i + 1}"}, "resultat": ""},
             {"pause": 1.0})
     ] + [{"texte": "Fini après dix étapes."}],
+    # shell laissé en arrière-plan : pastille « 1 shell en cours », « Claude attend un shell »
+    "shell": [
+        {"pause": 0.3},
+        {"shell": "cargo build --release", "description": "Compilation en mode release", "duree": 6},
+        {"texte": "La compilation tourne en arrière-plan."},
+    ],
 }
 
 RENAMED = "Session renamed to: "
@@ -353,9 +360,39 @@ def play(steps, parent=None):
             out(type="system", subtype="task_notification", task_id=task, tool_use_id=tid, status="completed",
                 summary=summary, usage={"total_tokens": 4000}, session_id=sid)
             tool_result(tid, summary, parent)
+        elif "shell" in st:
+            # Bash en arrière-plan : événements du vrai claude -p (observés, 2.1.312), fin
+            # « duree » secondes plus tard, même après la fin du tour.
+            tid, task = f"toolu_{uuid.uuid4().hex[:20]}", f"b{uuid.uuid4().hex[:8]}"
+            inp = {"command": st["shell"], "description": st.get("description", ""), "run_in_background": True}
+            assistant([{"type": "tool_use", "id": tid, "name": "Bash", "input": inp}], parent)
+            shells[task] = inp["description"]
+            background_tasks()
+            out(type="system", subtype="task_started", task_id=task, tool_use_id=tid,
+                description=inp["description"], is_backgrounded=True, task_type="local_bash", session_id=sid)
+            tool_result(tid, f"Command running in background with ID: {task}.", parent)
+
+            def finish(task=task, tid=tid, duree=st.get("duree", 5)):
+                time.sleep(duree * speed)
+                shells.pop(task, None)
+                out(type="system", subtype="task_updated", task_id=task, patch={"status": "completed"},
+                    session_id=sid)
+                out(type="system", subtype="task_notification", task_id=task, tool_use_id=tid,
+                    status="completed", summary=f"Background command \"{inp['description']}\" completed "
+                                                "(exit code 0)", session_id=sid)
+                background_tasks()
+            threading.Thread(target=finish, daemon=True).start()
         elif "erreur" in st:
             return st["erreur"]
     return None
+
+
+shells = {}  # shells en arrière-plan qui tournent : id -> description
+
+
+def background_tasks():
+    out(type="system", subtype="background_tasks_changed", session_id=sid, tasks=[
+        {"task_id": k, "task_type": "local_bash", "description": d} for k, d in list(shells.items())])
 
 
 def scenario():

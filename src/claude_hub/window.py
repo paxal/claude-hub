@@ -36,7 +36,7 @@ from .agentsview import (AGENT_ID, AgentsPanel, agent_line, agent_state, agents_
 from .toolcall import ToolCall, ToolRun
 from .todos import TodoList, TodoPanel, created_id
 from .rename import RenamePopover, can_rename, rename_session
-from .shell import ShellBlock, shell_argv, shell_command
+from .shell import ShellBlock, background_label, background_tooltip, shell_argv, shell_command
 from .commands import CommandPopover, fetch_commands, match_commands, typed_command
 from .widgets import (
     ChoiceButton, Clamp, count_badge, host_chip, host_icon, host_kind, menu_popover, section_title, set_count,
@@ -357,6 +357,13 @@ class Hub(Gtk.ApplicationWindow):
         self.activity.append(self.spinner)
         self.activity.append(self.activity_label)
         top.append(self.activity)
+        # shells laissés en arrière-plan (« 1 shell » du terminal) : icône fixe, sans animation
+        self.shells_pill = Gtk.Box(spacing=5, css_classes=["pill", "shells"], visible=False,
+                                   valign=Gtk.Align.CENTER)
+        self.shells_pill.append(themed_icon("utilities-terminal-symbolic", "terminal-symbolic"))
+        self.shells_label = Gtk.Label()
+        self.shells_pill.append(self.shells_label)
+        top.append(self.shells_pill)
         top.append(Gtk.Box(hexpand=True))
         buttons = Gtk.Box(spacing=2, valign=Gtk.Align.CENTER)
         self.agents_btn = Gtk.Button(visible=False, css_classes=["flat"])
@@ -2007,6 +2014,7 @@ class Hub(Gtk.ApplicationWindow):
             self.set_live_since(s, res.get("since"))
             s["workflows"] = res.get("workflows") or []  # workflows en arrière-plan pas encore finis
             s["workflows_waiting"] = bool(res.get("waiting"))  # Claude a fini son tour et les attend
+            s["shells"] = res.get("shells") or []  # shells en arrière-plan qui tournent
             self.update_status()
             if res["size"] != self.size and self.size != -1:
                 self.load_history()  # relit aussi les demandes en attente
@@ -2065,6 +2073,28 @@ class Hub(Gtk.ApplicationWindow):
         live = [a for a in (stream.get("live_agents") or {}).values() if a["tool"] not in known]
         return running_agents(files + live, self.agents_alive(s))
 
+    def background_shells(self, s):
+        """Shells en arrière-plan de s qui tournent : annoncés par le flux de son claude -p,
+        sinon relus sur l'hôte (session de terminal, commande « stat »)."""
+        if not s:
+            return []
+        stream = self.streams.get(s["id"], (None, None))[1]
+        if stream is not None:
+            return stream.get("bg_shells") or []
+        return s.get("shells") or []
+
+    def show_background(self, s):
+        """Pastille « 1 shell en cours » de l'en-tête, avec la liste en info-bulle."""
+        shells = self.background_shells(s)
+        self.shells_pill.set_visible(bool(shells))
+        if not shells:
+            return
+        label, tip = background_label(shells), background_tooltip(shells)
+        if self.shells_label.get_text() != label:
+            self.shells_label.set_text(label)
+        if self.shells_pill.get_tooltip_text() != tip:
+            self.shells_pill.set_tooltip_text(tip)
+
     def tick_strip(self):
         text = elapsed_text(time.monotonic() - (self.strip_since or time.monotonic()))
         if self.strip_time.get_text() != text:
@@ -2106,8 +2136,13 @@ class Hub(Gtk.ApplicationWindow):
         agents = self.running_agents(s) if status == "busy" else []
         if status == "busy" and self.proc:
             step, detail, since = stream.get("step") or ("Claude réfléchit", None, None)
+            shells = self.background_shells(s)
             if agents and stream.get("idle"):  # tour fini, claude attend ses sous-agents
                 step = "Claude attend ses sous-agents"
+            elif shells and stream.get("idle"):  # tour fini, claude attend la fin de ses shells
+                step = ("Claude attend un shell" if len(shells) == 1
+                        else f"Claude attend {len(shells)} shells")
+                detail = shells[0].get("description") or shells[0].get("command")
             # Pendant un appel Agent ou l'attente, l'étape du sous-agent dit davantage.
             if agents and (not detail or stream.get("idle") or step in AGENT_STEPS):
                 detail = agent_line(agents[0])
@@ -2120,10 +2155,12 @@ class Hub(Gtk.ApplicationWindow):
                 s.pop("busy_since", None)
             self.show_strip(None)
         self.stop_btn.set_visible(bool(self.proc))
+        self.show_background(s)
 
     def set_live_since(self, s, since):
         """Garde la date (ms, horloge de l'hôte) où la session de s est passée à « busy »,
-        d'après son fichier ~/.claude/sessions ; oublie ses workflows quand elle a fini."""
+        d'après son fichier ~/.claude/sessions ; oublie ses workflows quand elle a fini, et
+        ses shells quand son claude est arrêté (ils meurent avec lui)."""
         if s.get("live") == "busy" and type(since) in (int, float) and since > 0:
             s["live_since"] = since
         else:
@@ -2131,6 +2168,8 @@ class Hub(Gtk.ApplicationWindow):
         if s.get("live") != "busy":
             s.pop("workflows", None)
             s.pop("workflows_waiting", None)
+        if not s.get("live"):
+            s.pop("shells", None)
 
     def busy_start(self, s):
         """Début (time.monotonic) du travail de s dans un terminal : celui que note claude,
@@ -2929,6 +2968,7 @@ class Hub(Gtk.ApplicationWindow):
         self.keep_mode(s["id"], s["mode"])
         self.unsent.pop(s["id"], None)  # envoyée : n'est plus un brouillon
         s["tasks"], s["idle"] = set(), False
+        s.pop("bg_shells", None)
         s["step"] = ("Claude réfléchit", None, time.monotonic())
         s.pop("interrupted", None)
         self.touch(s["id"])
@@ -3010,6 +3050,8 @@ class Hub(Gtk.ApplicationWindow):
             return self.refresh_state(s["id"])
         if t == "system" and ev.get("subtype", "").startswith("task_"):
             return self.on_task(ev, s)
+        if t == "system" and ev.get("subtype") == "background_tasks_changed":
+            return self.on_background_tasks(ev, s)
         if t == "result":  # pour la notification de fin
             s["result"], s["result_error"] = ev.get("result"), bool(ev.get("is_error"))
             # coût de la réponse, et fenêtre de contexte des modèles (pour la jauge de l'en-tête)
@@ -3087,6 +3129,8 @@ class Hub(Gtk.ApplicationWindow):
                         self.append_item(self.item_widget(item, s, live=True), item)
             self.scroll_end()
         elif t == "result":
+            if s.get("tasks"):  # tour fini, claude attend ses tâches de fond : le bandeau le dit
+                self.update_activity()
             cost = ev.get("total_cost_usd")
             cost = f" · {cost_text(cost)}" if isinstance(cost, (int, float)) and cost > 0 else ""
             if s.get("interrupted"):  # error_during_execution attendu : pas une erreur
@@ -3116,6 +3160,7 @@ class Hub(Gtk.ApplicationWindow):
             return
         del self.streams[s["id"]]
         self.pending.pop(s["id"], None)
+        s.pop("bg_shells", None)  # morts avec claude
         self.refresh_state(s["id"])
         self.hub_done[s["id"]] = time.monotonic()
         shown = self.current is not None and self.current["id"] == s["id"]
@@ -3345,11 +3390,12 @@ class Hub(Gtk.ApplicationWindow):
         live = s.setdefault("live_agents", {})  # id de l'appel Agent -> sous-agent vu dans le flux
         if sub == "task_started":
             s["tasks"].add(tid)
-            s["agents_stale"] = True  # nouveau sous-agent : relire la liste
-            if tool:  # pour le bandeau, avant que la liste relue sur l'hôte le connaisse
-                live[tool] = {"id": tid, "tool": tool, "type": ev.get("subagent_type"),
-                              "description": ev.get("description"), "start": time.time(),
-                              "end": time.time(), "last": None}
+            if ev.get("task_type") != "local_bash":  # un shell en arrière-plan n'est pas un sous-agent
+                s["agents_stale"] = True  # nouveau sous-agent : relire la liste
+                if tool:  # pour le bandeau, avant que la liste relue sur l'hôte le connaisse
+                    live[tool] = {"id": tid, "tool": tool, "type": ev.get("subagent_type"),
+                                  "description": ev.get("description"), "start": time.time(),
+                                  "end": time.time(), "last": None}
         elif sub == "task_notification" or (sub == "task_updated" and status not in (None, "running")):
             s["tasks"].discard(tid)
             live.pop(tool, None)
@@ -3364,6 +3410,20 @@ class Hub(Gtk.ApplicationWindow):
         elif block and sub == "task_notification":
             block.finish(ev)
         self.update_activity()
+
+    def on_background_tasks(self, ev, s):
+        """Liste des tâches en arrière-plan que claude -p tient à jour : ses shells
+        (task_type « local_bash ») alimentent la pastille de l'en-tête."""
+        known = {sh["id"]: sh for sh in s.get("bg_shells") or ()}
+        shells = []
+        for task in ev.get("tasks") or ():
+            if isinstance(task, dict) and task.get("task_type") == "local_bash" and task.get("task_id"):
+                tid = str(task["task_id"])
+                shells.append(known.get(tid) or {"id": tid, "description": str(task.get("description") or ""),
+                                                 "command": "", "start": time.time()})
+        s["bg_shells"] = shells
+        if self.current and self.current["id"] == s["id"]:
+            self.update_activity()
 
     # -- sous-agents --
     @staticmethod

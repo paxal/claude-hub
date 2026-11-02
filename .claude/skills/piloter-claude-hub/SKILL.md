@@ -61,7 +61,8 @@ scénario lève une exception).
 
 `FAUX_CLAUDE_SCENARIO` : `simple` (défaut), `long` (texte, code, tableau, outils,
 TodoWrite, Edit), `plan`, `autorisation`, `question`, `sous-agent`, `erreur`, `lent`
-(10 étapes d'une seconde : bandeau, « Arrêter », file d'attente), ou le chemin d'un
+(10 étapes d'une seconde : bandeau, « Arrêter », file d'attente), `shell` (Bash laissé
+en arrière-plan 6 s : pastille « 1 shell en cours »), ou le chemin d'un
 JSON avec ses propres étapes (format en tête de `tests/faux-claude`).
 `FAUX_CLAUDE_VITESSE=0` supprime les pauses, `2` les double.
 

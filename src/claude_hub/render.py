@@ -703,6 +703,7 @@ button.viewsave:hover { opacity: 1; }
 .pill { font-size: 0.9em; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
 .pill.busy { color: #d4860b; background: rgba(227, 162, 59, 0.16); }
 .pill.waiting { color: #e5534b; background: rgba(229, 83, 75, 0.15); }
+.pill.shells { font-weight: normal; background: rgba(128, 128, 128, 0.15); }
 .pill spinner { min-width: 12px; min-height: 12px; }
 /* Contexte rempli (jauge) et coût de la dernière réponse */
 .usage > label, .usage > box > label { opacity: 0.7; }
