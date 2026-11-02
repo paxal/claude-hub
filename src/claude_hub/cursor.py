@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import unicodedata
 from contextlib import closing
 from pathlib import Path
@@ -17,8 +18,11 @@ from .render import esc, tool_detail
 # travail est distant (Remote-SSH). On lit en lecture seule ; on ne peut pas les
 # reprendre telles quelles, mais on peut les continuer dans une session Claude.
 
-CURSOR_DB = (Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-             / "Cursor/User/globalStorage/state.vscdb")
+# Dossier de configuration de Cursor : ~/.config (XDG) sous Linux, ~/Library/Application
+# Support sous macOS (où Cursor ignore XDG_CONFIG_HOME).
+CURSOR_CONFIG = (Path.home() / "Library/Application Support" if sys.platform == "darwin"
+                 else Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")))
+CURSOR_DB = CURSOR_CONFIG / "Cursor/User/globalStorage/state.vscdb"
 CONTEXT_CHARS = 60000
 _ssh_hostnames = {}
 

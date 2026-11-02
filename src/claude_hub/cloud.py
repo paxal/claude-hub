@@ -1,6 +1,8 @@
 """Sessions cloud claude.ai/code."""
 import json
 import re
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -22,12 +24,29 @@ CLOUD_STATES = {"running": "busy", "idle": "idle", "requires_action": "requires_
 HUMAN_PLATFORM = "web_claude_ai"
 
 
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def claude_credentials():
+    """Identifiants OAuth de Claude Code : ~/.claude/.credentials.json, ou sous macOS le
+    même JSON rangé dans le trousseau. La sortie de `security` (le jeton) n'est jamais
+    reprise dans un message d'erreur."""
+    path = Path.home() / ".claude/.credentials.json"
+    if sys.platform != "darwin" or path.exists():
+        return json.loads(path.read_text())
+    r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+                       capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        raise OSError(f"« {KEYCHAIN_SERVICE} » absent du trousseau")
+    return json.loads(r.stdout)
+
+
 def cloud_auth():
     """En-têtes d'authentification de l'API (le jeton n'est jamais affiché)."""
     try:
-        cred = json.loads((Path.home() / ".claude/.credentials.json").read_text())["claudeAiOauth"]
+        cred = claude_credentials()["claudeAiOauth"]
         org = json.loads((Path.home() / ".claude.json").read_text())["oauthAccount"]["organizationUuid"]
-    except (OSError, ValueError, KeyError) as e:
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
         raise RuntimeError(f"identifiants Claude introuvables ({e})")
     return {"Authorization": "Bearer " + cred["accessToken"], "anthropic-version": "2023-06-01",
             "x-organization-uuid": org}

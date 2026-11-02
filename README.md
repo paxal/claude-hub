@@ -23,6 +23,23 @@ lectures de fichiers…) ne changent pas l'ordre.
 - `claude` dans le PATH, en local comme sur les hôtes distants
 - hôtes distants : accès SSH par clé, et `python3` ou `node`
 
+### macOS (non essayé)
+
+Le code prévoit macOS, sans y avoir été lancé : `brew install gtk4 pygobject3`,
+puis `./bin/claude-hub` depuis un terminal (`install.sh` et l'entrée de menu
+sont propres à Linux ; pas encore de paquet `.app`). Différences prises en
+compte :
+
+- le jeton de Claude Code est lu dans le trousseau (service
+  `Claude Code-credentials`, avec `security`) quand `~/.claude/.credentials.json`
+  n'existe pas ;
+- la base de Cursor est cherchée dans `~/Library/Application Support/Cursor/` ;
+- les raccourcis Ctrl+… deviennent Cmd+… (accélérateurs `<Primary>`).
+
+Sans D-Bus, la pastille de l'icône (`launcher.py`) ne s'affiche pas. Un Mac
+utilisé comme hôte SSH reçoit ses commandes par `bash -lc` : `claude` doit être
+dans le PATH de `~/.bash_profile`, pas seulement dans celui de `~/.zprofile`.
+
 ## Lancement et installation
 
 ```sh
@@ -155,6 +172,8 @@ applique la recherche, un second l'enlève ; le clic droit propose de supprimer 
 vue.
 
 ## Clavier
+
+Sous macOS, Cmd remplace Ctrl.
 
 | Touches | Action |
 |---|---|
@@ -555,11 +574,11 @@ d'emploi dans `.claude/skills/piloter-claude-hub/SKILL.md`.
 
 | Module | Rôle |
 |---|---|
-| `gtk.py` | initialisation de GTK 4, `in_thread` |
+| `gtk.py` | initialisation de GTK 4, `in_thread`, modificateur des raccourcis (Ctrl, ou Cmd sous macOS) |
 | `hosts.py` | configuration, hôtes local/SSH, exécution des scripts distants |
 | `remote/helper.py`, `remote/helper.js` | scripts envoyés aux hôtes (`python3 -` ou `node -`) pour lire `~/.claude` ; bibliothèque standard uniquement |
-| `cursor.py` | conversations Cursor (base `state.vscdb`, recherche) |
-| `cloud.py` | sessions claude.ai/code et agents cloud Cursor |
+| `cursor.py` | conversations Cursor (base `state.vscdb`, Linux ou macOS ; recherche) |
+| `cloud.py` | sessions claude.ai/code et agents cloud Cursor ; jeton lu dans `~/.claude` ou le trousseau macOS |
 | `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages, ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
 | `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie |
 | `listrow.py` | lignes de la liste (icône d'état, heure, boutons du survol), séparateurs de jour |

@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .gtk import GLib, GObject, Gdk, Gio, Graphene, Gtk, Pango, in_thread
+from .gtk import PRIMARY_KEY, PRIMARY_MASK, GLib, GObject, Gdk, Gio, Graphene, Gtk, Pango, in_thread
 from .hosts import (
     CLOUD, DEFAULT_LABEL, EFFORTS, HISTORY_LIMIT, model_name, MODE_HELP, MODE_LABELS, MODELS, PERMISSION_MODES, SEARCH_HISTORY_LIMIT, SSH_OPTS,
     load_hosts, load_hosts_with, load_settings, remember_mode, run_helper, save_settings,
@@ -166,8 +166,8 @@ class Hub(Gtk.ApplicationWindow):
         self.chat_paned.set_end_child(self.side)
         paned.set_end_child(self.chat_paned)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.GLOBAL)
-        for accel, action in (("<Control>n", self.new_here),
-                              ("<Control>k", self.show_switcher),
+        for accel, action in (("<Primary>n", self.new_here),
+                              ("<Primary>k", self.show_switcher),
                               ("<Alt>Up", lambda: self.step_row(-1)),
                               ("<Alt>Down", lambda: self.step_row(1)),
                               ("<Alt><Shift>Up", lambda: self.step_row(-1, todo=True)),
@@ -213,7 +213,7 @@ class Hub(Gtk.ApplicationWindow):
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Rafraîchir")
         refresh.connect("clicked", lambda _b: self.refresh_list())
         row.append(refresh)
-        self.new_btn = Gtk.Button(tooltip_text="Nouvelle conversation (Ctrl+N)")
+        self.new_btn = Gtk.Button(tooltip_text=f"Nouvelle conversation ({PRIMARY_KEY}N)")
         inner = Gtk.Box(spacing=6)
         inner.append(Gtk.Image(icon_name="claude-hub-compose-symbolic"))
         inner.append(Gtk.Label(label="Nouvelle"))
@@ -379,7 +379,7 @@ class Hub(Gtk.ApplicationWindow):
         self.edits_timer = 0     # relecture prévue pendant une réponse
         self.new_here_btn = Gtk.Button(icon_name="document-new-symbolic", visible=False,
                                        css_classes=["flat"],
-                                       tooltip_text="Nouvelle conversation dans ce dossier (Ctrl+N)")
+                                       tooltip_text=f"Nouvelle conversation dans ce dossier ({PRIMARY_KEY}N)")
         self.new_here_btn.connect("clicked", lambda _b: self.new_here())
         buttons.append(self.new_here_btn)
         self.tag_btn = Gtk.Button(icon_name=TAG_ICON, visible=False, css_classes=["flat"],
@@ -527,7 +527,7 @@ class Hub(Gtk.ApplicationWindow):
 
         bar = Gtk.Box(spacing=6, css_classes=["composer-bar"])
         clip = Gtk.Button(icon_name="mail-attachment-symbolic", css_classes=["flat"],
-                          tooltip_text="Joindre des images (ou Ctrl+V, ou glisser-déposer)")
+                          tooltip_text=f"Joindre des images (ou {PRIMARY_KEY}V, ou glisser-déposer)")
         clip.connect("clicked", self.pick_images)
         bar.append(clip)
         self.model_dd = self.choice_dd(MODELS, "model", "Modèle (--model)", self.model_label,
@@ -559,7 +559,7 @@ class Hub(Gtk.ApplicationWindow):
         self.add_action(action)
         menu = Gio.Menu()
         for label, mode, accel in (("Envoyer", "auto", "Return"),
-                                   ("Envoyer tout de suite", "now", "<Control>Return"),
+                                   ("Envoyer tout de suite", "now", "<Primary>Return"),
                                    ("Mettre en file d'attente", "queue", "<Alt>Return")):
             item = Gio.MenuItem.new(label, f"win.send::{mode}")
             item.set_attribute_value("accel", GLib.Variant.new_string(accel))
@@ -2522,7 +2522,7 @@ class Hub(Gtk.ApplicationWindow):
         if self.cmd_popover.get_visible() and self.on_command_key(keyval, state):
             return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not state & Gdk.ModifierType.SHIFT_MASK:
-            self.send("now" if state & Gdk.ModifierType.CONTROL_MASK
+            self.send("now" if state & PRIMARY_MASK
                       else "queue" if state & Gdk.ModifierType.ALT_MASK else "auto")
             return True
         if keyval == Gdk.KEY_ISO_Left_Tab:
