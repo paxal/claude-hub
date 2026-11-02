@@ -138,7 +138,7 @@ class TodoPanel(Gtk.Revealer):
         super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
                          transition_duration=200)
         self.title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
-        self.expander = Gtk.Expander(label_widget=self.title, expanded=True)
+        self.expander = Gtk.Expander(label_widget=self.title)
         self.rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
                             css_classes=["todo-list"])
         self.expander.set_child(Gtk.ScrolledWindow(

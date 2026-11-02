@@ -90,7 +90,8 @@ const isCommand = line => line.includes("<local-command-caveat>") || line.includ
 // Ligne qui change l'ordre de la liste : message envoyé, réponse finie ou question
 // posée. Les étapes d'une réponse (outils, réflexion, résultats) n'en font pas partie.
 function isStop(line) {
-  if (line.includes('"isMeta":true') || line.includes('"isSidechain":true')) return false;
+  if (line.includes('"isMeta":true') || line.includes('"isSidechain":true')
+      || line.includes('"isCompactSummary":true')) return false;  // résumé écrit par claude en compactant
   if (line.includes('"type":"user"')) return !line.includes('"type":"tool_result"');
   if (line.includes('"type":"assistant"'))
     return !line.includes('"stop_reason":"tool_use"') || line.includes('"name":"AskUserQuestion"')
@@ -153,7 +154,16 @@ function createdTask(r, creating) {
 // Messages et appels d'outils d'une transcription ; renvoie [items, dernier modèle, son effort].
 // todos : liste complétée par les appels de TodoWrite, TaskCreate et TaskUpdate de toute
 // la transcription, et par les numéros attribués aux tâches créées.
-function transcriptItems(p, sidechain = false, todos = null) {
+// Taille du contexte après un message de Claude : jetons d'entrée (cache compris) et de sortie.
+function usageTokens(u) {
+  if (!u || typeof u !== "object" || Array.isArray(u)) return 0;
+  return ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
+    .reduce((n, k) => n + (Number.isInteger(u[k]) ? u[k] : 0), 0);
+}
+
+// usage : objet dont "context" reçoit la taille du contexte au dernier message de Claude
+// ({tokens, model}), null après une compaction.
+function transcriptItems(p, sidechain = false, todos = null, usage = null) {
   const items = [], creating = new Set();
   let model = null, effort = null;
   for (const line of lines(p)) {
@@ -170,6 +180,11 @@ function transcriptItems(p, sidechain = false, todos = null) {
       continue;
     }
     const c = (r.message || {}).content;
+    if (r.isCompactSummary) {  // conversation compactée : claude repart de ce résumé
+      items.push({role: "compact", text: textOf(c)});
+      if (usage) usage.context = null;
+      continue;
+    }
     if (r.isMeta) {  // message relayé par Remote Control : on garde son texte
       const body = (r.origin || {}).kind === "peer" ? peerBody(textOf(c)) : null;
       if (body) items.push(peerItem(body));
@@ -189,6 +204,8 @@ function transcriptItems(p, sidechain = false, todos = null) {
     if (m && m !== "<synthetic>") {  // dernier modèle qui a répondu, et son effort
       model = m;
       effort = r.effort === undefined ? null : r.effort;
+      const n = usage ? usageTokens((r.message || {}).usage) : 0;
+      if (n) usage.context = {tokens: n, model: m};
     }
     for (const b of Array.isArray(c) ? c : []) {
       if (b.type === "text" && (b.text || "").trim()) {
@@ -209,10 +226,10 @@ function transcriptItems(p, sidechain = false, todos = null) {
 
 function history(id, limit) {
   const p = find(id);
-  const todos = [];
-  const [items, model, effort] = p ? transcriptItems(p, false, todos) : [[], null, null];
+  const todos = [], usage = {context: null};
+  const [items, model, effort] = p ? transcriptItems(p, false, todos, usage) : [[], null, null];
   return {size: p ? fs.statSync(p).size : 0, model, effort, total: items.length, items: applyBudget(items.slice(-limit)), todos,
-    agents: p ? agentsList(p) : []};
+    agents: p ? agentsList(p) : [], context: usage.context};
 }
 
 // Transcription du sous-agent lancé par l'appel d'outil toolId (subagents/agent-*.jsonl).
@@ -347,6 +364,81 @@ function result(id, toolId) {
   return {found: false};
 }
 
+const EDIT_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+const EDIT_LIMIT = 200000;  // caractères gardés de chaque texte d'une modification
+const EDIT_KEYS = ["file_path", "notebook_path", "old_string", "new_string", "replace_all", "content",
+                   "new_source", "edit_mode", "cell_id"];
+const isObj = v => !!v && typeof v === "object" && !Array.isArray(v);
+
+// Entrée d'une modification réduite à ce qui sert à son diff (textes tronqués).
+function editInput(inp) {
+  const trim = v => typeof v === "string" ? cut(v, EDIT_LIMIT) : v;
+  const out = {};
+  for (const k of EDIT_KEYS) if (k in inp) out[k] = trim(inp[k]);
+  if (Array.isArray(inp.edits))
+    out.edits = inp.edits.filter(isObj).map(e => {
+      const o = {};
+      for (const k of ["old_string", "new_string"]) if (k in e) o[k] = trim(e[k]);
+      return o;
+    });
+  return out;
+}
+
+// Modifications de fichiers d'une transcription (Edit, MultiEdit, Write, NotebookEdit) :
+// fichier, issue (ok, error, pending) et diff calculé par claude (structuredPatch).
+function fileEdits(p, agentId = null) {
+  const out = [], byId = new Map();
+  for (const line of lines(p)) {
+    const toolUse = line.includes('"type":"assistant"') && line.includes('"tool_use"');
+    if (!toolUse && !(byId.size && line.includes('"tool_result"'))) continue;
+    const r = parse(line);
+    if (!isObj(r) || (r.isSidechain && agentId === null)) continue;
+    const c = (r.message || {}).content;
+    for (const b of Array.isArray(c) ? c : []) {
+      if (!isObj(b)) continue;
+      if (r.type === "assistant" && b.type === "tool_use" && EDIT_TOOLS.includes(b.name)) {
+        const inp = isObj(b.input) ? b.input : {};
+        const e = {id: b.id === undefined ? null : b.id, tool: b.name,
+                   path: inp.file_path || inp.notebook_path || null,
+                   time: msgTime(line), agent: agentId, status: "pending",
+                   input: editInput(inp), patch: null, created: false};
+        out.push(e);
+        if (typeof b.id === "string") byId.set(b.id, e);
+      } else if (r.type === "user" && b.type === "tool_result" && byId.has(b.tool_use_id)) {
+        const e = byId.get(b.tool_use_id);
+        e.status = b.is_error ? "error" : "ok";
+        const res = r.toolUseResult;
+        if (isObj(res)) {
+          if (Array.isArray(res.structuredPatch) && res.structuredPatch.length) e.patch = res.structuredPatch;
+          e.created = res.type === "create";
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Fichiers modifiés par la conversation et ses sous-agents, dans l'ordre des modifications.
+function edits(id) {
+  const p = find(id);
+  const paths = [];
+  const walk = d => {
+    for (const n of ls(d)) {
+      const f = path.join(d, n);
+      if (isDir(f)) walk(f);
+      else if (n.endsWith(".jsonl")) paths.push(f);
+    }
+  };
+  if (p) walk(p.slice(0, -".jsonl".length) + "/subagents");
+  let out = p ? fileEdits(p) : [];
+  for (const f of paths.sort()) {
+    const name = path.basename(f).slice(0, -".jsonl".length);
+    out = out.concat(fileEdits(f, name.startsWith("agent-") ? name.slice("agent-".length) : name));
+  }
+  out.sort((x, y) => (x.time || 0) - (y.time || 0));
+  return {size: p ? fs.statSync(p).size : 0, edits: out};
+}
+
 const norm = t => t.toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "");
 
 function snippet(text, word, width = 70) {
@@ -373,7 +465,8 @@ function search(query, limit) {
     const found = new Set();
     let first = null;
     for (const line of lines(f)) {
-      if ((!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) || line.includes('"tool_result"')) continue;
+      if ((!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) || line.includes('"tool_result"')
+          || line.includes('"isCompactSummary":true')) continue;
       const low = norm(line);
       if (!words.some(w => low.includes(w))) continue;
       const r = parse(line);
@@ -427,6 +520,8 @@ if (a[0] === "list") {
   out = {live: liveIds()[a[1]] || null, agents: p ? agentsList(p) : []};
 } else if (a[0] === "result") {
   out = result(a[1], a[2]);
+} else if (a[0] === "edits") {
+  out = edits(a[1]);
 } else if (a[0] === "defaults") {
   // Modèle et effort que prendrait claude sans --model ni --effort (null si non réglés).
   let st = {};

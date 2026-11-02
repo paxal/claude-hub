@@ -1,5 +1,6 @@
 """Tests du tri de la liste : seuls un message envoyé, une réponse finie ou une question
-font remonter une conversation, pas les étapes d'une réponse (outils, résultats)."""
+font remonter une conversation, pas les étapes d'une réponse (outils, résultats) ni une
+compaction."""
 import json
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ def result(ts):
     return user([{"type": "tool_result", "tool_use_id": "t", "content": "ok"}], ts)
 
 
+COMPACTED = "11111111-0000-0000-0000-000000000004"
 SESSIONS = {
     # réponse en cours : on garde l'heure du message envoyé
     "11111111-0000-0000-0000-000000000001":
@@ -48,6 +50,13 @@ SESSIONS = {
         (user("Bonjour", "08:00:00") + bash("08:00:02") + result("08:00:03")
          + assistant([{"type": "tool_use", "id": "q", "name": "AskUserQuestion", "input": {}}],
                      "tool_use", "08:00:20") + result("08:00:30"), 8 * 3600 + 20),
+    # compaction pendant l'inactivité : le résumé n'est pas un message envoyé
+    COMPACTED:
+        (user("Bonjour", "08:00:00") + assistant([{"type": "text", "text": "Fini"}], "end_turn", "08:00:40")
+         + line(type="system", subtype="compact_boundary", content="Conversation compacted",
+                timestamp="2026-10-06T09:00:00.000Z")
+         + user("This session is being continued from a previous conversation…", "09:00:01",
+                isCompactSummary=True, isVisibleInTranscriptOnly=True), 8 * 3600 + 40),
 }
 
 
@@ -64,8 +73,8 @@ class TestTri(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.home)
 
-    def run_helper(self, interp, script):
-        r = subprocess.run([interp, "-", "list"], input=(REMOTE / script).read_text(),
+    def run_helper(self, interp, script, *args):
+        r = subprocess.run([interp, "-", *(args or ["list"])], input=(REMOTE / script).read_text(),
                            capture_output=True, text=True, check=True,
                            env={"HOME": self.home, "PATH": "/usr/bin:/bin"})
         return json.loads(r.stdout)
@@ -77,6 +86,19 @@ class TestTri(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node absent")
     def test_python_et_node_identiques(self):
         self.assertEqual(self.run_helper("python3", "helper.py"), self.run_helper("node", "helper.js"))
+
+
+    def test_resume_de_compaction(self):
+        items = self.run_helper("python3", "helper.py", "history", COMPACTED, "50")["items"]
+        self.assertEqual([i["role"] for i in items], ["user", "assistant", "compact"])
+        self.assertTrue(items[-1]["text"].startswith("This session is being continued"))
+        self.assertEqual(self.run_helper("python3", "helper.py", "search", "continued", "5"), {})
+
+    @unittest.skipUnless(shutil.which("node"), "node absent")
+    def test_compaction_python_et_node_identiques(self):
+        for args in (("history", COMPACTED, "50"), ("search", "continued", "5")):
+            self.assertEqual(self.run_helper("python3", "helper.py", *args),
+                             self.run_helper("node", "helper.js", *args), args)
 
 
 if __name__ == "__main__":

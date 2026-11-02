@@ -1,13 +1,17 @@
-"""Appels d'outils : la ligne « 🔧 Outil  détail » se déplie sur la sortie de l'outil.
+"""Appels d'outils : la ligne « Outil  détail » se déplie sur la sortie de l'outil.
 
 En direct, la sortie arrive dans le flux de claude -p (bloc tool_result d'un
 message user) ; dans l'historique, elle est lue au premier dépliage (commande
-« result » des scripts distants).
+« result » des scripts distants). Les appels consécutifs forment une suite
+(ToolRun), repliée en « N étapes » à partir de trois.
 """
 import re
 
 from .gtk import Gtk, Pango, in_thread
-from .render import code_block, copy_button, message_widget
+from .changes import diff_block, input_hunks
+from .render import code_block, copy_button, tool_detail, tool_line
+from .listrow import BUSY_ICON
+from .todos import TODO_TOOLS, todo_detail
 
 RESULT_LIMIT = 100000  # comme les scripts distants
 
@@ -29,21 +33,23 @@ class ToolCall(Gtk.Box):
     """Ligne d'appel d'outil dépliable ; loader : fonction (appelée dans un thread) qui
     renvoie la sortie {"found", "text", "error", "length"}, None si elle n'arrive qu'en direct."""
 
-    def __init__(self, item, loader=None):
+    def __init__(self, item, loader=None, live=False):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["toolcall"])
         self.loader, self.loaded, self.output = loader, False, None
         # Un texte sur plusieurs lignes est mal mesuré dans l'en-tête d'un Gtk.Expander (il
         # déborde sur la ligne suivante) : une seule ligne, tronquée, complète en info-bulle.
-        title = message_widget(item)
-        title.set_wrap(False)
-        title.set_ellipsize(Pango.EllipsizeMode.END)
-        title.set_tooltip_text(title.get_text())
-        self.expander = Gtk.Expander(label_widget=title)
+        self.line = tool_line(item)
+        if live:  # en attente de la sortie (roue fixe : une animation par outil coûte du CPU)
+            self.line.indicator.append(Gtk.Image(icon_name=BUSY_ICON, css_classes=["tool-running"],
+                                                 tooltip_text="En cours"))
+        self.expander = Gtk.Expander(label_widget=self.line)
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, css_classes=["tool-body"])
         inp = item.get("input") if isinstance(item.get("input"), dict) else {}
         cmd = inp.get("command") if item.get("name") == "Bash" else None
         if isinstance(cmd, str) and (len(cmd) > 60 or "\n" in cmd.strip()):  # coupée sur la ligne
             self.body.append(code_block(cmd.strip(), "bash"))
+        # Edit, MultiEdit, Write : leur diff, avant la sortie (calculé au premier dépliage)
+        self.edit = (item.get("name"), inp) if item.get("name") in ("Edit", "MultiEdit", "Write") else None
         self.state = Gtk.Label(label="Pas encore de sortie.", xalign=0, css_classes=["notice"])
         self.body.append(self.state)
         self.expander.set_child(self.body)
@@ -51,6 +57,10 @@ class ToolCall(Gtk.Box):
         self.append(self.expander)
 
     def on_expanded(self, exp, _pspec):
+        if exp.get_expanded() and self.edit:
+            hunks, self.edit = input_hunks(*self.edit), None
+            if hunks:
+                self.body.prepend(diff_block(hunks))
         if exp.get_expanded() and self.loader and not self.loaded:
             self.loaded = True
             self.state.set_text("chargement…")
@@ -77,6 +87,12 @@ class ToolCall(Gtk.Box):
     def show(self, text, error, length):
         if self.output is not None:
             self.body.remove(self.output)
+        ind = self.line.indicator
+        while (child := ind.get_first_child()):
+            ind.remove(child)
+        ind.append(Gtk.Image(icon_name="dialog-error-symbolic" if error else "object-select-symbolic",
+                             css_classes=["tool-failed" if error else "tool-ok"],
+                             tooltip_text="L'outil a échoué" if error else "Terminé"))
         self.state.set_visible(False)
         truncated, text = length > len(text), text.rstrip("\n")
         if error:  # « <tool_use_error>File does not exist.</tool_use_error> »
@@ -99,3 +115,57 @@ class ToolCall(Gtk.Box):
         box.append(scroll)
         self.output = box
         self.body.append(box)
+
+
+def step_summary(item):
+    """« Read window.py », « Grep set_sort_func » : résumé d'un appel dans « N étapes »."""
+    inp = item.get("input") if isinstance(item.get("input"), dict) else {}
+    name = str(item.get("name"))
+    path = inp.get("file_path") or inp.get("notebook_path")
+    if isinstance(path, str) and path:
+        detail = path.rstrip("/").rsplit("/", 1)[-1]
+    elif name in TODO_TOOLS:
+        detail = todo_detail(name, inp)
+    else:
+        detail = tool_detail(inp)
+    if len(detail) > 32:
+        detail = detail[:31] + "…"
+    return f"{name} {detail}".strip()
+
+
+class ToolRun(Gtk.Box):
+    """Suite d'appels d'outils consécutifs du fil. Tant qu'elle est ouverte (réponse en
+    direct), ses appels s'affichent tels quels ; fermée, elle se replie en « N étapes »
+    s'il y en a au moins GROUP."""
+
+    GROUP = 3
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["toolrun"])
+        self.items, self.open, self.expander = [], True, None
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.append(self.body)
+
+    def add(self, item, widget):
+        self.items.append(item)
+        self.body.append(widget)
+
+    def close(self):
+        if not self.open:
+            return
+        self.open = False
+        if len(self.items) < self.GROUP:
+            return
+        head = Gtk.Box(spacing=8)
+        head.append(Gtk.Label(label=f"{len(self.items)} étapes", css_classes=["steps-count"]))
+        summary = " · ".join(step_summary(it) for it in self.items[:12])
+        head.append(Gtk.Label(label=summary, xalign=0, hexpand=True, css_classes=["steps-summary"],
+                              ellipsize=Pango.EllipsizeMode.END))
+        self.remove(self.body)
+        self.expander = Gtk.Expander(label_widget=head, child=self.body)
+        self.append(self.expander)
+
+    def reveal(self):
+        """Déplie la suite (résultat de recherche dans l'un de ses appels)."""
+        if self.expander:
+            self.expander.set_expanded(True)

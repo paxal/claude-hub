@@ -101,8 +101,8 @@ def is_command(line):
 def is_stop(line):
     """Ligne qui change l'ordre de la liste : message envoyé, réponse finie ou question
     posée. Les étapes d'une réponse (outils, réflexion, résultats) n'en font pas partie."""
-    if '"isMeta":true' in line or '"isSidechain":true' in line:
-        return False
+    if '"isMeta":true' in line or '"isSidechain":true' in line or '"isCompactSummary":true' in line:
+        return False  # isCompactSummary : résumé écrit par claude en compactant, pas un message
     if '"type":"user"' in line:
         return '"type":"tool_result"' not in line
     if '"type":"assistant"' in line:
@@ -204,11 +204,20 @@ def created_task(r, creating):
             return {"created": b["tool_use_id"], "task": tid}
     return None
 
-def transcript_items(p, sidechain=False, todos=None):
+def usage_tokens(u):
+    """Taille du contexte après un message de Claude : jetons d'entrée (cache compris) et de sortie."""
+    if not isinstance(u, dict):
+        return 0
+    return sum(u[k] for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+                              "output_tokens") if type(u.get(k)) is int)
+
+def transcript_items(p, sidechain=False, todos=None, usage=None):
     """Messages et appels d'outils d'une transcription ; renvoie (items, dernier modèle, son effort).
 
     todos : liste complétée par les appels de TodoWrite, TaskCreate et TaskUpdate de
     toute la transcription, et par les numéros attribués aux tâches créées.
+    usage : dict dont "context" reçoit la taille du contexte au dernier message de Claude
+    ({"tokens", "model"}), None après une compaction.
     """
     items, model, effort, creating = [], None, None, set()
     with open(str(p), encoding="utf-8", errors="replace") as f:
@@ -232,6 +241,11 @@ def transcript_items(p, sidechain=False, todos=None):
                                       "images": imgs, "queued": True})
                 continue
             content = r.get("message", {}).get("content")
+            if r.get("isCompactSummary"):  # conversation compactée : claude repart de ce résumé
+                items.append({"role": "compact", "text": text_of(content)})
+                if usage is not None:
+                    usage["context"] = None
+                continue
             if r.get("isMeta"):
                 # Message relayé par Remote Control (Claude Hub, autre session) : on garde son texte.
                 body = peer_body(text_of(content)) if (r.get("origin") or {}).get("kind") == "peer" else None
@@ -253,6 +267,9 @@ def transcript_items(p, sidechain=False, todos=None):
             m = r.get("message", {}).get("model")
             if m and m != "<synthetic>":  # dernier modèle qui a répondu, et son effort
                 model, effort = m, r.get("effort")
+                n = usage_tokens(r.get("message", {}).get("usage")) if usage is not None else 0
+                if n:
+                    usage["context"] = {"tokens": n, "model": m}
             for b in content if isinstance(content, list) else []:
                 if b.get("type") == "text" and b.get("text", "").strip():
                     items.append({"role": "assistant", "text": b["text"]})
@@ -269,11 +286,11 @@ def transcript_items(p, sidechain=False, todos=None):
 
 def cmd_history(sid, limit):
     p = find(sid)
-    todos = []
-    items, model, effort = transcript_items(p, todos=todos) if p else ([], None, None)
+    todos, usage = [], {"context": None}
+    items, model, effort = transcript_items(p, todos=todos, usage=usage) if p else ([], None, None)
     print(json.dumps({"size": p.stat().st_size if p else 0, "model": model, "effort": effort,
                       "total": len(items), "items": apply_budget(items[-limit:]), "todos": todos,
-                      "agents": agents_list(p) if p else []}))
+                      "agents": agents_list(p) if p else [], "context": usage["context"]}))
 
 def cmd_agent(sid, tool_id, limit):
     """Transcription du sous-agent lancé par l'appel d'outil tool_id (subagents/agent-*.jsonl)."""
@@ -414,6 +431,72 @@ def cmd_result(sid, tool_id):
                                      "length": len(text), "text": text[:RESULT_LIMIT]}))
     print(json.dumps({"found": False}))
 
+EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
+EDIT_LIMIT = 200000  # caractères gardés de chaque texte d'une modification
+EDIT_KEYS = ("file_path", "notebook_path", "old_string", "new_string", "replace_all", "content",
+             "new_source", "edit_mode", "cell_id")
+
+def edit_input(inp):
+    """Entrée d'une modification réduite à ce qui sert à son diff (textes tronqués)."""
+    cut = lambda v: v[:EDIT_LIMIT] if isinstance(v, str) else v
+    out = {k: cut(inp[k]) for k in EDIT_KEYS if k in inp}
+    if isinstance(inp.get("edits"), list):
+        out["edits"] = [{k: cut(e[k]) for k in ("old_string", "new_string") if k in e}
+                        for e in inp["edits"] if isinstance(e, dict)]
+    return out
+
+def file_edits(path, agent=None):
+    """Modifications de fichiers d'une transcription (Edit, MultiEdit, Write, NotebookEdit) :
+    fichier, issue (ok, error, pending) et diff calculé par claude (structuredPatch)."""
+    out, by_id = [], {}
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            tool_use = '"type":"assistant"' in line and '"tool_use"' in line
+            if not tool_use and not (by_id and '"tool_result"' in line):
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("isSidechain") and agent is None:
+                continue
+            content = r.get("message", {}).get("content")
+            for b in content if isinstance(content, list) else []:
+                if not isinstance(b, dict):
+                    continue
+                if r.get("type") == "assistant" and b.get("type") == "tool_use" and b.get("name") in EDIT_TOOLS:
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    e = {"id": b.get("id"), "tool": b.get("name"),
+                         "path": inp.get("file_path") or inp.get("notebook_path") or None,
+                         "time": msg_time(line), "agent": agent, "status": "pending",
+                         "input": edit_input(inp), "patch": None, "created": False}
+                    out.append(e)
+                    if isinstance(b.get("id"), str):
+                        by_id[b["id"]] = e
+                elif r.get("type") == "user" and b.get("type") == "tool_result" and b.get("tool_use_id") in by_id:
+                    e = by_id[b["tool_use_id"]]
+                    e["status"] = "error" if b.get("is_error") else "ok"
+                    res = r.get("toolUseResult")
+                    if isinstance(res, dict):
+                        if isinstance(res.get("structuredPatch"), list) and res["structuredPatch"]:
+                            e["patch"] = res["structuredPatch"]
+                        e["created"] = res.get("type") == "create"
+    return out
+
+def cmd_edits(sid):
+    """Fichiers modifiés par la conversation et ses sous-agents, dans l'ordre des modifications."""
+    p = find(sid)
+    paths = []
+    base = str(p)[:-len(".jsonl")] + "/subagents" if p else None
+    for root, _dirs, names in os.walk(base) if base else []:
+        paths += [os.path.join(root, n) for n in names if n.endswith(".jsonl")]
+    edits = file_edits(str(p)) if p else []
+    for path in sorted(paths):
+        name = os.path.basename(path)[:-len(".jsonl")]
+        edits += file_edits(path, name[len("agent-"):] if name.startswith("agent-") else name)
+    edits.sort(key=lambda e: e["time"] or 0)
+    print(json.dumps({"size": p.stat().st_size if p else 0, "edits": edits}))
+
 def norm(t):
     import unicodedata
     t = unicodedata.normalize("NFKD", t.lower())
@@ -444,7 +527,8 @@ def cmd_search(query, limit):
         found, first = set(), None
         with open(f, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if ('"type":"user"' not in line and '"type":"assistant"' not in line) or '"tool_result"' in line:
+                if (('"type":"user"' not in line and '"type":"assistant"' not in line)
+                        or '"tool_result"' in line or '"isCompactSummary":true' in line):
                     continue
                 low = norm(line)
                 if not any(w in low for w in words):
@@ -544,4 +628,5 @@ a = sys.argv[1:]
  "history": lambda: cmd_history(a[1], int(a[2])),
  "agent": lambda: cmd_agent(a[1], a[2], int(a[3])),
  "agents": lambda: cmd_agents(a[1]),
- "result": lambda: cmd_result(a[1], a[2])}[a[0]]()
+ "result": lambda: cmd_result(a[1], a[2]),
+ "edits": lambda: cmd_edits(a[1])}[a[0]]()

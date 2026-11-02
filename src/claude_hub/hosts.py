@@ -95,13 +95,17 @@ def load_settings():
     data["archived"] = set(data.get("archived", []))      # archivées ici
     data["unarchived"] = set(data.get("unarchived", []))  # désarchivées ici (archives Cursor)
     data["unread"] = set(data.get("unread", []))          # réponses arrivées hors de la vue
+    data["pinned"] = set(data.get("pinned", []))          # conversations épinglées en tête de liste
+    data.setdefault("views", [])            # recherches enregistrées : [{"query"}]
+    data.setdefault("costs", {})            # id de session -> coût ($) de la dernière réponse lancée d'ici
+    data.setdefault("context_windows", {})  # modèle -> taille de sa fenêtre de contexte (apprise de claude)
     return data
 
 
 def save_settings(data):
     CONFIG.mkdir(parents=True, exist_ok=True)
     out = dict(data, archived=sorted(data["archived"]), unarchived=sorted(data["unarchived"]),
-               unread=sorted(data["unread"]))
+               unread=sorted(data["unread"]), pinned=sorted(data["pinned"]))
     tmp = SETTINGS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(out, indent=1))
     tmp.replace(SETTINGS_FILE)

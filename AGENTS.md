@@ -31,6 +31,11 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 - **Le cloud passe par l'API interne** de Claude Code (celle de `--teleport`).
   Elle peut casser : une panne ne doit toucher que l'hôte cloud. Le jeton est lu
   dans `~/.claude/.credentials.json` et ne doit jamais être affiché ni journalisé.
+- **Écrire à une session Remote Control** (`remote_send`) : par l'API, avec
+  l'en-tête `anthropic-client-platform: web_claude_ai`. Sans lui (et avec
+  `claude -p --cloud`), le Claude du terminal reçoit « Another Claude session
+  sent a message » et ne prend pas le texte pour celui de l'utilisateur.
+  Ce chemin ne doit transmettre que du texte que l'utilisateur a tapé.
 - **Plusieurs conversations à la fois** : chaque conversation a son propre
   processus `claude -p` (`Hub.streams`, par id de session). Ne pas réintroduire
   d'état global « le processus en cours » : c'était la cause du bug où le
@@ -40,6 +45,17 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `vulkan` de GTK 4.20 laissent des restes quand un texte change (pixels blancs
   ou orange dans le bandeau d'activité). Ne pas revenir dessus sans le vérifier
   avec de vraies captures du compositeur.
+- **Classes CSS** : `css_classes=[…]` passé au constructeur remplace les classes
+  par défaut du widget : un `Gtk.Popover` perd `background` (menu sans fond),
+  `MenuButton` `popup`, `ListBoxRow` `activatable`, `TextView` `view`. Utiliser
+  `add_css_class`, ou `widgets.menu_popover` pour un menu.
+- **Animations** : avec le rendu cairo, chaque `Gtk.Spinner` qui tourne redessine
+  en continu (~20 % de CPU pour une demi-douzaine dans la liste, 0 % figés). N'en
+  animer que dans la pastille de l'en-tête et le bandeau de la saisie ; ailleurs,
+  l'icône fixe `claude-hub-busy-symbolic`. Mesurer le CPU au repos après un
+  changement d'affichage (`os.times()` dans le script de pilotage), quelques
+  secondes après la dernière action : sinon la remise en page du fil (volet
+  ouvert ou fermé) compte, et l'on croit à une consommation continue.
 - **Thèmes** : l'utilisateur est sous KDE/Breeze, qui ne définit pas toutes les
   couleurs GTK nommées. Détecter clair/sombre d'après la couleur réelle du
   texte, pas le nom du thème. Les icônes maison sont des SVG `-symbolic` dans
@@ -52,6 +68,8 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `.desktop` nommé comme l'app_id (`org.paxal.ClaudeHub.desktop`), sinon il
   affiche le « W ». `install.sh` y met l'icône en chemin absolu : plasmashell
   ne voit une icône ajoutée au thème qu'après son redémarrage.
+- **Pastilles qui passent à la ligne** : `Gtk.FlowBox` aligne ses enfants en
+  colonnes dès la deuxième ligne, et les étire. Utiliser `widgets.WrapBox`.
 - **Largeur de la barre latérale** : un texte long (chemin, statut, libellé de
   bouton) l'élargit et coupe les messages. Tronquer (ellipsize) et préférer des
   boutons à icône.

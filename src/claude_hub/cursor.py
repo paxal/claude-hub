@@ -351,7 +351,7 @@ def cursor_search(query, limit=200):
 
 
 def highlight_words(text, query):
-    """Échappe text et met en gras les mots de la requête (sans tenir compte des accents)."""
+    """Échappe text et surligne les mots de la requête (sans tenir compte des accents)."""
     words = [norm_text(w) for w in query.split() if w]
     # Texte normalisé caractère par caractère, avec la position d'origine de chacun.
     low, origin = [], []
@@ -367,7 +367,7 @@ def highlight_words(text, query):
     for a, b in sorted(spans):
         if a < pos:
             continue
-        out += [esc(text[pos:a]), "<b>", esc(text[a:b]), "</b>"]
+        out += [esc(text[pos:a]), '<span bgcolor="#e3a23b" bgalpha="35%">', esc(text[a:b]), "</span>"]
         pos = b
     return "".join(out) + esc(text[pos:])
 

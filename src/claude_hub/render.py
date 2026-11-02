@@ -3,7 +3,7 @@ import base64
 import re
 from urllib.parse import quote, unquote
 
-from .gtk import GLib, Gdk, GdkPixbuf, Gtk, Pango
+from .gtk import GLib, Gdk, GdkPixbuf, Gio, Gtk, Pango
 from .todos import TODO_TOOLS, todo_detail
 
 
@@ -102,7 +102,9 @@ def md_inline(text):
 
     def fmt(t):
         t = esc(t)
-        t = re.sub(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", r"<b>\2</b>", t)
+        t = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<b>\1</b>", t)
+        # __ ne compte pas dans un mot (CommonMark) : mcp__postgres__query reste tel quel.
+        t = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"<b>\1</b>", t)
         t = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?!\*)", r"<i>\1</i>", t)
         t = re.sub(r"(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?!\w)", r"<i>\1</i>", t)
         return re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"<s>\1</s>", t)
@@ -271,6 +273,87 @@ def tool_detail(inp):
     return " ".join(str(detail).split())[:160]
 
 
+# Icône de chaque outil (premier nom connu du thème) ; les autres ont celle des réglages.
+TOOL_ICONS = {
+    "Read": ("text-x-generic-symbolic",),
+    "Write": ("document-new-symbolic", "text-x-generic-symbolic"),
+    "Bash": ("utilities-terminal-symbolic",),
+    "Grep": ("edit-find-symbolic",),
+    "Glob": ("edit-find-symbolic",),
+    "ToolSearch": ("system-search-symbolic", "edit-find-symbolic"),
+    "WebFetch": ("globe-symbolic", "web-browser-symbolic"),
+    "WebSearch": ("globe-symbolic", "web-browser-symbolic"),
+    "SendMessage": ("mail-send-symbolic",),
+    "AskUserQuestion": ("dialog-question-symbolic", "help-about-symbolic"),
+    **{n: ("document-edit-symbolic",) for n in ("Edit", "MultiEdit", "NotebookEdit")},
+    **{n: ("checkbox-checked-symbolic", "view-list-symbolic") for n in TODO_TOOLS},
+}
+TOOL_ICON = ("preferences-system-symbolic", "applications-system-symbolic")
+
+
+def edit_stats(name, inp):
+    """(lignes ajoutées, lignes retirées) d'un Edit, MultiEdit ou Write ; None pour un autre outil."""
+    import difflib
+    inp = inp if isinstance(inp, dict) else {}
+    if name == "Edit":
+        pairs = [(inp.get("old_string"), inp.get("new_string"))]
+    elif name == "MultiEdit":
+        pairs = [(e.get("old_string"), e.get("new_string")) for e in inp.get("edits") or []
+                 if isinstance(e, dict)]
+    elif name == "Write":
+        pairs = [("", inp.get("content"))]
+    else:
+        return None
+    pairs = [(a, b) for a, b in pairs if isinstance(a, str) and isinstance(b, str)]
+    if not pairs:
+        return None
+    added = removed = 0
+    for old, new in pairs:
+        ops = difflib.SequenceMatcher(None, old.splitlines(), new.splitlines(), autojunk=False)
+        for op, i1, i2, j1, j2 in ops.get_opcodes():
+            if op != "equal":
+                removed += i2 - i1
+                added += j2 - j1
+    return added, removed
+
+
+def tool_line(item):
+    """Ligne d'un appel d'outil : icône, nom, détail (lien si c'est un fichier), lignes
+    ajoutées et retirées d'une modification ; line.indicator reçoit l'état (en cours, fini)."""
+    inp = item.get("input") if isinstance(item.get("input"), dict) else {}
+    name = str(item.get("name"))
+    detail, path = tool_detail(inp), inp.get("file_path") or inp.get("notebook_path")
+    if name in TODO_TOOLS:
+        detail = todo_detail(name, inp)
+    line = Gtk.Box(spacing=8, css_classes=["toolline"])
+    icon = Gtk.Image(gicon=Gio.ThemedIcon.new_from_names(list(TOOL_ICONS.get(name, TOOL_ICON))),
+                     css_classes=["tool-icon"])
+    line.append(icon)
+    line.append(Gtk.Label(label=name, css_classes=["tool-name"]))
+    markup = esc(detail)
+    if isinstance(path, str) and path:
+        markup = f'<a href="{esc(file_href(path))}">{markup}</a>'
+    lbl = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["tool-detail"],
+                    tooltip_text=detail or None)
+    try:
+        Pango.parse_markup(re.sub(r"</?a\b[^>]*>", "", markup), -1, "\0")
+        lbl.set_markup(markup)
+    except GLib.Error:
+        lbl.set_text(detail)
+    lbl.connect("activate-link", on_link)
+    line.append(lbl)
+    stats = edit_stats(name, inp)
+    if stats and any(stats):
+        if stats[0]:
+            line.append(Gtk.Label(label=f"+{stats[0]}", css_classes=["diff-add"]))
+        if stats[1]:
+            line.append(Gtk.Label(label=f"−{stats[1]}", css_classes=["diff-del"]))
+    line.indicator = Gtk.Box(valign=Gtk.Align.CENTER)
+    line.append(line.indicator)
+    line.detail = lbl
+    return line
+
+
 IMG_MAX = (360, 260)
 
 
@@ -362,7 +445,7 @@ def plan_widget(plan, path=None, box=None):
 
 def agent_message_widget(item):
     """Message relayé par un agent (rapport d'un sous-agent en arrière-plan…) : replié par
-    défaut, avec sa première ligne en aperçu ; le Markdown n'est rendu qu'au dépliage."""
+    défaut, avec sa première ligne en aperçu."""
     text = item.get("text") or ""
     who = str(item.get("from") or "?")
     kind = "↩ Rapport du sous-agent" if item.get("report") else "✉ Message de l'agent"
@@ -373,6 +456,21 @@ def agent_message_widget(item):
     head.append(Gtk.Label(label=who[:8], css_classes=["sid"], tooltip_text=who))
     head.append(Gtk.Label(label=first, xalign=0, hexpand=True, css_classes=["sid"],
                           ellipsize=Pango.EllipsizeMode.END))
+    return folded_widget(head, text)
+
+
+def compact_widget(item):
+    """Résumé écrit par claude en compactant la conversation : comme dans le terminal, une
+    simple mention, et le résumé (dont claude repart) au dépliage."""
+    head = Gtk.Box(spacing=6)
+    head.append(Gtk.Label(label="⟲ Conversation compactée", css_classes=["subagent-kind"]))
+    head.append(Gtk.Label(label="la suite repart de ce résumé", xalign=0, hexpand=True,
+                          css_classes=["sid"], ellipsize=Pango.EllipsizeMode.END))
+    return folded_widget(head, item.get("text") or "")
+
+
+def folded_widget(head, text):
+    """Texte replié sous head ; son Markdown n'est rendu qu'au dépliage."""
     exp = Gtk.Expander(label_widget=head)
     body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, css_classes=["subagent-body"])
     copy = copy_button(text, "Copier le message (Markdown)")
@@ -396,17 +494,13 @@ def message_widget(item, on_fork=None):
     role = item["role"]
     if item.get("via") == "agent":
         return agent_message_widget(item)
+    if role == "compact":
+        return compact_widget(item)
     if role == "tool":
         inp = item.get("input") if isinstance(item.get("input"), dict) else {}
         if item.get("name") == "ExitPlanMode" and isinstance(inp.get("plan"), str):
             return plan_widget(inp["plan"], inp.get("planFilePath"))
-        detail, path = tool_detail(inp), inp.get("file_path") or inp.get("notebook_path")
-        if item.get("name") in TODO_TOOLS:
-            detail = todo_detail(item["name"], inp)
-        markup = esc(detail)
-        if isinstance(path, str) and path:
-            markup = f'<a href="{esc(file_href(path))}">{markup}</a>'
-        return make_label(f"🔧 {esc(str(item.get('name')))}  {markup}", "tool")
+        return tool_line(item)
     if role == "user" and (item.get("text") or "").startswith("[Request interrupted by user"):
         return make_label("⏹ Interrompu", "notice")  # noté par claude après une interruption
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -444,6 +538,8 @@ def message_widget(item, on_fork=None):
 CSS = """
 /* Textes sélectionnables : pas de curseur quand on clique dedans. */
 label { caret-color: transparent; }
+.mono { font-family: monospace; font-size: 0.92em; }
+.dim { opacity: 0.65; }
 .bubble { border-radius: 12px; padding: 8px 12px; margin: 2px 8px; }
 .bubble.user { background: rgba(61, 174, 233, 0.22); margin-left: 80px; }
 .bubble.assistant { background: rgba(128, 128, 128, 0.13); margin-right: 40px; }
@@ -467,40 +563,38 @@ textview.md, textview.md > text { background: none; }
 .plan-summary.refused { color: #e5534b; }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
-.subagent { margin: 0 20px; }
+.subagent { margin: 0 8px; }
 .subagent-kind { font-family: monospace; font-size: 0.85em; font-weight: bold; opacity: 0.8; }
 .agent-mark { font-weight: bold; opacity: 0.75; }
 .agent-mark.idle { opacity: 0.5; }
 .agent-open { min-height: 0; min-width: 0; padding: 2px; }
 .subagent-body { border-left: 2px solid rgba(128, 128, 128, 0.3); padding-left: 8px; margin: 4px 0 4px 6px; }
-.tool { font-family: monospace; font-size: 0.85em; opacity: 0.6; margin: 0 20px; }
-.toolcall { margin: 0 20px; }
-.toolcall .tool { margin: 0; }
+/* Appels d'outils : icône, nom, détail ; suites de 3 appels ou plus repliées en « N étapes ». */
+.toolline { padding: 1px 0; font-size: 0.92em; }
+.toolline > .tool-icon { opacity: 0.7; }
+.tool-name { font-weight: bold; opacity: 0.85; }
+.tool-detail { font-family: monospace; font-size: 0.95em; opacity: 0.7; }
+.diff-add, .diff-del { font-family: monospace; font-size: 0.95em; }
+.diff-add { color: #3fb950; }
+.diff-del { color: #e5534b; }
+.tool-running { color: #d4860b; -gtk-icon-size: 12px; }
+.tool-ok { color: #3fb950; -gtk-icon-size: 12px; }
+.tool-failed { color: #e5534b; -gtk-icon-size: 12px; }
+.msgs > .toolline, .msgs > .toolcall, .msgs > .toolrun { margin: 0 8px; }
+.toolrun > box > .toolline { margin: 0; }
+.steps-count { font-weight: bold; font-size: 0.92em; opacity: 0.85; }
+.steps-summary { font-family: monospace; font-size: 0.85em; opacity: 0.65; }
 .tool-body { margin: 4px 0 4px 18px; }
 .tool-error { color: #e5534b; }
 .notice { opacity: 0.7; font-style: italic; margin: 4px 8px; }
 .error { color: #e5534b; margin: 4px 8px; }
 .sid { font-size: 0.85em; opacity: 0.6; }
-.live { color: #2e9e45; }
-.state { font-size: 0.85em; font-weight: bold; }
-.busy { color: #d4860b; }
-.waiting { color: #e5534b; }
-.state.unread { color: #3d8fd1; }
-.state.draft { font-weight: normal; font-style: italic; opacity: 0.75; }
-row.unread { background: rgba(61, 174, 233, 0.10); box-shadow: inset 3px 0 #3d8fd1; }
-row.unread .row-title { font-weight: bold; }
-.activity { font-size: 0.9em; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
-.activity.busy { background: rgba(227, 162, 59, 0.18); }
-.activity.waiting { color: #e5534b; background: rgba(229, 83, 75, 0.15); }
-.activity.idle { color: #3fb950; background: rgba(63, 185, 80, 0.15); }
 .thumb { border-radius: 6px; }
-.snippet { font-size: 0.85em; opacity: 0.8; margin-top: 2px; }
+.snippet { font-size: 0.9em; opacity: 0.85; margin-top: 2px; }
 .hit { outline: 2px solid #e3a23b; outline-offset: 2px; }
 .archived { opacity: 0.55; }
-row.missing { background: rgba(229, 83, 75, 0.14); box-shadow: inset 3px 0 #e5534b; }
-row.missing .sid { color: #e5534b; opacity: 0.9; }
-.archive-btn { opacity: 0.5; min-width: 24px; min-height: 24px; padding: 2px; }
-row:hover .archive-btn { opacity: 1; }
+.badge { font-size: 0.75em; font-weight: bold; padding: 0 6px; border-radius: 6px;
+         color: #a05c9c; background: rgba(160, 92, 156, 0.16); }
 .badge.cloud { color: #d97757; background: rgba(217, 119, 87, 0.18); }
 .msg { margin: 2px 8px; }
 .msg.user { margin-left: 80px; }
@@ -512,29 +606,180 @@ row:hover .archive-btn { opacity: 1; }
 .after-fork { opacity: 0.35; }
 .fork-bar { border-radius: 6px; padding: 4px 8px; background: rgba(61, 174, 233, 0.15); }
 .copy.flat { padding: 0 6px; }
-.queued { padding: 2px 4px 2px 10px; border-radius: 8px; opacity: 0.8;
-          background: rgba(61, 174, 233, 0.12); }
-.todos { padding: 4px 10px; border-radius: 10px; background: rgba(61, 174, 233, 0.08);
+.queued { padding: 2px 4px 2px 10px; border-radius: 8px; background: rgba(61, 174, 233, 0.12); }
+.queued-label { font-weight: bold; color: #3d8fd1; }
+.todos { padding: 4px 10px; border-radius: 8px; background: rgba(61, 174, 233, 0.08);
          border: 1px solid rgba(61, 174, 233, 0.30); }
 .todo-list { padding: 2px 0 4px 18px; }
 .todo-mark { min-width: 14px; }
 .todo.in_progress { font-weight: bold; }
 .todo.completed { opacity: 0.55; }
 .todo.cancelled { opacity: 0.55; text-decoration-line: line-through; }
-.thinking { padding: 6px 12px; margin-top: 4px; border-radius: 10px; font-weight: bold;
-            color: #d4860b; background: rgba(227, 162, 59, 0.14); }
 .viewer { border-left: 1px solid rgba(128, 128, 128, 0.25); }
 .side { border-left: 1px solid rgba(128, 128, 128, 0.25); }
 .side .viewer { border-left: none; }
 .viewer-md { padding: 8px 14px; }
 .viewer-code { font-family: monospace; font-size: 0.92em; }
-.badge { font-size: 0.75em; font-weight: bold; padding: 0 6px; border-radius: 6px;
-         color: #a05c9c; background: rgba(160, 92, 156, 0.16); }
-.badge.host { color: inherit; background: rgba(128, 128, 128, 0.18); font-weight: normal; }
 .tagchip, button.tagchip { font-size: 0.75em; padding: 0 6px; border-radius: 6px; min-height: 0;
                            min-width: 0; color: #3d8fd1; background: rgba(61, 174, 233, 0.15); }
 button.tagchip:hover { background: rgba(61, 174, 233, 0.3); }
 button.chip-close { min-height: 0; min-width: 0; padding: 0; -gtk-icon-size: 10px; }
+
+/* Barre latérale : liste des conversations */
+.sidebar-list { border-right: 1px solid rgba(128, 128, 128, 0.25); }
+.sessions { background: none; }
+.sessions > row.session { margin: 1px 6px; padding: 7px 10px; border-radius: 6px; background: none; }
+.sessions > row.session:selected { background-color: rgba(61, 174, 233, 0.18); color: inherit; }
+.sessions > row.session:hover:not(:selected) { background-color: rgba(128, 128, 128, 0.08); }
+.day-header, .section-title { font-size: 0.78em; font-weight: bold; letter-spacing: 1px; opacity: 0.7; }
+.day-header { padding: 10px 16px 4px; }
+.section-title { padding: 6px 10px 2px; }
+row.strong .row-title { font-weight: bold; }
+.row-meta { font-size: 0.9em; }
+.row-folder { opacity: 0.7; }
+.row-folder.missing { color: #e5534b; opacity: 1; }
+.row-draft { font-style: italic; opacity: 0.7; }
+.row-time { font-size: 0.9em; opacity: 0.7; font-feature-settings: "tnum"; }
+.row-time.unread { color: #3d8fd1; font-weight: bold; opacity: 1; }
+.row-time.busy { color: #d4860b; font-weight: bold; opacity: 1; }
+.row-time.action { color: #e5534b; font-weight: bold; opacity: 1; }
+.row-state { min-width: 16px; min-height: 18px; }
+.row-state image { -gtk-icon-size: 14px; }
+.dot { min-width: 8px; min-height: 8px; border-radius: 99px; background: #3d8fd1; }
+.st-busy { color: #d4860b; }
+.st-action { color: #e5534b; }
+.st-idle { color: #3fb950; }
+.st-draft { opacity: 0.7; }
+button.row-btn { min-width: 24px; min-height: 24px; padding: 0; margin-top: -4px; }
+.hostchip { font-size: 0.85em; padding: 0 6px; border-radius: 5px; background: rgba(128, 128, 128, 0.18); }
+.hostchip image { opacity: 0.85; }
+.count { font-size: 0.8em; font-weight: bold; min-width: 18px; min-height: 18px; padding: 0 5px;
+         border-radius: 9px; }
+.count.todo { background: #1d6a96; color: white; }
+.count.busy { background: rgba(227, 162, 59, 0.22); color: #d4860b; }
+.segments > togglebutton { padding: 0 6px; min-height: 28px; }
+.segments > togglebutton:checked { font-weight: bold; }
+.list-footer { padding: 6px 12px; border-top: 1px solid rgba(128, 128, 128, 0.25); font-size: 0.9em; }
+.list-footer > label { opacity: 0.7; }
+
+/* Vues enregistrées (pastilles sous la recherche) */
+button.viewchip { font-size: 0.85em; min-height: 0; padding: 1px 8px; border-radius: 10px; box-shadow: none;
+                  background: rgba(128, 128, 128, 0.12); border: 1px solid transparent; }
+button.viewchip:hover { background: rgba(128, 128, 128, 0.22); }
+button.viewchip.active { color: #3d8fd1; font-weight: bold; background: rgba(61, 174, 233, 0.16);
+                         border-color: rgba(61, 174, 233, 0.5); }
+button.viewsave { font-size: 0.85em; min-height: 0; padding: 1px 6px; opacity: 0.75; }
+button.viewsave:hover { opacity: 1; }
+
+/* Sélecteur rapide (Ctrl+K) */
+.switcher > contents { padding: 10px; }
+.switcher-list > row.session:focus { outline: none; }
+
+/* Menus (hôtes, choix de la saisie, dossiers) */
+.menu-pop > contents { padding: 6px; }
+.choices { background: none; }
+.choices > row { padding: 6px 10px; border-radius: 5px; }
+.choice-check { color: #3d8fd1; }
+.choice-help { font-size: 0.9em; opacity: 0.65; }
+.choices.modes .choice-label { font-weight: bold; }
+.menu-row { padding: 0 6px; min-height: 30px; }
+.menu-kind { font-size: 0.9em; opacity: 0.65; }
+
+/* En-tête de la conversation */
+.chat-head { padding: 10px 16px 8px 20px; border-bottom: 1px solid rgba(128, 128, 128, 0.25); }
+.chat-title { font-size: 1.2em; font-weight: bold; }
+.head-meta { font-size: 0.9em; }
+.head-meta > label { opacity: 0.7; }
+.pill { font-size: 0.9em; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
+.pill.busy { color: #d4860b; background: rgba(227, 162, 59, 0.16); }
+.pill.waiting { color: #e5534b; background: rgba(229, 83, 75, 0.15); }
+.pill spinner { min-width: 12px; min-height: 12px; }
+/* Contexte rempli (jauge) et coût de la dernière réponse */
+.usage > label, .usage > box > label { opacity: 0.7; }
+levelbar.context { min-width: 44px; }
+levelbar.context trough, levelbar.context block { min-height: 6px; border-radius: 3px; border: none;
+                                                  box-shadow: none; }
+levelbar.context block.empty { background: rgba(128, 128, 128, 0.25); }
+levelbar.context block.ok { background: #3d8fd1; }
+levelbar.context block.warn { background: #d4860b; }
+levelbar.context block.full { background: #e5534b; }
+.usage label.context-text.warn { color: #d4860b; opacity: 1; }
+.usage label.context-text.full { color: #e5534b; opacity: 1; font-weight: bold; }
+/* Volet « Fichiers modifiés » */
+.change-file { padding: 3px 4px; }
+
+/* Zone de saisie : un seul cadre (activité, texte, réglages, envoi) */
+.composer { border: 1px solid alpha(currentColor, 0.25); border-radius: 10px; background: @theme_base_color; }
+textview.composer-input, textview.composer-input > text { background: none; }
+.placeholder { opacity: 0.5; padding: 10px 12px; }
+.composer-bar { padding: 4px 8px 8px; }
+.composer-new { padding: 8px 10px 0 12px; font-size: 0.95em; }
+.composer-new > label { opacity: 0.7; }
+.hint { font-size: 0.9em; opacity: 0.7; }
+.strip { padding: 4px 8px 4px 12px; background: rgba(227, 162, 59, 0.08);
+         border-bottom: 1px solid rgba(128, 128, 128, 0.2); font-size: 0.95em; }
+.strip-label { color: #d4860b; font-weight: bold; }
+.strip.waiting { background: rgba(229, 83, 75, 0.08); }
+.strip.waiting .strip-label { color: #e5534b; }
+.strip spinner { color: #d4860b; }
+.strip-time { opacity: 0.7; font-feature-settings: "tnum"; }
+button.stop { color: #e5534b; border: 1px solid rgba(229, 83, 75, 0.55); background: none;
+              box-shadow: none; min-height: 24px; padding: 0 10px; font-weight: bold; }
+button.stop:hover { background: rgba(229, 83, 75, 0.12); }
+button.stop image { -gtk-icon-size: 10px; }
+menubutton.chip > button { min-height: 26px; padding: 0 6px 0 9px; background: none; box-shadow: none;
+                           border: 1px solid alpha(currentColor, 0.2); border-radius: 6px; font-size: 0.92em; }
+menubutton.chip > button:hover { background: alpha(currentColor, 0.08); }
+menubutton.chip.plan > button { color: #3d8fd1; background: rgba(61, 174, 233, 0.15);
+                                border-color: rgba(61, 174, 233, 0.55); font-weight: bold; }
+menubutton.chip.path > button label { font-family: monospace; font-size: 0.95em; }
+.chevron { opacity: 0.6; -gtk-icon-size: 12px; }
+button.active { background-image: none; background-color: alpha(currentColor, 0.14); }
+
+/* Accueil : à traiter, en cours */
+.home { padding: 28px 20px 12px; }
+.home-title { font-size: 1.15em; font-weight: bold; }
+.home-card { padding: 12px 14px; border-radius: 10px; background: rgba(128, 128, 128, 0.08);
+             border: 1px solid rgba(128, 128, 128, 0.25); }
+button.home-card { font-weight: normal; }
+.home-card-title { font-weight: bold; font-size: 1.05em; }
+.card-kind { font-size: 0.9em; font-weight: bold; }
+.card-kind.action { color: #e5534b; }
+.card-kind.unread { color: #3d8fd1; }
+.card-kind.busy { color: #d4860b; }
+.plan-box { padding: 8px 12px; border-radius: 8px; background: rgba(61, 174, 233, 0.08);
+            border: 1px solid rgba(61, 174, 233, 0.30); }
+.excerpt { font-size: 0.95em; opacity: 0.8; }
+button.link-btn { background: none; box-shadow: none; border-color: transparent; color: #3d8fd1; }
+button.link-btn:hover { background: rgba(61, 174, 233, 0.1); }
+.home-empty { opacity: 0.65; }
+"""
+
+# Thème sombre : les teintes des maquettes (Breeze sombre). Le thème clair garde les
+# teintes moyennes ci-dessus, lisibles sur les deux fonds.
+DARK_CSS = """
+.sessions > row.session:selected { background-color: #1b313e; }
+.dot { background: #3daee9; }
+.row-time.unread { color: #3daee9; }
+.row-time.busy, .card-kind.busy, .pill.busy, .strip-label { color: #f0b85a; }
+.st-busy, .strip spinner, .tool-running { color: #e3a23b; }
+.row-time.action, .st-action, .card-kind.action, .pill.waiting, .strip.waiting .strip-label,
+.diff-del, .tool-failed, button.stop, .row-folder.missing { color: #f0716a; }
+.card-kind.unread, .choice-check { color: #3daee9; }
+.hostchip { background: rgba(255, 255, 255, 0.08); color: #d0d4d8; }
+.tagchip, button.tagchip, button.link-btn { color: #6cc0f0; }
+.queued-label { color: #8fd0f4; }
+.composer { border-color: #464b51; }
+.home-card { background: #26292d; border-color: #3a3f45; }
+menubutton.chip > button { border-color: #3a3f45; color: #dfe3e7; }
+menubutton.chip.plan > button { color: #8fd0f4; }
+.count.busy { color: #f0b85a; }
+levelbar.context block.ok { background: #3daee9; }
+levelbar.context block.warn { background: #e3a23b; }
+.usage label.context-text.warn { color: #f0b85a; }
+levelbar.context block.full { background: #f0716a; }
+.usage label.context-text.full { color: #f0716a; }
+button.viewchip.active { color: #8fd0f4; }
 """
 
 # Breeze : curseur de défilement de 6px + bordures 2×5px + marges 2×-9px = -2px, d'où

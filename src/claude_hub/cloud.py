@@ -1,7 +1,6 @@
 """Sessions cloud claude.ai/code."""
 import json
 import re
-import subprocess
 import uuid
 from pathlib import Path
 
@@ -15,25 +14,41 @@ from .subagents import AGENT_TOOLS
 CLOUD_API = "https://api.anthropic.com"
 CLOUD_STATES = {"running": "busy", "idle": "idle", "requires_action": "requires_action"}
 
+# Plateforme annoncée quand on écrit à une session Remote Control. Le serveur la
+# recopie sur le message ; le Claude du terminal ne prend pour tapés par l'utilisateur
+# que ceux venus de ios, android, web_claude_ai ou desktop_app. Sinon il les présente
+# comme venant d'une autre session (« Another Claude session sent a message ») : ils
+# ne valent pas, par exemple, accord pour une permission.
+HUMAN_PLATFORM = "web_claude_ai"
 
-def cloud_get(path):
-    import urllib.error
-    import urllib.request
+
+def cloud_auth():
+    """En-têtes d'authentification de l'API (le jeton n'est jamais affiché)."""
     try:
         cred = json.loads((Path.home() / ".claude/.credentials.json").read_text())["claudeAiOauth"]
         org = json.loads((Path.home() / ".claude.json").read_text())["oauthAccount"]["organizationUuid"]
     except (OSError, ValueError, KeyError) as e:
         raise RuntimeError(f"identifiants Claude introuvables ({e})")
+    return {"Authorization": "Bearer " + cred["accessToken"], "anthropic-version": "2023-06-01",
+            "x-organization-uuid": org}
+
+
+def cloud_error(e):
+    if e.code == 401:
+        return RuntimeError("jeton Claude expiré : lance `claude` une fois pour le renouveler")
+    return RuntimeError(f"API cloud : HTTP {e.code}")
+
+
+def cloud_get(path):
+    import urllib.error
+    import urllib.request
     req = urllib.request.Request(CLOUD_API + path, headers={
-        "Authorization": "Bearer " + cred["accessToken"], "anthropic-version": "2023-06-01",
-        "x-organization-uuid": org, "anthropic-beta": "ccr-byoc-2025-07-29"})
+        **cloud_auth(), "anthropic-beta": "ccr-byoc-2025-07-29"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            raise RuntimeError("jeton Claude expiré : lance `claude` une fois pour le renouveler")
-        raise RuntimeError(f"API cloud : HTTP {e.code}")
+        raise cloud_error(e)
 
 
 def iso_ts(text):
@@ -106,20 +121,13 @@ def remote_connected(sid):
 
 
 def remote_send(sid, text, images):
-    """Envoie un message à une session Remote Control : c'est le Claude déjà lancé
-    (terminal) qui le traite. Texte seul : `claude -p --cloud` (CLI officielle) ;
-    avec images : API directe. Claude Code le présente comme venant d'une autre session."""
-    sid = "session_" + to_cse(sid).split("_", 1)[1]
-    if not images:
-        r = subprocess.run(["claude", "-p", "--cloud", sid, text], capture_output=True, text=True,
-                           timeout=90, cwd=str(Path.home()))
-        if r.returncode != 0:
-            raise RuntimeError((r.stderr or r.stdout).strip()[-300:] or f"code {r.returncode}")
-        return
+    """Envoie à une session Remote Control un message que l'utilisateur a tapé : c'est le
+    Claude déjà lancé (terminal) qui le traite, comme un message écrit sur claude.ai.
+    Ne jamais passer par ici un texte que l'utilisateur n'a pas écrit (voir HUMAN_PLATFORM).
+    Pas de `claude -p --cloud` : la CLI n'envoie pas la plateforme, et le terminal
+    présenterait le message comme venant d'une autre session."""
     import urllib.error
     import urllib.request
-    cred = json.loads((Path.home() / ".claude/.credentials.json").read_text())["claudeAiOauth"]
-    org = json.loads((Path.home() / ".claude.json").read_text())["oauthAccount"]["organizationUuid"]
     content = [{"type": "image", "source": {"type": "base64", "media_type": img["type"], "data": img["data"]}}
                for img in images] + ([{"type": "text", "text": text}] if text else [])
     cse = to_cse(sid)
@@ -127,13 +135,12 @@ def remote_send(sid, text, images):
              "message": {"role": "user", "content": content}}
     req = urllib.request.Request(f"{CLOUD_API}/v1/code/sessions/{cse}/events", method="POST",
                                  data=json.dumps({"events": [{"payload": event}]}).encode(), headers={
-                                     "Authorization": "Bearer " + cred["accessToken"],
-                                     "anthropic-version": "2023-06-01", "x-organization-uuid": org,
+                                     **cloud_auth(), "anthropic-client-platform": HUMAN_PLATFORM,
                                      "Content-Type": "application/json"})
     try:
         urllib.request.urlopen(req, timeout=30).read()
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"API cloud : HTTP {e.code}")
+        raise cloud_error(e)
 
 
 def cloud_history(sid, limit):
@@ -147,11 +154,13 @@ def cloud_history(sid, limit):
     items, agents = [], cloud_agents(events)
     for ev in events:
         content = (ev.get("message") or {}).get("content")
-        if ev.get("type") == "user" and not ev.get("isSynthetic"):
+        if ev.get("type") == "user" and (ev.get("isCompactSummary") or not ev.get("isSynthetic")):
             text = content if isinstance(content, str) else "\n".join(
                 b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
             body = gui_peer_body(text)
-            if body:
+            if ev.get("isCompactSummary"):  # résumé d'une compaction, comme dans les .jsonl
+                items.append({"role": "compact", "text": text})
+            elif body:
                 items.append(peer_item(body))
             elif text.strip() and not text.lstrip().startswith("<"):
                 items.append({"role": "user", "text": text})

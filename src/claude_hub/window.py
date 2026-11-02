@@ -14,10 +14,10 @@ from .hosts import (
     CLOUD, DEFAULT_LABEL, EFFORTS, HISTORY_LIMIT, model_name, MODE_HELP, MODE_LABELS, MODELS, PERMISSION_MODES, SEARCH_HISTORY_LIMIT, SSH_OPTS,
     load_hosts, load_hosts_with, load_settings, remember_mode, run_helper, save_settings,
 )
-from .render import esc, image_widget, make_label, message_widget, texture_from
+from .render import esc, image_widget, make_label, message_widget, texture_from, tool_detail
 from .cursor import (
     check_dirs, cursor_agent, cursor_context, cursor_history, cursor_result, cursor_list, cursor_live, cursor_search,
-    cursor_stat, highlight_words, norm_text, state_text,
+    cursor_stat, highlight_words, norm_text,
 )
 from .cloud import (
     cloud_history, cloud_list, cursor_cloud_history, cursor_cloud_list, iso_ts, remote_connected,
@@ -28,19 +28,46 @@ from .dirpicker import RemoteDirDialog
 from .tags import TagStore, dir_matches, dir_token, parse_query, tag_matches, toggle_token
 from .tagui import TAG_ICON, TagPopover, filter_popover, tag_chips
 from .viewer import FileViewer, ViewerWindow, follow_link, resolve
-from .permissions import PLAN_REFUSAL, RequestCard, control_response, plan_allow, plan_deny
+from .permissions import EXEC_MODES, PLAN_REFUSAL, RequestCard, control_response, plan_allow, plan_deny
 from .planview import PlanPanel
 from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
 from .agentsview import AGENT_ID, AgentsPanel, agent_state
-from .toolcall import ToolCall
+from .toolcall import ToolCall, ToolRun
 from .todos import TodoList, TodoPanel, created_id
 from .rename import RenamePopover, can_rename, rename_session
 from .commands import CommandPopover, fetch_commands, match_commands, typed_command
+from .widgets import (
+    ChoiceButton, Clamp, count_badge, host_chip, host_icon, host_kind, menu_popover, section_title, set_count,
+    short_host, themed_icon, with_placeholder,
+)
+from .listrow import ACTION_STATES, SessionRow, day_label, elapsed_text, local_date, status_kind
+from .home import DirButton, HomePage, plan_digest
+from .changes import EDIT_TOOLS, ChangesPanel, edits_from_items, group_files
+from .switcher import Switcher
+from .launcher import Launcher
+from .views import ViewsBar, add_view, remove_view
+from .usage import UsageBox, context_tokens, cost_text, learn_windows, remember_cost
+
+HOME = ""  # clé du brouillon de la saisie de l'accueil (nouvelle conversation)
+CHAT_HINT = "Écrire à Claude…   « / » pour les commandes"
+HOME_HINT = "Que doit faire Claude ?   « / » pour les commandes"
 
 
-def host_icon(host):
-    return {"local": "computer-symbolic", CLOUD: "claude-hub-cloud-symbolic"}.get(
-        host, "network-server-symbolic")
+def title_of(s):
+    return s.get("title") or s.get("first") or ("Nouvelle conversation" if s.get("new") else "(sans titre)")
+
+
+def is_step(item):
+    """Élément qui fait partie d'une suite d'étapes du fil : appel d'outil ordinaire (pas un
+    sous-agent, ni un plan, ni un message relayé par un agent)."""
+    return (bool(item) and item.get("role") == "tool" and item.get("name") not in AGENT_TOOLS
+            and item.get("name") != "ExitPlanMode" and item.get("via") != "agent")
+
+
+def last_reply(items):
+    """Texte de la dernière réponse de Claude dans un historique."""
+    return next((it["text"] for it in reversed(items or [])
+                 if it.get("role") == "assistant" and (it.get("text") or "").strip()), None)
 
 
 def run_parallel(jobs):
@@ -61,48 +88,10 @@ def run_parallel(jobs):
     return out
 
 
-def row_meta(s, cwd, missing):
-    """Ligne « date · dossier » sous le titre d'une conversation."""
-    meta = f"{GLib.DateTime.new_from_unix_local(int(s.get('mtime', 0))).format('%d/%m %H:%M')}  ·  {cwd}"
-    return "dossier supprimé  ·  " + meta if missing else meta
-
-
-def short_host(host):
-    """user@cerberus.stockly.tech -> cerberus (badge des lignes de la liste)."""
-    return host.rsplit("@", 1)[-1].split(".")[0] or host
-
-
-def host_kind(host):
-    return "ce PC" if host == "local" else "cloud" if host == CLOUD else "SSH"
-
-
-def host_factory(with_name=True):
-    """Lignes d'une liste d'hôtes : icône du type d'hôte (local, SSH, cloud) + nom."""
-    factory = Gtk.SignalListItemFactory()
-
-    def setup(_f, item):
-        box = Gtk.Box(spacing=8)
-        box.append(Gtk.Image())
-        # Dans la liste déroulante, le nom n'est pas tronqué : c'est lui qui donne
-        # sa largeur au menu (sinon celle, minuscule, du bouton à icône seule).
-        box.append(Gtk.Label(xalign=0, visible=with_name))
-        item.set_child(box)
-
-    def bind(_f, item):
-        host = item.get_item().get_string()
-        icon = item.get_child().get_first_child()
-        icon.set_from_icon_name(host_icon(host))
-        icon.set_tooltip_text(host_kind(host) if with_name else f"Nouvelle conversation sur {host}")
-        icon.get_next_sibling().set_text(host)
-    factory.connect("setup", setup)
-    factory.connect("bind", bind)
-    return factory
-
-
 class Hub(Gtk.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Claude Hub", default_width=1150,
-                         default_height=780)
+        super().__init__(application=app, title="Claude Hub", default_width=1280,
+                         default_height=820)
         self.hosts = load_hosts()
         self.settings = load_settings()
         self.sessions = []       # conversations des hôtes cochés, la plus récente en tête
@@ -121,8 +110,13 @@ class Hub(Gtk.ApplicationWindow):
         self.remote_home = {}
         self.host_defaults = {}  # hôte -> {"model", "effort"} réglés dans son ~/.claude
         self.defaults_shown = None  # hôte dont les défauts sont affichés dans les listes
-        self.state_labels = {}   # id de session -> étiquette d'état dans la liste
+        self.state_rows = {}     # id de session -> ligne de la liste, si son hôte est coché
         self.rows = {}           # id de session -> ligne de la liste
+        self.states_pending = False  # compteurs, filtre et accueil à mettre à jour
+        self.segment = "all"     # filtre de la liste : all, todo (à traiter), busy (en cours)
+        self.excerpts = {}       # id -> (date, début de la dernière réponse) pour l'accueil
+        self.excerpt_loading = set()
+        self.syncing_new = False  # vrai quand le programme règle l'hôte d'une nouvelle conversation
         self.notified = {}       # id de session -> conversation à ouvrir depuis sa notification
         self.kept_unread = None  # conversation affichée marquée non lue à la main : le reste jusqu'à la quitter
         self.hub_done = {}       # id de session -> fin du dernier claude -p lancé d'ici
@@ -134,8 +128,11 @@ class Hub(Gtk.ApplicationWindow):
         self.tag_store = TagStore()
         self.shown = 0           # conversations affichées par fill_list
         self.plans_opened = set()  # demandes de plan déjà ouvertes dans le volet (une seule ouverture auto)
+        self.launcher = Launcher()  # nombre de conversations à traiter sur l'icône de la barre des tâches
+        self.switcher = None     # sélecteur Ctrl+K, créé à la première ouverture
+        self.views_pending = False
 
-        paned = Gtk.Paned(position=380)
+        paned = Gtk.Paned(position=340, shrink_start_child=False)
         self.set_child(paned)
         paned.set_start_child(self.build_sidebar())
         # Volet de droite : plan de Claude et fichier cité dans la conversation, une page
@@ -147,28 +144,39 @@ class Hub(Gtk.ApplicationWindow):
         self.plan_panel = PlanPanel(self.plan_run, self.plan_refuse, lambda: self.close_side("plan"))
         self.agents_panel = AgentsPanel(lambda: self.close_side("agents"))
         self.agents_polling = False
+        self.changes_panel = ChangesPanel(lambda: self.close_side("changes"), self.edit_time)
         self.side_stack = Gtk.Stack(vexpand=True)
         self.side_stack.add_titled(self.plan_panel, "plan", "Plan")
         self.side_stack.add_titled(self.viewer, "file", "Fichier")
         self.side_stack.add_titled(self.agents_panel, "agents", "Agents")
+        self.side_stack.add_titled(self.changes_panel, "changes", "Modifications")
         self.side_switch = Gtk.StackSwitcher(stack=self.side_stack, halign=Gtk.Align.CENTER,
                                              margin_top=6)
         self.side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["side"])
         self.side.append(self.side_switch)
         self.side.append(self.side_stack)
-        for w in (self.viewer, self.plan_panel, self.agents_panel, self.side):
+        for w in (self.viewer, self.plan_panel, self.agents_panel, self.changes_panel, self.side):
             w.set_visible(False)
         self.chat_paned.set_end_child(self.side)
         paned.set_end_child(self.chat_paned)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.GLOBAL)
-        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("<Control>n"),
-                                                Gtk.CallbackAction.new(lambda *_a: self.new_here() or True)))
+        for accel, action in (("<Control>n", self.new_here),
+                              ("<Control>k", self.show_switcher),
+                              ("<Alt>Up", lambda: self.step_row(-1)),
+                              ("<Alt>Down", lambda: self.step_row(1)),
+                              ("<Alt><Shift>Up", lambda: self.step_row(-1, todo=True)),
+                              ("<Alt><Shift>Down", lambda: self.step_row(1, todo=True))):
+            shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(accel),
+                                                    Gtk.CallbackAction.new(lambda *_a, f=action: f() or True)))
         self.add_controller(shortcuts)
+        # fermer la fenêtre retire la pastille de l'icône
+        self.connect("close-request", lambda _w: self.launcher.set_count(0) or False)
 
         # revenir sur la fenêtre vaut lecture de la conversation affichée
         self.connect("notify::is-active", lambda w, _p: w.is_active() and w.current
                      and w.current["id"] != w.kept_unread and w.mark_read(w.current["id"]))
         self.hosts_changed()
+        self.go_home()
         GLib.timeout_add_seconds(4, self.poll)
         GLib.timeout_add_seconds(3, self.poll_states)
         GLib.timeout_add_seconds(4, self.poll_agents)
@@ -185,90 +193,86 @@ class Hub(Gtk.ApplicationWindow):
 
     # -- construction --
     def build_sidebar(self):
-        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
-                       margin_top=6, margin_start=6, margin_end=6, margin_bottom=6)
-        row = Gtk.Box(spacing=4)
-        # Hôtes listés : cases à cocher dans un popover, résumé (icônes + noms) sur le bouton.
-        self.hosts_btn = Gtk.MenuButton(hexpand=True, tooltip_text="Hôtes dont les conversations sont listées")
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["sidebar-list"])
+        top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=10, margin_start=10,
+                      margin_end=10, margin_bottom=8)
+        row = Gtk.Box(spacing=6)
+        # Hôtes et sources listés : menu à cases, résumé (icônes + noms) sur le bouton.
+        self.hosts_btn = Gtk.MenuButton(hexpand=True, tooltip_text="Hôtes et sources affichés")
         self.hosts_summary = Gtk.Box(spacing=4)
         self.hosts_btn.set_child(self.hosts_summary)
-        self.hosts_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6,
-                                 margin_bottom=6, margin_start=6, margin_end=6)
-        self.hosts_btn.set_popover(Gtk.Popover(child=self.hosts_box))
+        self.hosts_btn.set_popover(self.build_hosts_menu())
         self.build_host_checks()
         row.append(self.hosts_btn)
-
-        add = Gtk.MenuButton(icon_name="list-add-symbolic", tooltip_text="Ajouter un hôte SSH")
-        pop_box = Gtk.Box(spacing=4, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
-        self.host_entry = Gtk.Entry(placeholder_text="hôte ou user@hôte")
-        self.host_entry.connect("activate", self.add_host)
-        pop_box.append(self.host_entry)
-        add.set_popover(Gtk.Popover(child=pop_box))
-        row.append(add)
-
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Rafraîchir")
         refresh.connect("clicked", lambda _b: self.refresh_list())
         row.append(refresh)
-        side.append(row)
-
-        row = Gtk.Box(spacing=4)
-        # Hôte de la nouvelle conversation : icône seule sur le bouton, noms dans la liste.
-        self.new_hosts = [h for h in self.hosts if h != CLOUD]
-        self.new_host_dd = Gtk.DropDown(model=Gtk.StringList.new(self.new_hosts),
-                                        factory=host_factory(with_name=False),
-                                        list_factory=host_factory())
-        self.new_host_dd.connect("notify::selected", lambda *_: self.new_host_changed())
-        self.new_host_dd.set_tooltip_text(f"Nouvelle conversation sur {self.new_host}")
-        row.append(self.new_host_dd)
-        self.dir_entry = Gtk.Entry(placeholder_text="dossier (défaut : ~)", hexpand=True)
-        row.append(self.dir_entry)
-        self.dir_btn = Gtk.Button(icon_name="folder-open-symbolic", tooltip_text="Choisir le dossier")
-        self.dir_btn.connect("clicked", self.pick_dir)
-        row.append(self.dir_btn)
-        self.new_btn = Gtk.Button(label="Nouvelle")
-        self.new_btn.connect("clicked", self.new_session)
+        self.new_btn = Gtk.Button(tooltip_text="Nouvelle conversation (Ctrl+N)")
+        inner = Gtk.Box(spacing=6)
+        inner.append(Gtk.Image(icon_name="claude-hub-compose-symbolic"))
+        inner.append(Gtk.Label(label="Nouvelle"))
+        self.new_btn.set_child(inner)
+        self.new_btn.connect("clicked", lambda _b: self.new_here())
         row.append(self.new_btn)
-        side.append(row)
+        top.append(row)
 
-        row = Gtk.Box(spacing=4)
-        self.search = Gtk.SearchEntry(placeholder_text="Rechercher…  #tag  #dossier/  dir:~/chemin",
+        row = Gtk.Box(spacing=6)
+        self.search = Gtk.SearchEntry(placeholder_text="Rechercher…  #tag  dir:~/chemin",
                                       hexpand=True, search_delay=350,
                                       tooltip_text="Texte : titres et contenu des conversations\n"
                                                    "#tag : conversations taguées, sur tous les hôtes\n"
                                                    "#dossier/ : tous les tags rangés sous dossier/\n"
                                                    "dir:~/chemin : conversations lancées dans ce dossier")
         self.search.connect("search-changed", self.on_search)
+        self.search.connect("changed", lambda _e: self.update_views())
         row.append(self.search)
         for icon, tip, make in ((TAG_ICON, "Filtrer par tag (tous les hôtes)", self.tags_menu),
                                 ("folder-symbolic", "Filtrer par dossier de travail", self.dirs_menu)):
             btn = Gtk.MenuButton(icon_name=icon, tooltip_text=tip)
             btn.set_create_popup_func(make)
             row.append(btn)
-        side.append(row)
+        top.append(row)
+        # Vues enregistrées : recherches gardées en pastilles.
+        self.views_bar = ViewsBar(self.apply_view, self.save_view, self.remove_view)
+        top.append(self.views_bar)
+        self.update_views()
 
-        row = Gtk.Box(spacing=10, margin_start=2)
-        self.show_claude = Gtk.CheckButton(label="Claude", active=self.settings["claude"],
-                                           tooltip_text="Récupérer les conversations Claude Code")
-        self.show_cursor = Gtk.CheckButton(label="Cursor", active=self.settings["cursor"],
-                                           tooltip_text="Récupérer les conversations Cursor")
-        self.show_archived = Gtk.CheckButton(label="Archivées", active=self.settings["show_archived"],
-                                             tooltip_text="Afficher aussi les conversations archivées")
-        for key, btn in (("claude", self.show_claude), ("cursor", self.show_cursor)):
-            btn.connect("toggled", self.on_source_toggled, key)
-        self.show_archived.connect("toggled", self.on_archived_toggled)
-        for btn in (self.show_claude, self.show_cursor, self.show_archived):
-            row.append(btn)
-        side.append(row)
+        # Filtre par état : toutes, à traiter (non lues, demandes), en cours.
+        segs = Gtk.Box(css_classes=["linked", "segments"], homogeneous=True)
+        self.segments, self.seg_counts, group = {}, {}, None
+        for key, label, tip in (("all", "Toutes", "Toutes les conversations"),
+                                ("todo", "À traiter", "Réponses non lues, plans, questions et "
+                                                      "autorisations en attente\n"
+                                                      "Alt+Maj+↓ : la suivante, Alt+Maj+↑ : la précédente"),
+                                ("busy", "En cours", "Conversations où Claude travaille")):
+            btn = Gtk.ToggleButton(active=key == "all", tooltip_text=tip, group=group)
+            group = group or btn
+            inner = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+            inner.append(Gtk.Label(label=label))
+            if key != "all":
+                self.seg_counts[key] = count_badge(key)
+                inner.append(self.seg_counts[key])
+            btn.set_child(inner)
+            btn.connect("toggled", self.on_segment, key)
+            self.segments[key] = btn
+            segs.append(btn)
+        top.append(segs)
+        side.append(top)
 
-        self.listbox = Gtk.ListBox()
-        # plus récente en tête ; touch() fait remonter une ligne sans reconstruire la liste
-        self.listbox.set_sort_func(lambda a, b: (b.session.get("mtime", 0) > a.session.get("mtime", 0))
-                                   - (b.session.get("mtime", 0) < a.session.get("mtime", 0)))
+        self.listbox = Gtk.ListBox(css_classes=["sessions"])
+        # épinglées, puis plus récente en tête ; touch() fait remonter une ligne sans reconstruire la liste
+        self.listbox.set_sort_func(lambda a, b: (b.pinned - a.pinned) or (
+            (b.session.get("mtime", 0) > a.session.get("mtime", 0))
+            - (b.session.get("mtime", 0) < a.session.get("mtime", 0))))
+        self.listbox.set_header_func(self.day_header)
+        self.listbox.set_filter_func(self.row_visible)
         self.listbox.connect("row-activated", self.on_row)
+        self.list_day = local_date(time.time())
         # clic droit sur une ligne : menu contextuel (actions par id de session)
         for name, handler in (("toggle-unread", self.toggle_unread), ("row-tags", self.row_tags),
                               ("row-rename", self.row_rename), ("row-archive", self.row_archive),
-                              ("row-dir", self.row_dir)):
+                              ("row-dir", self.row_dir), ("copy-id", self.copy_id),
+                              ("open-web", self.open_web), ("row-pin", self.toggle_pin)):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             # après la fermeture du menu : un popover ouvert par-dessus lui serait refusé
             action.connect("activate", lambda _a, sid, handler=handler:
@@ -277,92 +281,157 @@ class Hub(Gtk.ApplicationWindow):
         menu_click = Gtk.GestureClick(button=3)
         menu_click.connect("pressed", self.on_row_menu)
         self.listbox.add_controller(menu_click)
-        side.append(Gtk.ScrolledWindow(child=self.listbox, vexpand=True))
-        self.list_status = Gtk.Label(xalign=0, css_classes=["sid"], ellipsize=Pango.EllipsizeMode.END)
-        side.append(self.list_status)
+        self.list_scroll = Gtk.ScrolledWindow(child=self.listbox, vexpand=True,
+                                              hscrollbar_policy=Gtk.PolicyType.NEVER)
+        side.append(self.list_scroll)
+        footer = Gtk.Box(css_classes=["list-footer"])
+        self.list_status = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self.list_status.connect("notify::label", lambda lbl, _p: lbl.set_tooltip_text(lbl.get_label() or None))
+        footer.append(self.list_status)
+        side.append(footer)
         return side
+
+    def build_hosts_menu(self):
+        """Menu du bouton des hôtes : hôtes affichés, sources (Claude, Cursor, archives),
+        ajout d'un hôte SSH."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, width_request=300)
+        box.append(section_title("Hôtes"))
+        self.hosts_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(self.hosts_box)
+        box.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        box.append(section_title("Sources"))
+        self.show_claude = Gtk.CheckButton(label="Claude Code", active=self.settings["claude"],
+                                           tooltip_text="Récupérer les conversations Claude Code",
+                                           css_classes=["menu-row"])
+        self.show_cursor = Gtk.CheckButton(label="Cursor", active=self.settings["cursor"],
+                                           tooltip_text="Récupérer les conversations Cursor",
+                                           css_classes=["menu-row"])
+        self.show_archived = Gtk.CheckButton(active=self.settings["show_archived"],
+                                             tooltip_text="Afficher aussi les conversations archivées",
+                                             css_classes=["menu-row"])
+        line = Gtk.Box(spacing=8)
+        line.append(Gtk.Label(label="Archivées", xalign=0, hexpand=True))
+        self.archived_count = Gtk.Label(css_classes=["menu-kind"])
+        line.append(self.archived_count)
+        self.show_archived.set_child(line)
+        for key, btn in (("claude", self.show_claude), ("cursor", self.show_cursor)):
+            btn.connect("toggled", self.on_source_toggled, key)
+        self.show_archived.connect("toggled", self.on_archived_toggled)
+        for btn in (self.show_claude, self.show_cursor, self.show_archived):
+            box.append(btn)
+        box.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        add = Gtk.Button(css_classes=["flat"])
+        inner = Gtk.Box(spacing=10)
+        inner.append(Gtk.Image(icon_name="list-add-symbolic"))
+        inner.append(Gtk.Label(label="Ajouter un hôte SSH…"))
+        add.set_child(inner)
+        self.host_entry = Gtk.Entry(placeholder_text="hôte ou user@hôte, puis Entrée", visible=False)
+        self.host_entry.connect("activate", self.add_host)
+        add.connect("clicked", lambda _b: (self.host_entry.set_visible(True), self.host_entry.grab_focus()))
+        box.append(add)
+        box.append(self.host_entry)
+        pop = menu_popover(box)
+        pop.connect("closed", lambda _p: self.host_entry.set_visible(False))
+        return pop
 
     def build_chat(self):
         chat = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8, margin_start=12,
-                       margin_end=12, margin_bottom=4)
-        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, hexpand=True)
-        self.title.set_markup("<b>Choisis une conversation</b>")
-        self.subtitle = Gtk.Label(xalign=0, css_classes=["sid"], selectable=True,
-                                  ellipsize=Pango.EllipsizeMode.MIDDLE)
-        top = Gtk.Box(spacing=8)
+        # Accueil (aucune conversation affichée) ou conversation : en-tête et fil.
+        self.pages = Gtk.Stack(vexpand=True)
+        self.home = HomePage(self)
+        self.pages.add_named(self.home, "home")
+        conv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, css_classes=["chat-head"])
+        top = Gtk.Box(spacing=10)
+        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["chat-title"])
         top.append(self.title)
-        self.activity = Gtk.Box(spacing=6, css_classes=["activity"], visible=False)
+        self.activity = Gtk.Box(spacing=6, css_classes=["pill"], visible=False, valign=Gtk.Align.CENTER)
         self.spinner = Gtk.Spinner()
         self.activity_label = Gtk.Label()
         self.activity.append(self.spinner)
         self.activity.append(self.activity_label)
         top.append(self.activity)
-        self.agents_btn = Gtk.Button(visible=False, css_classes=["flat"],
-                                     tooltip_text="Sous-agents de cette conversation")
+        top.append(Gtk.Box(hexpand=True))
+        buttons = Gtk.Box(spacing=2, valign=Gtk.Align.CENTER)
+        self.agents_btn = Gtk.Button(visible=False, css_classes=["flat"])
+        inner = Gtk.Box(spacing=5)
+        inner.append(Gtk.Image(icon_name="claude-hub-agents-symbolic"))
+        self.agents_count = Gtk.Label()
+        inner.append(self.agents_count)
+        self.agents_btn.set_child(inner)
         self.agents_btn.connect("clicked", lambda _b: self.toggle_agents())
-        top.append(self.agents_btn)
-        self.web_btn = Gtk.Button(label="Ouvrir sur claude.ai ↗", visible=False, css_classes=["flat"],
-                                  tooltip_text="Ouvrir cette session dans le navigateur")
-        self.web_btn.connect("clicked", lambda _b: Gtk.UriLauncher.new(
-            f"https://claude.ai/code/{self.current['id']}").launch(self, None, None))
-        top.append(self.web_btn)
+        buttons.append(self.agents_btn)
+        self.changes_btn = Gtk.Button(visible=False, css_classes=["flat"])
+        inner = Gtk.Box(spacing=5)
+        inner.append(Gtk.Image(icon_name="claude-hub-changes-symbolic"))
+        self.changes_count = Gtk.Label()
+        inner.append(self.changes_count)
+        self.changes_btn.set_child(inner)
+        self.changes_btn.connect("clicked", lambda _b: self.toggle_changes())
+        buttons.append(self.changes_btn)
+        self.edits_gen = 0       # dernière lecture des modifications demandée
+        self.edits_timer = 0     # relecture prévue pendant une réponse
         self.new_here_btn = Gtk.Button(icon_name="document-new-symbolic", visible=False,
                                        css_classes=["flat"],
                                        tooltip_text="Nouvelle conversation dans ce dossier (Ctrl+N)")
         self.new_here_btn.connect("clicked", lambda _b: self.new_here())
-        top.append(self.new_here_btn)
+        buttons.append(self.new_here_btn)
         self.tag_btn = Gtk.Button(icon_name=TAG_ICON, visible=False, css_classes=["flat"],
                                   tooltip_text="Tags de cette conversation")
         self.tag_btn.connect("clicked", lambda b: self.edit_tags(b, self.current, self.current["host"]))
-        top.append(self.tag_btn)
+        buttons.append(self.tag_btn)
         self.rename_btn = Gtk.Button(icon_name="document-edit-symbolic", visible=False,
                                      css_classes=["flat"], tooltip_text="Renommer la conversation")
         self.rename_btn.connect("clicked", self.ask_rename)
-        top.append(self.rename_btn)
+        buttons.append(self.rename_btn)
+        self.more_btn = Gtk.MenuButton(visible=False, tooltip_text="Autres actions : lue ou non lue, "
+                                                                   "archiver, copier l'identifiant…")
+        self.more_btn.add_css_class("flat")
+        self.more_btn.set_child(themed_icon("overflow-menu-symbolic", "view-more-symbolic"))
+        self.more_btn.set_create_popup_func(self.head_menu)
+        buttons.append(self.more_btn)
+        top.append(buttons)
         head.append(top)
-        head.append(self.subtitle)
-        self.head_tags = Gtk.Box(spacing=4, visible=False, margin_top=2)
-        head.append(self.head_tags)
-        chat.append(head)
+        # hôte · modèle et effort de la dernière réponse · dossier · id · tags
+        self.head_meta = Gtk.Box(spacing=8, css_classes=["head-meta"])
+        self.head_host = Gtk.Box()
+        self.head_model = Gtk.Label()
+        self.head_cwd = Gtk.Label(css_classes=["mono"], ellipsize=Pango.EllipsizeMode.MIDDLE,
+                                  selectable=True)
+        self.head_id = Gtk.Label(css_classes=["mono"])
+        self.head_tags = Gtk.Box(spacing=4, visible=False)
+        self.head_usage = UsageBox()  # contexte rempli, coût de la dernière réponse
+        self.head_seps = [Gtk.Label(label="·") for _ in range(2)]
+        for w in (self.head_host, self.head_model, self.head_usage, self.head_seps[0], self.head_cwd,
+                  self.head_seps[1], self.head_id, self.head_tags):
+            self.head_meta.append(w)
+        head.append(self.head_meta)
+        conv.append(head)
 
-        self.msgs = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_bottom=8)
-        self.scroll = Gtk.ScrolledWindow(child=self.msgs, vexpand=True)
-        chat.append(self.scroll)
+        self.msgs = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=14,
+                            margin_bottom=8, margin_start=12, margin_end=12, css_classes=["msgs"])
+        self.scroll = Gtk.ScrolledWindow(child=Clamp(self.msgs, 804, hexpand=True), vexpand=True,
+                                         hscrollbar_policy=Gtk.PolicyType.NEVER)
+        conv.append(self.scroll)
+        self.pages.add_named(conv, "chat")
+        chat.append(self.pages)
         # Collé en bas : la vue suit les changements de taille (message mis en page plus
-        # tard, bandeau « Claude réfléchit » qui réduit la zone) tant qu'on n'a pas remonté.
+        # tard, bandeau d'activité qui réduit la zone) tant qu'on n'a pas remonté.
         self.follow_end = self.follow_pending = False
         vadj = self.scroll.get_vadjustment()
         vadj.connect("changed", self.on_scroll_resized)
         vadj.connect("value-changed", self.on_scroll_moved)
 
+        # Sous le fil, dans la même colonne : tâches, copie en préparation, file, saisie.
+        bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        chat.append(Clamp(bottom, 780, hexpand=True, margin_start=20, margin_end=20, margin_bottom=14))
+
         # Tâches de Claude (TodoWrite, TaskCreate…), tant qu'il en reste à faire.
         self.todo_panel = TodoPanel()
-        chat.append(self.todo_panel)
-
-        # Bandeau animé au-dessus de la saisie pendant que Claude travaille.
-        self.thinking = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
-                                     transition_duration=200)
-        bar = Gtk.Box(spacing=8, css_classes=["thinking"], margin_start=8, margin_end=8)
-        self.thinking_spinner = Gtk.Spinner()
-        self.thinking_label = Gtk.Label(xalign=0)
-        # Trois points toujours présents dont seule l'opacité change : la taille ne
-        # varie jamais (changer le texte laissait des restes de l'ancien rendu).
-        self.thinking_dot_labels = [Gtk.Label(label=".") for _ in range(3)]
-        bar.append(self.thinking_spinner)
-        self.thinking_text_box = Gtk.Box()
-        self.thinking_text_box.append(self.thinking_label)
-        for dot in self.thinking_dot_labels:
-            self.thinking_text_box.append(dot)
-        bar.append(self.thinking_text_box)
-        self.thinking_bar = bar
-        self.thinking.set_child(bar)
-        chat.append(self.thinking)
-        self.thinking_text, self.thinking_dots, self.thinking_timer = "", 0, 0
+        bottom.append(self.todo_panel)
 
         # Copie de la conversation à partir d'un message (bouton au survol des messages).
-        self.fork_bar = Gtk.Box(spacing=6, margin_start=8, margin_end=8, margin_top=6,
-                                css_classes=["fork-bar"], visible=False)
+        self.fork_bar = Gtk.Box(spacing=6, css_classes=["fork-bar"], visible=False)
         self.fork_bar.append(Gtk.Image(icon_name="claude-hub-fork-symbolic"))
         self.fork_label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
         self.fork_bar.append(self.fork_label)
@@ -370,25 +439,55 @@ class Hub(Gtk.ApplicationWindow):
                             tooltip_text="Annuler la copie", valign=Gtk.Align.CENTER)
         cancel.connect("clicked", lambda _b: self.cancel_fork())
         self.fork_bar.append(cancel)
-        chat.append(self.fork_bar)
+        bottom.append(self.fork_bar)
 
         # Messages en attente de la fin de la réponse en cours.
-        self.queue_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=8,
-                                 margin_end=8, margin_top=6, visible=False)
-        chat.append(self.queue_box)
+        self.queue_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, visible=False)
+        bottom.append(self.queue_box)
+
+        self.composer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["composer"],
+                                overflow=Gtk.Overflow.HIDDEN)
+        bottom.append(self.composer)
+        # Activité de Claude : étape en cours, sa durée, et « Arrêter ».
+        self.strip = Gtk.Box(spacing=8, css_classes=["strip"], visible=False)
+        self.strip_spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
+        self.strip_label = Gtk.Label(css_classes=["strip-label"])
+        self.strip_detail = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
+                                      css_classes=["mono", "dim"])
+        self.strip_time = Gtk.Label(css_classes=["strip-time"])
+        self.stop_btn = Gtk.Button(css_classes=["stop"], visible=False, valign=Gtk.Align.CENTER,
+                                   tooltip_text="Interrompre Claude (Échap)")
+        inner = Gtk.Box(spacing=6)
+        inner.append(Gtk.Image(icon_name="media-playback-stop-symbolic"))
+        inner.append(Gtk.Label(label="Arrêter"))
+        self.stop_btn.set_child(inner)
+        self.stop_btn.connect("clicked", lambda _b: self.stop())
+        for w in (self.strip_spinner, self.strip_label, self.strip_detail, self.strip_time, self.stop_btn):
+            self.strip.append(w)
+        self.composer.append(self.strip)
+        self.strip_since, self.strip_timer = None, 0
+
+        # Accueil : hôte et dossier de la nouvelle conversation.
+        self.new_line = Gtk.Box(spacing=6, css_classes=["composer-new"], visible=False)
+        self.new_hosts = [h for h in self.hosts if h != CLOUD]
+        self.new_host_btn = ChoiceButton(
+            self.new_hosts, 0, icons=lambda i: host_icon(self.new_hosts[i]),
+            short=lambda _i, h: short_host(h), tooltip="Hôte de la nouvelle conversation",
+            on_change=lambda _i: self.new_host_changed())
+        self.dir_btn = DirButton(self.recent_dirs, lambda: self.pick_dir(None))
+        for w in (Gtk.Label(label="Nouvelle conversation sur"), self.new_host_btn, Gtk.Label(label="dans"),
+                  self.dir_btn):
+            self.new_line.append(w)
+        self.composer.append(self.new_line)
 
         self.attachments = []    # [(media_type, octets)]
-        self.attach_box = Gtk.Box(spacing=6, margin_start=8, margin_top=6, visible=False,
+        self.attach_box = Gtk.Box(spacing=6, margin_start=10, margin_top=8, visible=False,
                                   halign=Gtk.Align.START)
-        chat.append(self.attach_box)
+        self.composer.append(self.attach_box)
 
-        bottom = Gtk.Box(spacing=6, margin_top=6, margin_start=8, margin_end=8, margin_bottom=8)
-        clip = Gtk.Button(icon_name="mail-attachment-symbolic", valign=Gtk.Align.START,
-                          tooltip_text="Joindre des images (ou Ctrl+V, ou glisser-déposer)")
-        clip.connect("clicked", self.pick_images)
-        bottom.append(clip)
-        self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, hexpand=True,
-                                  top_margin=6, bottom_margin=6, left_margin=6, right_margin=6)
+        self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, hexpand=True, top_margin=10,
+                                  bottom_margin=4, left_margin=12, right_margin=12)
+        self.input.add_css_class("composer-input")  # en plus de « view »
         self.input.connect("paste-clipboard", self.on_paste)
         self.input.get_buffer().connect("changed", lambda _b: (self.draft_changed(),
                                                                self.update_commands()))
@@ -399,36 +498,45 @@ class Hub(Gtk.ApplicationWindow):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.on_key)
         self.input.add_controller(keys)
-        input_scroll = Gtk.ScrolledWindow(child=self.input, hexpand=True, min_content_height=70,
-                                          max_content_height=220, propagate_natural_height=True)
-        bottom.append(input_scroll)
+        input_scroll = Gtk.ScrolledWindow(child=self.input, hexpand=True, min_content_height=44,
+                                          max_content_height=220, propagate_natural_height=True,
+                                          hscrollbar_policy=Gtk.PolicyType.NEVER)
+        field, self.placeholder = with_placeholder(input_scroll, self.input, CHAT_HINT)
+        self.composer.append(field)
         # Complétion des commandes « / » : liste par (hôte, dossier), demandée à claude.
         self.commands = {}  # (hôte, dossier) -> [commande] | "loading" | Exception
         self.cmd_popover = CommandPopover(input_scroll, self.pick_command)
         self.cmd_dismissed = False
-        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        tuning = Gtk.Box(spacing=4)
-        self.model_dd = self.choice_dd(MODELS, "model", "Modèle (--model)", self.model_label)
-        self.effort_dd = self.choice_dd(EFFORTS, "effort", "Effort de raisonnement (--effort)")
-        tuning.append(self.model_dd)
-        tuning.append(self.effort_dd)
-        side.append(tuning)
-        self.mode_dd = Gtk.DropDown.new_from_strings([MODE_LABELS[m] for m in PERMISSION_MODES])
-        self.mode_dd.set_tooltip_text(
-            "Mode de permissions, retenu pour chaque conversation ; les demandes de Claude "
-            "s'affichent dans le fil\n\n" + "\n".join(f"{MODE_LABELS[m]} : {MODE_HELP[m]}" for m in PERMISSION_MODES)
-            + "\n\nMaj+Tab : bascule automatique / plan")
-        self.mode_dd.set_selected(PERMISSION_MODES.index(self.settings["mode"]))
-        self.syncing_mode = False  # vrai quand c'est la conversation qui règle la liste, pas l'utilisateur
-        self.mode_dd.connect("notify::selected", lambda *_: self.push_mode())
-        side.append(self.mode_dd)
+
+        bar = Gtk.Box(spacing=6, css_classes=["composer-bar"])
+        clip = Gtk.Button(icon_name="mail-attachment-symbolic", css_classes=["flat"],
+                          tooltip_text="Joindre des images (ou Ctrl+V, ou glisser-déposer)")
+        clip.connect("clicked", self.pick_images)
+        bar.append(clip)
+        self.model_dd = self.choice_dd(MODELS, "model", "Modèle (--model)", self.model_label,
+                                       self.model_short)
+        self.effort_dd = self.choice_dd(EFFORTS, "effort", "Effort de raisonnement (--effort)",
+                                        short=self.effort_short)
+        bar.append(self.model_dd)
+        bar.append(self.effort_dd)
+        self.mode_dd = ChoiceButton(
+            [MODE_LABELS[m] for m in PERMISSION_MODES], PERMISSION_MODES.index(self.settings["mode"]),
+            helps=[MODE_HELP[m] for m in PERMISSION_MODES], on_change=lambda _i: self.on_mode_changed(),
+            tooltip="Mode de permissions, retenu pour chaque conversation ; les demandes de Claude "
+                    "s'affichent dans le fil\nMaj+Tab : bascule automatique / plan")
+        self.mode_dd.list.add_css_class("modes")
+        self.syncing_mode = False  # vrai quand c'est la conversation qui règle le mode, pas l'utilisateur
+        self.paint_mode()
+        bar.append(self.mode_dd)
+        self.status = Gtk.Label(xalign=1, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
+                                css_classes=["hint"])
+        self.status.connect("notify::label", lambda lbl, _p: lbl.set_tooltip_text(lbl.get_label() or None))
+        bar.append(self.status)
         # Bouton à menu : « Envoyer » et ses variantes (tout de suite, en file).
-        # hexpand=False : le bouton remplit la boîte sans élargir la colonne (sinon
-        # elle prend autant de place que la saisie)
-        send_box = Gtk.Box(css_classes=["linked"], hexpand=False)
-        self.send_btn = Gtk.Button(label="Envoyer", css_classes=["suggested-action"], hexpand=True)
+        self.send_box = Gtk.Box(css_classes=["linked"], valign=Gtk.Align.CENTER)
+        self.send_btn = Gtk.Button(label="Envoyer", css_classes=["suggested-action"])
         self.send_btn.connect("clicked", lambda _b: self.send())
-        send_box.append(self.send_btn)
+        self.send_box.append(self.send_btn)
         action = Gio.SimpleAction.new("send", GLib.VariantType.new("s"))
         action.connect("activate", lambda _a, mode: self.send(mode.get_string()))
         self.add_action(action)
@@ -441,21 +549,18 @@ class Hub(Gtk.ApplicationWindow):
             menu.append_item(item)
         # Bouton ordinaire plutôt qu'un Gtk.MenuButton : Breeze ne dessine pas sa flèche
         # et ne l'accole pas (bouton « toggle » imbriqué). Chevron des listes déroulantes.
-        arrow = Gtk.Button(icon_name="go-down-symbolic", css_classes=["suggested-action"],
+        arrow = Gtk.Button(icon_name="pan-down-symbolic", css_classes=["suggested-action"],
                            tooltip_text="Autres façons d'envoyer")
         self.send_menu = Gtk.PopoverMenu.new_from_model(menu)
         self.send_menu.set_parent(arrow)
         arrow.connect("clicked", lambda _b: self.send_menu.popup())
-        send_box.append(arrow)
-        side.append(send_box)
-        self.stop_btn = Gtk.Button(label="Arrêter", css_classes=["destructive-action"], visible=False)
-        self.stop_btn.connect("clicked", lambda _b: self.stop())
-        side.append(self.stop_btn)
-        bottom.append(side)
-        chat.append(bottom)
-        self.status = Gtk.Label(xalign=0, css_classes=["sid"], margin_start=10, margin_bottom=4,
-                                ellipsize=Pango.EllipsizeMode.MIDDLE)
-        chat.append(self.status)
+        self.send_box.append(arrow)
+        bar.append(self.send_box)
+        self.start_btn = Gtk.Button(label="Démarrer", css_classes=["suggested-action"], visible=False,
+                                    valign=Gtk.Align.CENTER, tooltip_text="Démarrer la conversation (Entrée)")
+        self.start_btn.connect("clicked", lambda _b: self.start_from_home())
+        bar.append(self.start_btn)
+        self.composer.append(bar)
         return chat
 
     def model_label(self, model):
@@ -463,29 +568,41 @@ class Hub(Gtk.ApplicationWindow):
         version = self.settings["model_versions"].get(model)
         return f"{model} · {model_name(version)}" if version else model_name(model)
 
+    def model_display(self, model):
+        """Nom court d'un modèle (alias ou identifiant) : « Opus 5.5 »."""
+        version = self.settings["model_versions"].get(model)
+        return model_name(version) if version else (model.capitalize() if model in MODELS
+                                                     else model_name(model))
+
+    def model_short(self, i, _label):
+        """Texte du bouton du modèle : son nom, ou celui du défaut de l'hôte."""
+        if i:
+            return self.model_display(MODELS[i])
+        value = (self.host_defaults.get(self.defaults_shown) or {}).get("model")
+        return self.model_display(value) if value else "Modèle par défaut"
+
+    def effort_short(self, i, _label):
+        if i:
+            return EFFORTS[i]
+        value = (self.host_defaults.get(self.defaults_shown) or {}).get("effort")
+        return value or "Effort par défaut"
+
     def relabel_models(self):
         """Remet les versions à jour dans la liste des modèles (après une réponse de claude)."""
-        sel = self.model_dd.get_selected()
-        self.model_dd.get_model().splice(1, len(MODELS) - 1, [self.model_label(m) for m in MODELS[1:]])
-        self.model_dd.set_selected(sel)
+        for i, m in enumerate(MODELS[1:], 1):
+            self.model_dd.set_item_label(i, self.model_label(m))
         self.defaults_shown = None
         self.show_defaults()
 
-    def choice_dd(self, options, key, tooltip, label=str):
-        """Liste déroulante dont le choix est mémorisé dans settings[key] (None = défaut)."""
-        dd = Gtk.DropDown.new_from_strings([options[0]] + [label(o) for o in options[1:]])
-        dd.set_tooltip_text(tooltip)
-        if self.settings[key] in options[1:]:
-            dd.set_selected(options.index(self.settings[key]))
+    def choice_dd(self, options, key, tooltip, label=str, short=None):
+        """Bouton à choix dont le choix est mémorisé dans settings[key] (None = défaut)."""
+        selected = options.index(self.settings[key]) if self.settings[key] in options[1:] else 0
 
-        def changed(dd, _pspec):
-            i = dd.get_selected()
-            if i >= len(options):  # aucun choix, le temps qu'un libellé soit remplacé
-                return
+        def changed(i):
             self.settings[key] = options[i] if i > 0 else None
             save_settings(self.settings)
-        dd.connect("notify::selected", changed)
-        return dd
+        return ChoiceButton([options[0]] + [label(o) for o in options[1:]], selected, tooltip=tooltip,
+                            short=short, on_change=changed)
 
     def show_defaults(self):
         """Affiche dans le premier choix des listes le modèle et l'effort par défaut de l'hôte."""
@@ -500,9 +617,7 @@ class Hub(Gtk.ApplicationWindow):
             value = known and known.get(key)
             if value and key == "model":
                 value = self.model_label(value)
-            sel = dd.get_selected()
-            dd.get_model().splice(0, 1, [DEFAULT_LABEL[key].format(value) if value else options[0]])
-            dd.set_selected(sel)
+            dd.set_item_label(0, DEFAULT_LABEL[key].format(value) if value else options[0])
             if known is not None:
                 what += f"\nDéfaut sur {host} : {value or 'non réglé, laissé à claude'}"
             dd.set_tooltip_text(what)
@@ -525,29 +640,33 @@ class Hub(Gtk.ApplicationWindow):
 
     @property
     def new_host(self):
-        """Hôte où « Nouvelle » crée une conversation."""
-        return self.new_hosts[self.new_host_dd.get_selected()]
+        """Hôte d'une nouvelle conversation (choisi sur l'accueil)."""
+        return self.new_hosts[self.new_host_btn.get_selected()]
 
     def build_host_checks(self):
-        """Cases des hôtes dans le popover, et résumé sur le bouton."""
+        """Cases des hôtes dans le menu, et résumé sur le bouton."""
         while (child := self.hosts_box.get_first_child()):
             self.hosts_box.remove(child)
         shown = self.settings["hosts_shown"]
         for h in self.hosts:
-            check = Gtk.CheckButton(active=h in shown, tooltip_text=host_kind(h))
+            check = Gtk.CheckButton(active=h in shown, css_classes=["menu-row"])
             box = Gtk.Box(spacing=8)
             box.append(Gtk.Image(icon_name=host_icon(h)))
-            box.append(Gtk.Label(label=h, xalign=0))
+            box.append(Gtk.Label(label=h, xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END))
+            box.append(Gtk.Label(label=host_kind(h), css_classes=["menu-kind"]))
             check.set_child(box)
             check.connect("toggled", self.on_host_toggled, h)
             self.hosts_box.append(check)
         while (child := self.hosts_summary.get_first_child()):
             self.hosts_summary.remove(child)
         hosts = self.shown_hosts()
-        for h in hosts:
-            self.hosts_summary.append(Gtk.Image(icon_name=host_icon(h)))
-        self.hosts_summary.append(Gtk.Label(label=self.hosts_label(hosts), xalign=0, hexpand=True,
-                                            ellipsize=Pango.EllipsizeMode.END))
+        icons = Gtk.Box(spacing=4, css_classes=["dim"])
+        for icon in dict.fromkeys(host_icon(h) for h in hosts):
+            icons.append(Gtk.Image(icon_name=icon))
+        self.hosts_summary.append(icons)
+        self.hosts_summary.append(Gtk.Label(label=", ".join(short_host(h) for h in hosts) or "aucun hôte",
+                                            xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END))
+        self.hosts_summary.append(Gtk.Image(icon_name="pan-down-symbolic", css_classes=["chevron"]))
 
     def on_host_toggled(self, check, host):
         shown = [h for h in self.shown_hosts() if h != host]
@@ -568,7 +687,7 @@ class Hub(Gtk.ApplicationWindow):
                 self.loading.discard(h)
         if added is None and self.new_host not in hosts:  # au démarrage
             first = next((h for h in hosts if h in self.new_hosts), "local")
-            self.new_host_dd.set_selected(self.new_hosts.index(first))
+            self.new_host_btn.set_selected(self.new_hosts.index(first))
         self.content_hits = {}
         self.merge_sessions()
         self.fill_list()
@@ -578,19 +697,20 @@ class Hub(Gtk.ApplicationWindow):
         self.show_defaults()
 
     def new_host_changed(self):
-        self.new_host_dd.set_tooltip_text(f"Nouvelle conversation sur {self.new_host}")
+        if not self.syncing_new:  # hôte choisi à la main : le dossier d'un autre hôte n'a plus de sens
+            self.dir_btn.set_value("~")
         self.show_defaults()
 
     def add_host(self, entry):
         h = entry.get_text().strip()
         entry.set_text("")
+        entry.set_visible(False)
         if not h or h in self.hosts:
             return
         self.hosts = load_hosts_with(self.hosts[1:-1] + [h])
         new_host = self.new_host
         self.new_hosts = [x for x in self.hosts if x != CLOUD]
-        self.new_host_dd.set_model(Gtk.StringList.new(self.new_hosts))
-        self.new_host_dd.set_selected(self.new_hosts.index(new_host))
+        self.new_host_btn.set_labels(self.new_hosts, self.new_hosts.index(new_host))
         self.settings["hosts_shown"].append(h)
         save_settings(self.settings)
         self.hosts_changed(added=[h])
@@ -718,14 +838,14 @@ class Hub(Gtk.ApplicationWindow):
             self.update_list_status()
 
     def fill_list(self):
-        self.state_labels = {}
+        self.state_rows = {}
         self.rows = {}
-        while (child := self.listbox.get_first_child()):
-            self.listbox.remove(child)
+        self.listbox.remove_all()
         tags_f, dirs_f, query = parse_query(self.search.get_text())
         q = norm_text(query)
         show_archived = self.show_archived.get_active()
         hosts = self.shown_hosts()
+        current = self.current["id"] if self.current else None
         entries = [(s["host"], s) for s in self.sessions]
         if tags_f:  # la vue par tag montre aussi les conversations taguées des autres hôtes
             seen = {s["id"] for s in self.sessions}
@@ -745,8 +865,7 @@ class Hub(Gtk.ApplicationWindow):
             home = self.remote_home.get(host, "")
             if dirs_f and not any(dir_matches(s.get("cwd"), d, home) for d in dirs_f):
                 continue
-            label = s.get("title") or s.get("first") or ("Nouvelle conversation" if s.get("new")
-                                                         else "(sans titre)")
+            label = title_of(s)
             cwd = s.get("cwd") or "sans dossier"
             if home and cwd.startswith(home):
                 cwd = "~" + cwd[len(home):]
@@ -754,66 +873,218 @@ class Hub(Gtk.ApplicationWindow):
             if q and not hit and q not in norm_text(f"{label} {cwd} {s['id']} {' '.join(tags)}"):
                 continue
             self.shown += 1
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=4, margin_bottom=4,
-                          margin_start=4, margin_end=4, hexpand=True)
-            box.append(Gtk.Label(label=label, xalign=0, ellipsize=Pango.EllipsizeMode.END,
-                                 css_classes=["row-title"]))
-            missing = s.get("cwd_exists") is False
-            line = Gtk.Box(spacing=6)
-            if len(hosts) > 1 or host not in hosts:
-                other = Gtk.Box(spacing=3, css_classes=["badge", "host"], tooltip_text=f"Sur {host}")
-                other.append(Gtk.Image(icon_name=host_icon(host), pixel_size=12))
-                other.append(Gtk.Label(label=short_host(host), ellipsize=Pango.EllipsizeMode.END,
-                                       max_width_chars=12))
-                line.append(other)
-            if s.get("source") == "cursor":
-                line.append(Gtk.Label(label="Cursor", css_classes=["badge"]))
-            elif s.get("source") == "claude-cloud":
-                line.append(Gtk.Label(label="claude.ai", css_classes=["badge", "cloud"]))
-            state = Gtk.Label(css_classes=["state"])
-            line.append(state)
-            meta = Gtk.Label(label=row_meta(s, cwd, missing), xalign=0, ellipsize=Pango.EllipsizeMode.END,
-                             hexpand=True, css_classes=["sid"])
-            line.append(meta)
-            box.append(line)
+            snippet = None
             if hit:
-                snip = Gtk.Label(xalign=0, wrap=True, lines=2, css_classes=["snippet"],
-                                 ellipsize=Pango.EllipsizeMode.END)
                 prefix = {"user": "Toi : ", "assistant": "Claude : "}.get(hit["role"], "")
-                snip.set_markup(esc(prefix) + highlight_words(hit["snippet"], query))
-                box.append(snip)
-            tag_box = Gtk.Box(spacing=4, margin_top=2)
-            tag_chips(tag_box, tags, self.filter_tag)
-            box.append(tag_box)
+                snippet = esc(prefix) + highlight_words(" ".join(hit["snippet"].split()), query)
+            source = {"cursor": ["Cursor"], "claude-cloud": ["claude.ai", "cloud"]}.get(s.get("source"))
+            unsent = s["id"] in self.unsent  # pas de tags ni d'archive : elle n'existe pas encore pour claude
+            missing = s.get("cwd_exists") is False
+            row = SessionRow(
+                s, host, label, cwd, show_host=len(hosts) > 1 or host not in hosts, tags=tags,
+                on_tag=self.filter_tag, missing=missing, archived=archived, source=source,
+                snippet=snippet, on_archive=None if unsent else lambda r: self.toggle_archive(r.session),
+                on_tags=None if unsent else lambda r: self.edit_tags(r, r.session, r.host),
+                pinned=s["id"] in self.settings["pinned"],
+                on_pin=None if unsent else lambda r: self.toggle_pin(r.session["id"]))
+            if missing:
+                row.set_tooltip_text(f"Le dossier {s['cwd']} n'existe plus sur {host}")
             if host in hosts:
-                self.state_labels[s["id"]] = state
-            self.set_state(state, self.list_state(s["id"], s.get("live") if host in hosts else None))
-            outer = Gtk.Box(spacing=2)
-            outer.append(box)
-            row = Gtk.ListBoxRow(child=outer)
-            row.session, row.host, row.tag_box = s, host, tag_box
-            row.meta, row.cwd_text, row.missing = meta, cwd, missing
+                self.state_rows[s["id"]] = row
+            row.paint(self.list_state(s["id"], s.get("live") if host in hosts else None))
             self.rows[s["id"]] = row
             self.listbox.append(row)
-            if s["id"] in self.unsent:
-                continue  # pas de tags ni d'archive : elle n'existe pas encore pour claude
-            tag_btn = Gtk.Button(icon_name=TAG_ICON, tooltip_text="Tags", valign=Gtk.Align.CENTER,
-                                 css_classes=["flat", "archive-btn"])
-            tag_btn.connect("clicked", lambda b, s=s, host=host: self.edit_tags(b, s, host))
-            outer.append(tag_btn)
-            btn = Gtk.Button(icon_name="archive-extract-symbolic" if archived else "archive-insert-symbolic",
-                             tooltip_text="Désarchiver" if archived else "Archiver",
-                             css_classes=["flat", "archive-btn"], valign=Gtk.Align.CENTER,
-                             margin_end=12)  # hors de la zone de la barre de défilement (overlay)
-            outer.append(btn)
-            if archived:
-                row.add_css_class("archived")
-            if s["id"] in self.settings["unread"]:
-                row.add_css_class("unread")
-            if missing:
-                row.add_css_class("missing")
-                row.set_tooltip_text(f"Le dossier {s['cwd']} n'existe plus sur {host}")
-            btn.connect("clicked", lambda _b, row=row: self.toggle_archive(row))
+            if s["id"] == current:
+                self.listbox.select_row(row)
+        self.schedule_states()
+
+    def day_header(self, row, before):
+        """Séparateur « Épinglées » en tête, puis « Aujourd'hui », « Hier », « Samedi 31 octobre »
+        quand le jour change."""
+        ts = row.session.get("mtime", 0)
+        if row.pinned:
+            if before is not None and before.pinned:
+                return row.set_header(None)
+            text = "ÉPINGLÉES"
+        elif (before is not None and not before.pinned
+              and local_date(before.session.get("mtime", 0)) == local_date(ts)):
+            return row.set_header(None)
+        else:
+            text = day_label(ts).upper()
+        header = row.get_header()
+        if header is None or header.get_label() != text:
+            row.set_header(Gtk.Label(label=text, xalign=0, css_classes=["day-header"]))
+
+    def row_visible(self, row):
+        """Filtre « À traiter » / « En cours » ; la conversation affichée reste visible."""
+        if self.segment == "all" or (self.current and row.session["id"] == self.current["id"]):
+            return True
+        return row.kind in (("unread", "action") if self.segment == "todo" else ("busy",))
+
+    def on_segment(self, btn, key):
+        if btn.get_active() and self.segment != key:
+            self.segment = key
+            self.listbox.invalidate_filter()
+
+    def paint_row(self, row, status):
+        if row.status != status:
+            row.paint(status)
+            self.schedule_states()
+
+    def repaint(self, sid):
+        """Met à jour l'état de sid dans la liste (et l'accueil)."""
+        row = self.rows.get(sid)
+        if row is None:
+            return self.schedule_states()
+        live = (next((x.get("live") for x in self.sessions if x["id"] == sid), None)
+                if sid in self.state_rows else None)
+        self.paint_row(row, self.list_state(sid, live))
+
+    def schedule_states(self):
+        """Un état a changé : compteurs des filtres, filtre de la liste et accueil, une fois
+        pour toutes les lignes repeintes."""
+        if not self.states_pending:
+            self.states_pending = True
+            GLib.idle_add(self.states_changed)
+
+    def states_changed(self):
+        self.states_pending = False
+        rows = [r for r in self.rows.values() if r.get_parent() is self.listbox]
+        set_count(self.seg_counts["todo"], sum(r.kind in ("unread", "action") for r in rows))
+        set_count(self.seg_counts["busy"], sum(r.kind == "busy" for r in rows))
+        if self.segment != "all":
+            self.listbox.invalidate_filter()
+        self.update_home()
+        self.launcher.set_count(sum(kind in ("action", "unread") for _s, kind in self.attention()))
+        return False
+
+    def attention(self):
+        """[(conversation, état)] de celles qui demandent l'attention ou travaillent, sur les
+        hôtes cochés, hors archives (accueil, compteur de l'icône)."""
+        out, shown = [], self.shown_hosts()
+        for s in self.sessions:
+            if (s["host"] not in shown or not self.source_shown(s) or self.is_archived(s)
+                    or s["id"] in self.unsent):
+                continue
+            kind = status_kind(self.list_state(s["id"], s.get("live")))
+            if kind in ("busy", "action", "unread"):
+                out.append((s, kind))
+        return out
+
+    # -- épingles et vues enregistrées --
+    def toggle_pin(self, sid):
+        """Épingle la conversation en tête de liste, ou l'en retire."""
+        pinned = self.settings["pinned"]
+        (pinned.discard if sid in pinned else pinned.add)(sid)
+        save_settings(self.settings)
+        row = self.rows.get(sid)
+        if row:
+            row.set_pinned(sid in pinned)
+            self.listbox.invalidate_sort()
+            self.listbox.invalidate_headers()
+            self.reveal_row(row)
+
+    def update_views(self):
+        """Pastilles des vues (après la frappe : un clic sur une pastille change la recherche)."""
+        if not self.views_pending:
+            self.views_pending = True
+
+            def later():
+                self.views_pending = False
+                self.views_bar.update(self.settings["views"], self.search.get_text())
+                return False
+            GLib.idle_add(later)
+
+    def apply_view(self, query):
+        self.search.set_text(query)
+        self.search.set_position(-1)
+
+    def save_view(self, query):
+        self.settings["views"] = add_view(self.settings["views"], query)
+        save_settings(self.settings)
+        self.update_views()
+
+    def remove_view(self, query):
+        self.settings["views"] = remove_view(self.settings["views"], query)
+        save_settings(self.settings)
+        self.update_views()
+
+    # -- navigation au clavier --
+    def list_rows(self):
+        """Lignes de la liste dans l'ordre affiché (filtrées comprises)."""
+        out, i = [], 0
+        while (row := self.listbox.get_row_at_index(i)) is not None:
+            out.append(row)
+            i += 1
+        return out
+
+    def step_row(self, delta, todo=False):
+        """Alt+↑/↓ : conversation précédente ou suivante de la liste ; todo (Alt+Maj+↑/↓) : la
+        précédente ou la suivante à traiter (réponse non lue, demande), en bouclant."""
+        rows = self.list_rows()
+        sid = self.current["id"] if self.current else None
+        at = next((i for i, r in enumerate(rows) if r.session["id"] == sid), None)
+        if todo:  # dans toute la liste, quel que soit le filtre : la conversation ouverte y reste
+            if at is None:
+                order = rows if delta > 0 else rows[::-1]
+            elif delta > 0:
+                order = rows[at + 1:] + rows[:at]
+            else:
+                order = rows[:at][::-1] + rows[at + 1:][::-1]
+            target = next((r for r in order if r.kind in ("unread", "action")), None)
+            if target is None:
+                self.list_status.set_text("Rien d'autre à traiter.")
+                GLib.timeout_add_seconds(3, lambda: self.show_list_status())
+                return
+        else:
+            visible = [r for r in rows if r.get_child_visible()]
+            i = next((k for k, r in enumerate(visible) if r.session["id"] == sid), None)
+            if i is None:
+                i = -1 if delta > 0 else len(visible)
+            if not 0 <= i + delta < len(visible):
+                return
+            target = visible[i + delta]
+        self.listbox.select_row(target)
+        self.on_row(self.listbox, target)
+        self.reveal_row(target)
+
+    def reveal_row(self, row):
+        """Fait défiler la liste jusqu'à row (sans y mettre le focus, qui reste à la saisie)."""
+        def go():
+            ok, rect = row.compute_bounds(self.listbox)
+            adj = self.list_scroll.get_vadjustment()
+            if ok:
+                top, bottom = rect.get_y() - 30, rect.get_y() + rect.get_height()  # 30 : séparateur
+                if top < adj.get_value():
+                    adj.set_value(max(0, top))
+                elif bottom > adj.get_value() + adj.get_page_size():
+                    adj.set_value(bottom - adj.get_page_size())
+            return False
+        GLib.idle_add(go)
+
+    def show_switcher(self):
+        """Ctrl+K : sélecteur rapide des conversations."""
+        if self.switcher is None:
+            self.switcher = Switcher(self.switcher_entries, self.open_sid)
+            self.switcher.set_parent(self.chat_paned)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = self.chat_paned.get_width() // 2, 40, 1, 1
+        self.switcher.set_pointing_to(rect)
+        self.switcher.present()
+
+    def switcher_entries(self):
+        """Conversations proposées par Ctrl+K : celles de la liste (hôtes et sources cochés)."""
+        out, several = [], len(self.shown_hosts()) > 1
+        show_archived = self.show_archived.get_active()
+        for s in self.sessions:
+            if not self.source_shown(s) or (self.is_archived(s) and not show_archived):
+                continue
+            sid = s["id"]
+            out.append({"sid": sid, "title": title_of(s), "folder": self.dir_of(s) or s.get("cwd") or "",
+                        "host": s["host"], "tags": self.tag_store.tags(sid), "mtime": s.get("mtime", 0),
+                        "pinned": sid in self.settings["pinned"], "show_host": several,
+                        "status": self.list_state(sid, s.get("live"))})
+        return out
 
     # -- tags --
     def edit_tags(self, button, s, host):
@@ -827,11 +1098,9 @@ class Hub(Gtk.ApplicationWindow):
     def set_tags(self, s, host, tags):
         """Enregistre les tags et met à jour sur place les pastilles affichées."""
         tags = self.tag_store.set(s, host, tags)
-        row = self.listbox.get_first_child()
-        while row:
-            if getattr(row, "session", None) and row.session["id"] == s["id"]:
-                tag_chips(row.tag_box, tags, self.filter_tag)
-            row = row.get_next_sibling()
+        row = self.rows.get(s["id"])
+        if row:
+            tag_chips(row.tag_box, tags, self.filter_tag)
         if self.current and self.current["id"] == s["id"]:
             tag_chips(self.head_tags, tags, self.filter_tag)
         return tags
@@ -887,8 +1156,8 @@ class Hub(Gtk.ApplicationWindow):
         return (sid in self.settings["archived"] or bool(s.get("cursor_archived"))
                 or bool(s.get("cloud_archived")))
 
-    def toggle_archive(self, row):
-        s, st = row.session, self.settings
+    def toggle_archive(self, s):
+        st = self.settings
         if self.is_archived(s):
             st["archived"].discard(s["id"])
             if s.get("cursor_archived") or s.get("cloud_archived"):
@@ -898,25 +1167,23 @@ class Hub(Gtk.ApplicationWindow):
             st["archived"].add(s["id"])
         save_settings(st)
         archived = self.is_archived(s)
-        if archived and not self.show_archived.get_active():
+        row = self.shown_row(s["id"])
+        if row and archived and not self.show_archived.get_active():
             self.listbox.remove(row)  # sur place : la liste garde sa position
-        else:
-            btn = row.get_child().get_last_child()
-            btn.set_icon_name("archive-extract-symbolic" if archived else "archive-insert-symbolic")
-            btn.set_tooltip_text("Désarchiver" if archived else "Archiver")
-            (row.add_css_class if archived else row.remove_css_class)("archived")
+        elif row:
+            row.set_archived(archived)
         self.update_list_status()
+        self.schedule_states()
 
     def update_list_status(self):
-        shown = [s for s in self.sessions if self.source_shown(s)]
-        n_claude = sum(1 for s in shown if s.get("source") != "cursor")
+        """« 408 conversations · 79 archivées » ; le nombre d'archivées aussi dans le menu des hôtes."""
+        shown = [s for s in self.sessions if self.source_shown(s) and s["id"] not in self.unsent]
         n_archived = sum(1 for s in shown if self.is_archived(s))
-        parts = []
-        if self.show_claude.get_active():
-            parts.append(f"{n_claude} Claude")
-        if self.show_cursor.get_active():
-            parts.append(f"{len(shown) - n_claude} Cursor")
-        text = (" + ".join(parts) or "Aucun outil coché") + f" sur {self.hosts_label()}"
+        n = len(shown) - (0 if self.show_archived.get_active() else n_archived)
+        self.archived_count.set_text(str(n_archived) if n_archived else "")
+        if not (self.show_claude.get_active() or self.show_cursor.get_active()):
+            return self.list_status.set_text("Aucune source cochée : Claude Code ou Cursor, dans le menu des hôtes.")
+        text = f"{n} conversation{'s' * (n > 1)}"
         if n_archived:
             text += f" · {n_archived} archivée{'s' * (n_archived > 1)}"
         self.list_status.set_text(text)
@@ -932,13 +1199,6 @@ class Hub(Gtk.ApplicationWindow):
         save_settings(self.settings)
         self.fill_list()
         self.update_list_status()
-
-    @staticmethod
-    def set_state(label, status):
-        text, css = state_text(status)
-        label.set_text(text)
-        label.set_visible(bool(text))
-        label.set_css_classes(["state"] + ([css] if css else []))
 
     def poll_states(self):
         """États busy/idle des sessions des hôtes cochés, mis à jour sur place."""
@@ -993,13 +1253,18 @@ class Hub(Gtk.ApplicationWindow):
                 elif "busy" in (was, s["live"]) and was != s["live"] and s["id"] not in self.streams:
                     self.touch(s["id"])  # message envoyé ou réponse finie dans un terminal ou Cursor
                 if s.get("was_busy") and s["live"] != "busy":  # fini dans un terminal ou Cursor
-                    self.reply_done(s, waiting=s["live"] == "requires_action")
+                    self.reply_done(s, waiting=s["live"] in ACTION_STATES)
                 # les claude -p lancés d'ici sont notifiés par on_finished (relevé fait avant leur fin compris)
                 s["was_busy"] = (s["live"] == "busy" and s["id"] not in self.streams
                                  and time.monotonic() - self.hub_done.get(s["id"], -60) > 30)
-                if s["id"] in self.state_labels:
+                if s["id"] in self.state_rows:
                     # un claude -p lancé d'ici tourne aussi en arrière-plan
-                    self.set_state(self.state_labels[s["id"]], self.list_state(s["id"], s["live"]))
+                    self.paint_row(self.state_rows[s["id"]], self.list_state(s["id"], s["live"]))
+            today = local_date(time.time())
+            if today != self.list_day:  # minuit : « Aujourd'hui » devient « Hier »
+                self.list_day = today
+                self.listbox.invalidate_headers()
+            self.schedule_states()  # accueil : états des conversations des autres hôtes (vue par tag)
             cur = self.current
             if cur and not cur.get("new") and cur["host"] in shown and fresh(cur):
                 cur["live"] = live.get(cur["id"])
@@ -1023,7 +1288,7 @@ class Hub(Gtk.ApplicationWindow):
             return "busy"
         if self.has_draft(sid):
             return "draft"
-        return "unread" if sid in self.settings["unread"] and live != "requires_action" else live
+        return "unread" if sid in self.settings["unread"] and live not in ACTION_STATES else live
 
     def touch(self, sid, when=None):
         """Un message vient de partir ou d'arriver : la conversation remonte dans la liste."""
@@ -1038,12 +1303,14 @@ class Hub(Gtk.ApplicationWindow):
             s["mtime"] = max(s.get("mtime", 0), when)
         self.sessions.sort(key=lambda s: -s["mtime"])
         if row:
-            row.meta.set_text(row_meta(row.session, row.cwd_text, row.missing))
+            row.update_time()
             row.changed()  # le tri de la liste la replace
 
     def reply_done(self, s, text=None, error=False, waiting=False):
         """Claude a fini de répondre dans s : notifie, sauf si on la regarde déjà."""
         sid = s["id"]
+        if text and not error and not waiting:  # aperçu de la carte « Nouvelle réponse » de l'accueil
+            self.excerpts[sid] = (time.time(), text)
         if self.is_active() and self.current and self.current["id"] == sid:
             return
         self.settings["unread"].add(sid)
@@ -1075,12 +1342,7 @@ class Hub(Gtk.ApplicationWindow):
                 self.listbox.select_row(row)
 
     def show_unread(self, sid):
-        row = self.rows.get(sid)
-        if row:
-            (row.add_css_class if sid in self.settings["unread"] else row.remove_css_class)("unread")
-        if sid in self.state_labels:
-            live = next((s.get("live") for s in self.sessions if s["id"] == sid), None)
-            self.set_state(self.state_labels[sid], self.list_state(sid, live))
+        self.repaint(sid)
 
     def mark_read(self, sid):
         app = self.get_application()
@@ -1105,6 +1367,7 @@ class Hub(Gtk.ApplicationWindow):
         for label, action in (
                 ("Marquer comme lue" if sid in self.settings["unread"] else "Marquer comme non lue",
                  "toggle-unread"),
+                ("Désépingler" if sid in self.settings["pinned"] else "Épingler", "row-pin"),
                 ("Tags…", "row-tags"),
                 *([("Ne plus filtrer sur ce dossier" if row_dir in parse_query(self.search.get_text())[1]
                     else "Filtrer sur ce dossier", "row-dir")] if row_dir else []),
@@ -1142,8 +1405,8 @@ class Hub(Gtk.ApplicationWindow):
         return row if row and row.get_parent() is self.listbox else None
 
     def row_tags(self, sid):
-        if row := self.shown_row(sid):  # popover accroché au bouton de tags de la ligne
-            self.edit_tags(row.get_child().get_last_child().get_prev_sibling(), row.session, row.host)
+        if row := self.shown_row(sid):  # popover accroché à la ligne
+            self.edit_tags(row, row.session, row.host)
 
     def row_rename(self, sid):
         if row := self.shown_row(sid):
@@ -1160,13 +1423,54 @@ class Hub(Gtk.ApplicationWindow):
             cwd = "~" + cwd[len(home):]
         return cwd
 
+    def session_for(self, sid):
+        """Conversation sid : celle affichée, sinon celle de sa ligne dans la liste."""
+        if self.current and self.current["id"] == sid:
+            return self.current
+        row = self.shown_row(sid)
+        return dict(row.session, host=row.host) if row else None
+
     def row_dir(self, sid):
-        if (row := self.shown_row(sid)) and (d := self.dir_of(dict(row.session, host=row.host))):
+        if (s := self.session_for(sid)) and (d := self.dir_of(s)):
             self.apply_token(dir_token(d), "dir:")
 
     def row_archive(self, sid):
-        if row := self.shown_row(sid):
-            self.toggle_archive(row)
+        row = self.shown_row(sid)
+        s = row.session if row else self.session_for(sid)
+        if s:
+            self.toggle_archive(s)
+
+    def copy_id(self, sid):
+        self.get_clipboard().set(sid)
+        self.status.set_text(f"Identifiant copié : {sid}")
+
+    def open_web(self, sid):
+        Gtk.UriLauncher.new(f"https://claude.ai/code/{sid}").launch(self, None, None)
+
+    def head_menu(self, btn):
+        """Menu ⋮ de l'en-tête : actions sur la conversation affichée (liste simple, cf. on_row_menu)."""
+        s = self.current
+        if not s:
+            return
+        sid, items = s["id"], []
+        if sid not in self.unsent:
+            items.append(("Marquer comme lue" if sid in self.settings["unread"] else "Marquer comme non lue",
+                          "toggle-unread"))
+            items.append(("Désépingler" if sid in self.settings["pinned"] else "Épingler", "row-pin"))
+        if d := self.dir_of(s):
+            items.append(("Ne plus filtrer sur ce dossier" if d in parse_query(self.search.get_text())[1]
+                          else "Filtrer sur ce dossier", "row-dir"))
+        if sid not in self.unsent and not s.get("new"):
+            items.append(("Désarchiver" if self.is_archived(s) else "Archiver", "row-archive"))
+        items.append(("Copier l'identifiant", "copy-id"))
+        if s.get("source") == "claude-cloud":
+            items.append(("Ouvrir sur claude.ai", "open-web"))
+        menu = Gio.Menu()
+        for label, action in items:
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value(f"win.{action}", GLib.Variant.new_string(sid))
+            menu.append_item(item)
+        btn.set_menu_model(menu)
 
     # -- affichage d'une conversation --
     def on_row(self, _lb, row):
@@ -1184,15 +1488,14 @@ class Hub(Gtk.ApplicationWindow):
         self.stash_input()
         self.current = s
         self.kept_unread = None
+        self.set_page("chat")
         self.restore_input(s["id"])
         self.show_mode(s)
         self.mark_read(s["id"])
-        if s["host"] in self.new_hosts:  # « Nouvelle » part de l'hôte de la conversation affichée
-            self.new_host_dd.set_selected(self.new_hosts.index(s["host"]))
         self.show_defaults()
-        self.web_btn.set_visible(s.get("source") == "claude-cloud")
         self.new_here_btn.set_visible(self.here_dir(s) is not None)
         self.tag_btn.set_visible(True)
+        self.more_btn.set_visible(True)
         self.rename_btn.set_visible(can_rename(s))
         tag_chips(self.head_tags, self.tag_store.tags(s["id"]), self.filter_tag)
         self.size = -1
@@ -1201,27 +1504,169 @@ class Hub(Gtk.ApplicationWindow):
         if self.agents_panel.get_visible() and not self.has_agents_files(s):
             self.close_side("agents")
         self.show_agents(s)
-        self.title.set_markup("<b>" + GLib.markup_escape_text(s["title"] or s["first"] or "Nouvelle conversation") + "</b>")
+        self.edits_gen += 1  # une lecture en cours concerne la conversation qu'on quitte
+        self.changes_btn.set_visible(False)
+        if self.changes_panel.get_visible():
+            self.changes_panel.show(s["id"], [], loading=bool(self.edits_source(s)))
+        self.title.set_text(s["title"] or s["first"] or "Nouvelle conversation")
         self.show_subtitle(s)
         self.clear()
         if s.get("new"):
-            self.notice("Nouvelle conversation : écris le premier message.")
+            if not s.pop("starting", False):
+                self.notice("Nouvelle conversation : écris le premier message.")
         else:
             self.load_history()
-        self.set_thinking(None)  # le bandeau d'une autre conversation ne doit pas rester
+        self.show_strip(None)  # le bandeau d'une autre conversation ne doit pas rester
         self.todo_panel.show(s.get("todos"))
         self.update_send_btn()
         self.show_queue()
         self.update_status()
+        row = self.rows.get(s["id"])
+        if row is not None and self.listbox.get_selected_row() is not row:
+            self.listbox.select_row(row)
+        if self.segment != "all":
+            self.listbox.invalidate_filter()  # la conversation affichée reste dans la liste filtrée
         self.input.grab_focus()
+
+    def set_page(self, page):
+        """« home » (accueil, saisie d'une nouvelle conversation) ou « chat »."""
+        home = page == "home"
+        self.pages.set_visible_child_name(page)
+        self.new_line.set_visible(home)
+        self.start_btn.set_visible(home)
+        self.send_box.set_visible(not home)
+        self.placeholder.set_text(HOME_HINT if home else CHAT_HINT)
+        (self.new_btn.add_css_class if home else self.new_btn.remove_css_class)("active")
+
+    def go_home(self, host=None, cwd=None):
+        """Accueil : ce qui attend une action, ce qui tourne, et la saisie d'une nouvelle
+        conversation (sur host, dans cwd, s'ils sont donnés)."""
+        self.cancel_fork()
+        self.stash_input()
+        self.current = None
+        self.kept_unread = None
+        self.listbox.unselect_all()
+        if self.segment != "all":
+            self.listbox.invalidate_filter()
+        for page in ("plan", "agents", "changes"):
+            self.close_side(page)
+        if host in self.new_hosts:
+            self.syncing_new = True
+            self.new_host_btn.set_selected(self.new_hosts.index(host))
+            self.syncing_new = False
+            self.dir_btn.set_value(cwd or "~")
+        self.set_page("home")
+        self.restore_input(HOME)
+        self.show_mode(None)
+        self.show_defaults()
+        self.show_strip(None)
+        self.todo_panel.show(None)
+        self.show_queue()
+        self.update_send_btn()
+        self.update_status()
+        self.update_home()
+        self.input.grab_focus()
+
+    def update_home(self):
+        """Contenu de l'accueil : conversations à traiter, puis en cours."""
+        if self.current is not None:
+            return
+        todo, busy = [], []
+        for s, kind in self.attention():
+            entry = {"sid": s["id"], "host": s["host"], "title": title_of(s),
+                     "cwd": self.dir_of(s) or s.get("cwd") or "", "ts": s.get("mtime", 0)}
+            if kind == "busy":
+                entry["text"] = ("Claude travaille…" if s["id"] in self.streams
+                                 else "Cursor génère…" if s.get("source") == "cursor"
+                                 else "Claude travaille (dans un terminal)…")
+                busy.append(entry)
+            elif kind == "action":
+                todo.append(dict(entry, **self.request_entry(s)))
+            else:
+                todo.append(dict(entry, kind="unread", text=self.excerpt(s)))
+        self.home.update(todo, busy)
+
+    def request_entry(self, s):
+        """Carte d'une conversation qui attend : la demande en attente (claude lancé d'ici),
+        sinon une action à faire là où tourne claude (terminal, claude.ai)."""
+        reqs = self.pending.get(s["id"])
+        if not reqs:
+            where = "sur claude.ai" if s.get("source") == "claude-cloud" else "dans son terminal"
+            return {"kind": "action", "text": f"Claude attend une réponse {where}."}
+        rid, req = next(iter(reqs.items()))
+        tool, inp = req.get("tool_name"), req.get("input") or {}
+        if tool == "ExitPlanMode":
+            return {"kind": "plan", "rid": rid, "plan": plan_digest(inp.get("plan"))}
+        if tool == "AskUserQuestion":
+            qs = [q for q in inp.get("questions") or [] if isinstance(q, dict)]
+            return {"kind": "question", "text": str(qs[0].get("question") or "") if qs else ""}
+        return {"kind": "permission", "text": f"{req.get('display_name') or tool} · {tool_detail(inp)}"}
+
+    def excerpt(self, s):
+        """Début de la dernière réponse de s, lu sur l'hôte la première fois (None en attendant)."""
+        sid, mtime = s["id"], s.get("mtime", 0)
+        known = self.excerpts.get(sid)
+        if (known is None or known[0] < mtime) and sid not in self.excerpt_loading:
+            self.excerpt_loading.add(sid)
+
+            def done(res):
+                self.excerpt_loading.discard(sid)
+                self.excerpts[sid] = (mtime, last_reply(res.get("items")))
+                self.schedule_states()
+
+            def fail(_e):
+                self.excerpt_loading.discard(sid)
+                self.excerpts[sid] = (mtime, None)
+            in_thread(lambda: self.fetch_history(s, 8), done, fail)
+        return known[1] if known else None
+
+    def open_sid(self, sid):
+        """Ouvre une conversation depuis l'accueil."""
+        row = self.rows.get(sid)
+        if row is not None:
+            self.listbox.select_row(row)
+            return self.on_row(self.listbox, row)
+        s = next((x for x in self.sessions if x["id"] == sid), None)
+        if s:
+            self.open(dict(s))
+
+    def plan_run_sid(self, sid, rid):
+        """« Lancer » sur la carte d'un plan de l'accueil : exécution en modifications acceptées."""
+        req = self.pending.get(sid, {}).get(rid)
+        if req is None:
+            return self.schedule_states()
+        self.answer(sid, rid, *plan_allow(req, EXEC_MODES[0][0]))
+
+    def plan_refuse_sid(self, sid, rid):
+        if rid in self.pending.get(sid, {}):
+            self.answer(sid, rid, *plan_deny(PLAN_REFUSAL))
 
     def show_subtitle(self, s):
         """hôte · modèle et effort de la dernière réponse · dossier · id."""
-        model = f"  ·  {model_name(s['model'])}" if s.get("model") else ""
+        while (child := self.head_host.get_first_child()):
+            self.head_host.remove(child)
+        self.head_host.append(host_chip(s["host"]))
+        model = model_name(s["model"]) if s.get("model") else ""
         if s.get("effort"):
-            model += f" ({s['effort']})" if model else f"  ·  effort {s['effort']}"
-        self.subtitle.set_text(f"{s['host']}{model}  ·  {s['cwd']}  ·  {s['id']}")
-        self.subtitle.set_tooltip_text(s.get("model"))
+            model = f"{model} ({s['effort']})" if model else f"effort {s['effort']}"
+        self.head_model.set_text(model)
+        self.head_model.set_tooltip_text(s.get("model"))
+        self.head_model.set_visible(bool(model))
+        self.show_usage(s)
+        cwd = self.dir_of(s) or s.get("cwd") or ""
+        self.head_cwd.set_text(cwd)
+        self.head_cwd.set_tooltip_text(s.get("cwd"))
+        self.head_seps[0].set_visible(bool((model or self.head_usage.get_visible()) and cwd))
+        sid = s["id"]
+        self.head_id.set_text(f"{sid[:4]}…{sid[-4:]}" if len(sid) > 12 else sid)
+        self.head_id.set_tooltip_text(f"Identifiant : {sid} (copie : menu ⋮)")
+
+    def show_usage(self, s):
+        """Contexte rempli et coût de la dernière réponse, dans l'en-tête (si s est affichée)."""
+        if s is self.current or (self.current and self.current["id"] == s["id"]):
+            self.head_usage.show(s.get("context"), self.settings["context_windows"],
+                                 self.settings["costs"].get(s["id"]))
+            self.head_usage.lead.set_visible(self.head_model.get_visible())
 
     def ask_rename(self, button, s=None):
         s = s or self.current
@@ -1273,8 +1718,9 @@ class Hub(Gtk.ApplicationWindow):
             self.queue_box.remove(child)
         queue = self.queues.get(self.current["id"], []) if self.current else []
         for i, (text, images) in enumerate(queue):
-            row = Gtk.Box(spacing=6, css_classes=["queued"])
-            row.append(Gtk.Image(icon_name="mail-send-symbolic", tooltip_text="En file"))
+            row = Gtk.Box(spacing=8, css_classes=["queued"])
+            row.append(Gtk.Label(label="En file", css_classes=["queued-label"],
+                                 tooltip_text="Envoyé à la fin de la réponse en cours"))
             summary = " ".join(text.split()) or "(image seule)"
             if images:
                 summary += f"  ·  {len(images)} image{'s' if len(images) > 1 else ''}"
@@ -1320,25 +1766,33 @@ class Hub(Gtk.ApplicationWindow):
             if s is not self.current or self.is_streaming(s):
                 return
             self.size = res["size"]
+            if "context" in res:
+                s["context"] = res["context"]
             if res.get("model"):
                 s["model"], s["effort"] = res["model"], res.get("effort")
-                self.show_subtitle(s)
+            self.show_subtitle(s)
             self.clear()
             if "agents" in res:
                 s["agents"] = res["agents"]
                 self.show_agents(s)
             if res["total"] > len(res["items"]):
                 self.notice(f"… {res['total'] - len(res['items'])} éléments plus anciens masqués")
-            target = None
+            target = target_run = None
             words = norm_text(s.get("search") or "").split()
             for item in res["items"]:
                 w = self.item_widget(item, s)
-                self.msgs.append(w)
+                run = self.append_item(w, item)
                 inp = item.get("input") if isinstance(item.get("input"), dict) else {}
                 text = item.get("text") or " ".join(v for v in inp.values() if isinstance(v, str))
                 if words and target is None and any(x in norm_text(text) for x in words):
-                    target = w
+                    target, target_run = w, run
+            last = self.msgs.get_last_child()
+            if isinstance(last, ToolRun) and s.get("live") != "busy":
+                last.close()  # étapes en cours (terminal) : laissées dépliées
+            if target_run is not None:
+                target_run.reveal()
             s["items"] = res["items"]
+            self.refresh_edits(s, res["items"])
             # Le script distant rejoue toute la transcription ; Cursor et le cloud, l'historique lu.
             s["todos"] = (TodoList.from_events(res["todos"]) if "todos" in res
                           else TodoList.from_items(res["items"]))
@@ -1355,15 +1809,34 @@ class Hub(Gtk.ApplicationWindow):
         def fail(e):
             self.error(f"Lecture impossible : {e}")
         limit = SEARCH_HISTORY_LIMIT if s.get("search") else HISTORY_LIMIT
+        in_thread(lambda: self.fetch_history(s, limit), done, fail)
+
+    @staticmethod
+    def fetch_history(s, limit):
+        """Historique de s (dans un thread) : ses `limit` derniers éléments."""
         if s.get("source") == "claude-cloud":
-            fetch = lambda: cloud_history(s["id"], limit)  # noqa: E731
-        elif s.get("cursor_cloud"):
-            fetch = lambda: cursor_cloud_history(s.get("body"), limit)  # noqa: E731
-        elif s.get("source") == "cursor":
-            fetch = lambda: cursor_history(s["id"], limit)  # noqa: E731
-        else:
-            fetch = lambda: run_helper(s["host"], "history", s["id"], limit)  # noqa: E731
-        in_thread(fetch, done, fail)
+            return cloud_history(s["id"], limit)
+        if s.get("cursor_cloud"):
+            return cursor_cloud_history(s.get("body"), limit)
+        if s.get("source") == "cursor":
+            return cursor_history(s["id"], limit)
+        return run_helper(s["host"], "history", s["id"], limit)
+
+    def append_item(self, widget, item=None):
+        """Ajoute un élément au fil. Les appels d'outils consécutifs forment une suite
+        (ToolRun), repliée en « N étapes » quand un autre élément la ferme ; renvoie la
+        suite qui reçoit widget, ou None."""
+        last = self.msgs.get_last_child()
+        if is_step(item):
+            if not (isinstance(last, ToolRun) and last.open):
+                last = ToolRun()
+                self.msgs.append(last)
+            last.add(item, widget)
+            return last
+        if isinstance(last, ToolRun):
+            last.close()
+        self.msgs.append(widget)
+        return None
 
     def item_widget(self, item, s, live=False):
         """Widget d'un élément de l'historique (live : reçu dans le flux de claude -p).
@@ -1400,7 +1873,7 @@ class Hub(Gtk.ApplicationWindow):
             return message_widget(item)
         loader = ((lambda: run_helper(s["host"], "result", s["id"], tid)) if claude  # noqa: E731
                   else (lambda: cursor_result(tid)) if cursor else None)
-        call = self.tool_calls[tid] = ToolCall(item, loader)
+        call = self.tool_calls[tid] = ToolCall(item, loader, live=live)
         to = (item.get("input") or {}).get("to") if isinstance(item.get("input"), dict) else None
         if item.get("name") == "SendMessage" and agents and isinstance(to, str) and AGENT_ID.match(to):
             return with_open_button(call, lambda: self.open_agent(to))  # relance d'un sous-agent
@@ -1427,65 +1900,85 @@ class Hub(Gtk.ApplicationWindow):
             in_thread(lambda: run_helper(s["host"], "stat", s["id"]), done)
         return True
 
-    def set_thinking(self, text):
-        """Affiche (text) ou masque (None) le bandeau animé ; les points défilent."""
-        if text:
-            self.thinking_text = text.rstrip("…. ")
-            if not self.thinking_timer:
-                self.thinking_timer = GLib.timeout_add(400, self.tick_thinking)
-            self.tick_thinking()
-        elif self.thinking_timer:
-            GLib.source_remove(self.thinking_timer)
-            self.thinking_timer = 0
-        self.thinking_spinner.set_spinning(bool(text))
-        self.thinking.set_reveal_child(bool(text))
+    def show_strip(self, text, detail=None, since=None):
+        """Bandeau d'activité de la saisie : étape (« Claude utilise Bash »), son détail et
+        sa durée depuis since ; None le masque."""
+        if not text:
+            if self.strip_timer:
+                GLib.source_remove(self.strip_timer)
+                self.strip_timer = 0
+            self.strip_spinner.set_spinning(False)
+            self.strip.set_visible(False)
+            return
+        detail = " ".join((detail or "").split())
+        if self.strip_label.get_text() != text:
+            self.strip_label.set_text(text)
+        if self.strip_detail.get_text() != detail:
+            self.strip_detail.set_text(detail)
+            self.strip_detail.set_tooltip_text(detail or None)
+        self.strip_since = since or time.monotonic()
+        self.strip_spinner.set_spinning(True)
+        self.strip.set_visible(True)
+        if not self.strip_timer:
+            self.strip_timer = GLib.timeout_add(1000, self.tick_strip)
+        self.tick_strip()
 
-    def tick_thinking(self):
-        self.thinking_dots = (self.thinking_dots + 1) % 4
-        if self.thinking_label.get_text() != self.thinking_text:
-            self.thinking_label.set_text(self.thinking_text)
-        for i, dot in enumerate(self.thinking_dot_labels):
-            dot.set_opacity(1 if i < self.thinking_dots else 0)
-        self.thinking_bar.queue_draw()  # redessine tout le bandeau, pas seulement les points
+    def tick_strip(self):
+        text = elapsed_text(time.monotonic() - (self.strip_since or time.monotonic()))
+        if self.strip_time.get_text() != text:
+            self.strip_time.set_text(text)
         return True
 
+    def step(self, s, text, detail=None):
+        """Étape en cours de la réponse de s (claude -p lancé d'ici), avec son heure de début,
+        affichée dans le bandeau si s est la conversation affichée."""
+        if (s.get("step") or (None, None))[:2] != (text, detail):
+            s["step"] = (text, detail, time.monotonic())
+        if self.current and self.current["id"] == s["id"]:
+            self.update_activity()
+
     def update_activity(self):
+        """Pastille de l'en-tête et bandeau de la saisie."""
         s = self.current
+        stream = self.streams.get(s["id"], (None, None))[1] if s else None
         if s and self.pending.get(s["id"]):
-            status, text = "waiting", "⚠ Claude attend ta réponse"
+            status, text = "waiting", "Claude attend ta réponse"
         elif self.proc:
-            status, text = "busy", "Claude travaille…"
-            n = len(self.streams[s["id"]][1].get("tasks") or ())
+            status, text = "busy", "Claude travaille"
+            n = len(stream.get("tasks") or ())
             if n:
                 text += f" · {n} sous-agent{'s' if n > 1 else ''}"
         elif s and s.get("live") == "busy":
             status = "busy"
-            text = ("Cursor génère…" if s.get("source") == "cursor"
-                    else "Claude travaille (dans un terminal)…")
-        elif s and s.get("live") == "requires_action":
-            status, text = "waiting", "⚠ Action requise"
-        elif s and not s.get("new"):
-            status, text = "idle", "✓ Terminé"
+            text = ("Cursor génère" if s.get("source") == "cursor"
+                    else "Claude travaille (dans un terminal)")
+        elif s and s.get("live") in ACTION_STATES:
+            status, text = "waiting", "Action requise"
         else:
             status, text = None, ""
         self.activity.set_visible(bool(status))
         self.activity_label.set_text(text)
-        self.activity.set_css_classes(["activity"] + ([status] if status else []))
+        self.activity.set_css_classes(["pill"] + ([status] if status else []))
         self.spinner.set_visible(status == "busy")
         self.spinner.set_spinning(status == "busy")
-        if status != "busy":
-            self.set_thinking(None)
-        elif not self.proc:
-            self.set_thinking(text)
-        elif not self.thinking.get_reveal_child():
-            self.set_thinking("Claude réfléchit")
+        if status == "busy" and self.proc:
+            self.show_strip(*(stream.get("step") or ("Claude réfléchit", None, None)))
+        elif status == "busy":  # dans un terminal ou Cursor : durée depuis qu'on le voit travailler
+            self.show_strip(text, None, s.setdefault("busy_since", time.monotonic()))
+        else:
+            if s:
+                s.pop("busy_since", None)
+            self.show_strip(None)
+        self.stop_btn.set_visible(bool(self.proc))
 
     def update_status(self):
         s = self.current
         self.update_activity()
         if self.proc:
             return
-        if s and s.get("cwd_exists") is False:
+        if s is None:
+            self.status.set_text("")
+        elif s.get("cwd_exists") is False:
             self.status.set_text(f"⚠ Le dossier {s['cwd']} n'existe plus : Claude reprendra "
                                  "la conversation depuis le dossier personnel.")
         elif s and s.get("cursor_cloud"):
@@ -1503,7 +1996,7 @@ class Hub(Gtk.ApplicationWindow):
             self.status.set_text("Entrée : envoyer · Maj+Entrée : nouvelle ligne")
 
     def notice(self, text, css="notice"):
-        self.msgs.append(make_label(GLib.markup_escape_text(text), css))
+        self.append_item(make_label(GLib.markup_escape_text(text), css))
         self.scroll_end()
 
     def error(self, text):
@@ -1632,7 +2125,7 @@ class Hub(Gtk.ApplicationWindow):
 
     def pick_dir(self, _btn):
         host = self.new_host
-        start = self.dir_entry.get_text().strip() or "~"
+        start = self.dir_btn.value.strip() or "~"
         if host != "local":
             return RemoteDirDialog(self, host, start,
                                    lambda path, home: self.set_dir(host, path, home)).present()
@@ -1657,16 +2150,38 @@ class Hub(Gtk.ApplicationWindow):
         self.remote_home.setdefault(host, home)
         if path == home or path.startswith(home.rstrip("/") + "/"):
             path = "~" + path[len(home.rstrip("/")):]
-        self.dir_entry.set_text(path)
+        self.dir_btn.set_value(path)
+
+    def recent_dirs(self):
+        """Dossiers des conversations récentes de l'hôte d'une nouvelle conversation."""
+        host, seen = self.new_host, []
+        for s in self.sessions:  # les plus récentes d'abord
+            d = self.dir_of(s) if s.get("host") == host and s.get("cwd_exists") is not False else None
+            if d and d not in seen:
+                seen.append(d)
+            if len(seen) >= 12:
+                break
+        if "~" not in seen:
+            seen.append("~")
+        return f"Récents {'sur ce PC' if host == 'local' else 'sur ' + short_host(host)}", seen
 
     # -- envoi --
-    def new_session(self, _btn):
-        host = self.new_host
-        cwd = self.dir_entry.get_text().strip() or "~"
-        home = self.remote_home.get(host) or str(Path.home())
+    def start_from_home(self):
+        """« Démarrer » sur l'accueil : crée la conversation (hôte et dossier choisis) avec
+        le message saisi."""
+        text = self.input_text().strip()
+        if not (text or self.attachments):
+            return
+        host, cwd = self.new_host, self.new_cwd()
+        images = self.take_input()
+        self.launch(self.start_new(host, cwd, quiet=True), text, images)
+
+    def new_cwd(self):
+        """Dossier choisi pour une nouvelle conversation, « ~ » remplacé par le dossier personnel."""
+        cwd = self.dir_btn.value.strip() or "~"
         if cwd.startswith("~"):
-            cwd = home + cwd[1:]
-        self.start_new(host, cwd)
+            cwd = (self.remote_home.get(self.new_host) or str(Path.home())) + cwd[1:]
+        return cwd
 
     def here_dir(self, s):
         """Dossier où relancer une conversation à côté de s, ou None (cloud, dossier
@@ -1678,24 +2193,28 @@ class Hub(Gtk.ApplicationWindow):
         return cwd
 
     def new_here(self):
-        """Nouvelle conversation dans le dossier (et sur l'hôte) de celle affichée ;
-        sans conversation utilisable, comme le bouton « Nouvelle »."""
-        cwd = self.here_dir(self.current) if self.current else None
-        if cwd is None:
-            return self.new_session(None)
-        self.start_new(self.current["host"], cwd)
+        """Accueil, prêt pour une nouvelle conversation dans le dossier (et sur l'hôte) de
+        celle affichée, s'il existe encore."""
+        s = self.current
+        cwd = self.here_dir(s) if s else None
+        if cwd:
+            self.go_home(s["host"], self.dir_of(dict(s, cwd=cwd)) or cwd)
+        else:
+            self.go_home()
 
-    def start_new(self, host, cwd):
+    def start_new(self, host, cwd, quiet=False):
         """Ouvre une nouvelle conversation, visible tout de suite en tête de la liste
-        (elle disparaît si on la quitte sans rien y écrire)."""
+        (elle disparaît si on la quitte sans rien y écrire) ; quiet : son premier message
+        part aussitôt (accueil), pas d'invitation à l'écrire."""
         s = {"id": str(uuid.uuid4()), "cwd": cwd, "host": host, "new": True,
-             "title": None, "first": None, "mtime": time.time()}
+             "title": None, "first": None, "mtime": time.time(), "starting": quiet}
         self.unsent[s["id"]] = s
         self.open(s)  # avant fill_list : une nouvelle conversation vide quittée disparaît
         if host in self.shown_hosts():
             self.sessions.insert(0, s)
             self.fill_list()
             self.listbox.select_row(self.rows.get(s["id"]))
+        return s
 
     # -- brouillons : saisie non envoyée, gardée par conversation (en mémoire seulement) --
     def input_text(self):
@@ -1703,7 +2222,7 @@ class Hub(Gtk.ApplicationWindow):
         return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
 
     def has_draft(self, sid):
-        if self.current and self.current["id"] == sid:
+        if self.current is not None and self.current["id"] == sid:
             return bool(self.input_text().strip() or self.attachments)
         return sid in self.drafts
 
@@ -1711,19 +2230,19 @@ class Hub(Gtk.ApplicationWindow):
         """Garde la saisie de la conversation qu'on quitte ; une nouvelle conversation
         laissée vide disparaît de la liste."""
         s = self.current
-        if not s:
-            return
+        sid = s["id"] if s else HOME
         text = self.input_text()
         if text.strip() or self.attachments:
-            self.drafts[s["id"]] = (text, self.attachments)
+            self.drafts[sid] = (text, self.attachments)
             return
-        self.drafts.pop(s["id"], None)
-        if self.unsent.pop(s["id"], None):
+        self.drafts.pop(sid, None)
+        if s and self.unsent.pop(sid, None):
             self.sessions = [x for x in self.sessions if x["id"] != s["id"]]
             row = self.rows.pop(s["id"], None)
-            self.state_labels.pop(s["id"], None)
+            self.state_rows.pop(s["id"], None)
             if row:
                 self.listbox.remove(row)
+                self.schedule_states()
 
     def restore_input(self, sid):
         text, self.attachments = self.drafts.pop(sid, ("", []))
@@ -1731,9 +2250,9 @@ class Hub(Gtk.ApplicationWindow):
         self.show_attachments()
 
     def draft_changed(self):
-        """La saisie a changé : badge « brouillon » de la conversation affichée."""
-        if self.current and self.current["id"] in self.state_labels:
-            self.refresh_state(self.current["id"])
+        """La saisie a changé : marque « brouillon » de la conversation affichée."""
+        if self.current and self.current["id"] in self.state_rows:
+            self.repaint(self.current["id"])
 
     def pending_new(self, host, listed):
         """Nouvelles conversations de l'hôte pas encore dans la liste du helper :
@@ -1751,7 +2270,9 @@ class Hub(Gtk.ApplicationWindow):
         """(hôte, dossier) où claude tournera pour la conversation affichée, ou None
         si on ne peut pas y taper de commande (cloud, Cursor en lecture seule)."""
         s = self.current
-        if not s or s.get("cursor_cloud") or s["host"] == CLOUD or s.get("source") == "claude-cloud":
+        if s is None:  # accueil : là où la nouvelle conversation démarrera
+            return self.new_host, self.new_cwd()
+        if s.get("cursor_cloud") or s["host"] == CLOUD or s.get("source") == "claude-cloud":
             return None
         cwd = s.get("cwd") if ":" not in (s.get("cwd") or "") else None
         return s["host"], cwd
@@ -1847,7 +2368,7 @@ class Hub(Gtk.ApplicationWindow):
         buf = self.input.get_buffer()
         text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
         if not s:
-            return
+            return self.start_from_home()
         if self.fork_at and self.fork_at["sid"] == s["id"]:
             if (text or self.attachments) and not self.proc:
                 self.launch_fork(s, text)
@@ -1961,7 +2482,7 @@ class Hub(Gtk.ApplicationWindow):
         if proc.stdin.closed or st.get("interrupted") or not self.write_input(
                 proc, self.user_message(text, images)):
             return False
-        self.msgs.append(message_widget({"role": "user", "text": text, "images": images,
+        self.append_item(message_widget({"role": "user", "text": text, "images": images,
                                          "queued": True}))
         self.scroll_end()
         self.status.set_text("Message transmis : Claude le lira après l'étape en cours.")
@@ -1986,7 +2507,7 @@ class Hub(Gtk.ApplicationWindow):
         return images
 
     def show_user(self, text, images):
-        self.msgs.append(message_widget({"role": "user", "text": text, "images": images}))
+        self.append_item(message_widget({"role": "user", "text": text, "images": images}))
         self.scroll_end()
 
     def send_via_remote(self, s, text):
@@ -2114,6 +2635,7 @@ class Hub(Gtk.ApplicationWindow):
         self.keep_mode(s["id"], s["mode"])
         self.unsent.pop(s["id"], None)  # envoyée : n'est plus un brouillon
         s["tasks"], s["idle"] = set(), False
+        s["step"] = ("Claude réfléchit", None, time.monotonic())
         s.pop("interrupted", None)
         self.touch(s["id"])
         self.refresh_state(s["id"])  # « brouillon » -> « travaille »
@@ -2127,7 +2649,7 @@ class Hub(Gtk.ApplicationWindow):
                 "subtype": "generate_session_title", "description": about.strip()[:2000], "persist": True}}) + "\n")
         if shown:
             self.update_send_btn()
-            self.status.set_text("Claude réfléchit…")
+            self.status.set_text("Entrée : lu après l'étape en cours")
             self.update_activity()
         threading.Thread(target=self.read_stream, args=(proc, s), daemon=True).start()
 
@@ -2192,6 +2714,11 @@ class Hub(Gtk.ApplicationWindow):
             return self.on_task(ev, s)
         if t == "result":  # pour la notification de fin
             s["result"], s["result_error"] = ev.get("result"), bool(ev.get("is_error"))
+            # coût de la réponse, et fenêtre de contexte des modèles (pour la jauge de l'en-tête)
+            learned = learn_windows(self.settings["context_windows"], ev.get("modelUsage"))
+            if remember_cost(self.settings["costs"], s["id"], ev.get("total_cost_usd")) or learned:
+                save_settings(self.settings)
+            self.show_usage(s)
             s["idle"] = True
             self.end_if_done(s)
             if s.get("titling"):  # un claude qui ne répondrait jamais ne doit pas rester ouvert
@@ -2204,6 +2731,26 @@ class Hub(Gtk.ApplicationWindow):
             if (s.get("new") or s.get("forked")) and not s.get("listed"):
                 s["listed"] = True
                 self.refresh_list([s["host"]])  # nouvelle conversation (ou copie) : visible dès sa première réponse
+        if t == "assistant":  # modifications de fichiers (sous-agents compris) : relues à leur résultat
+            for b in ev.get("message", {}).get("content", []):
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in EDIT_TOOLS:
+                    s.setdefault("edit_ids", set()).add(b.get("id"))
+        if t == "user" and s.get("edit_ids"):
+            content = ev.get("message", {}).get("content")
+            if any(isinstance(b, dict) and b.get("tool_use_id") in s["edit_ids"]
+                   for b in content if isinstance(content, list)):
+                self.schedule_edits(s)
+        if t == "assistant" and not ev.get("parent_tool_use_id"):
+            tokens = context_tokens(ev.get("message", {}).get("usage"))
+            if tokens:  # contexte après ce message, en direct
+                s["context"] = {"tokens": tokens, "model": ev["message"].get("model") or s.get("model")}
+                self.show_usage(s)
+        if t == "assistant" and not ev.get("parent_tool_use_id"):  # étape en cours (bandeau)
+            for b in ev.get("message", {}).get("content", []):
+                if b.get("type") == "text" and b.get("text", "").strip():
+                    self.step(s, "Claude réfléchit")
+                elif b.get("type") == "tool_use":
+                    self.step(s, f"Claude utilise {b.get('name')}", tool_detail(b.get("input")))
         if self.track_todos(ev, s) and s is self.current:
             self.todo_panel.show(s["todos"])
         if s is not self.current:
@@ -2230,21 +2777,18 @@ class Hub(Gtk.ApplicationWindow):
                     item = {"role": "assistant", "text": b["text"]}
                     if ev.get("uuid"):
                         item["uuid"] = ev["uuid"]
-                    self.msgs.append(message_widget(item, self.fork_handler(s)))
-                    self.set_thinking("Claude réfléchit")
+                    self.append_item(message_widget(item, self.fork_handler(s)), item)
                 elif b.get("type") == "tool_use":
                     item = {"role": "tool", "name": b.get("name"), "input": b.get("input"),
                             "id": b.get("id")}
                     # Sous-agent suivi en direct, sans relecture du fichier ; le plan
                     # s'affiche dans sa carte.
                     if b.get("name") != "ExitPlanMode":
-                        self.msgs.append(self.item_widget(item, s, live=True))
-                    self.status.set_text(f"Claude utilise {b.get('name')}…")
-                    self.set_thinking(f"Claude utilise {b.get('name')}")
+                        self.append_item(self.item_widget(item, s, live=True), item)
             self.scroll_end()
         elif t == "result":
             cost = ev.get("total_cost_usd")
-            cost = f" · {cost:.3f} $" if cost else ""
+            cost = f" · {cost_text(cost)}" if isinstance(cost, (int, float)) and cost > 0 else ""
             if s.get("interrupted"):  # error_during_execution attendu : pas une erreur
                 return self.status.set_text(f"Interrompu{cost}")
             if ev.get("is_error"):
@@ -2352,7 +2896,9 @@ class Hub(Gtk.ApplicationWindow):
 
     def mode_for(self, s):
         """Mode d'une conversation : celui du claude en cours, sinon le dernier utilisé
-        avec elle, sinon le dernier choisi."""
+        avec elle, sinon le dernier choisi (celui d'une nouvelle conversation si s est None)."""
+        if s is None:
+            return self.settings["mode"]
         live = self.streams.get(s["id"], (None, {}))[1].get("mode")
         return live or self.settings["modes"].get(s["id"]) or self.settings["mode"]
 
@@ -2367,11 +2913,23 @@ class Hub(Gtk.ApplicationWindow):
         if remember_mode(self.settings, sid, mode):
             save_settings(self.settings)
 
+    def on_mode_changed(self):
+        self.paint_mode()
+        self.push_mode()
+
+    def paint_mode(self):
+        """Bouton du mode en évidence (bleu) en mode plan."""
+        plan = PERMISSION_MODES[self.mode_dd.get_selected()] == "plan"
+        (self.mode_dd.add_css_class if plan else self.mode_dd.remove_css_class)("plan")
+
     def push_mode(self):
-        """Mode choisi dans la liste : retenu pour la conversation, et transmis au claude
-        en cours, sinon il ne s'appliquerait qu'au message suivant."""
-        if self.syncing_mode or not self.current:
+        """Mode choisi : retenu pour la conversation, et transmis au claude en cours, sinon
+        il ne s'appliquerait qu'au message suivant ; sur l'accueil, celui des nouvelles."""
+        if self.syncing_mode:
             return
+        if not self.current:
+            self.settings["mode"] = PERMISSION_MODES[self.mode_dd.get_selected()]
+            return save_settings(self.settings)
         proc, s = self.streams.get(self.current["id"], (None, None))
         mode = PERMISSION_MODES[self.mode_dd.get_selected()]
         self.keep_mode(self.current["id"], mode)
@@ -2390,7 +2948,7 @@ class Hub(Gtk.ApplicationWindow):
         card = RequestCard(rid, req, lambda c, *a: self.answer(c.sid, c.request_id, *a),
                            self.take_feedback)
         card.sid = sid
-        self.msgs.append(card)
+        self.append_item(card)
         if card.tool == "ExitPlanMode" and rid not in self.plans_opened:
             self.open_plan(card.input.get("plan") or "", card.input.get("planFilePath"), rid)
         else:
@@ -2417,9 +2975,8 @@ class Hub(Gtk.ApplicationWindow):
             self.streams[sid][1]["mode"] = mode  # déjà transmis avec la réponse
             self.mode_dd.set_selected(PERMISSION_MODES.index(mode))  # messages suivants dans ce mode
         self.refresh_state(sid)
-        if self.current and self.current["id"] == sid:
-            self.update_activity()
-            self.set_thinking("Claude reprend")
+        if sid in self.streams:
+            self.step(self.streams[sid][1], "Claude reprend")
 
     def request_done(self, sid, rid, summary, ok):
         """Demande close : sa carte dans le fil et le volet du plan affichent la décision."""
@@ -2434,9 +2991,7 @@ class Hub(Gtk.ApplicationWindow):
 
     def refresh_state(self, sid):
         """État de la conversation dans la liste (demande en attente, en cours…)."""
-        if sid in self.state_labels:
-            live = next((x.get("live") for x in self.sessions if x["id"] == sid), None)
-            self.set_state(self.state_labels[sid], self.list_state(sid, live))
+        self.repaint(sid)
         if self.current and self.current["id"] == sid:
             self.update_activity()
 
@@ -2479,7 +3034,8 @@ class Hub(Gtk.ApplicationWindow):
         alive = self.agents_alive(s)
         running = sum(agent_state(a, alive) == "running" for a in agents)
         self.agents_btn.set_visible(bool(agents))
-        self.agents_btn.set_label(f"🤖 {len(agents)}" + (f" · {running} en cours" if running else ""))
+        self.agents_count.set_text(f"{len(agents)}" + (f" · {running} en cours" if running else ""))
+        self.agents_btn.set_tooltip_text(f"Sous-agents de cette conversation ({len(agents)})")
         if self.has_agents_files(s):
             host, sid = s["host"], s["id"]
             self.agents_panel.set_session(
@@ -2529,6 +3085,98 @@ class Hub(Gtk.ApplicationWindow):
         in_thread(lambda: run_helper(s["host"], "agents", s["id"]), done, fail)
         return True
 
+    # -- fichiers modifiés --
+    @staticmethod
+    def edit_time(ts):
+        """Heure d'une modification (avec le jour si ce n'est pas aujourd'hui)."""
+        same_day = local_date(ts) == local_date(time.time())
+        return time.strftime("%H:%M" if same_day else "%d/%m %H:%M", time.localtime(ts))
+
+    def edits_source(self, s):
+        """D'où viennent les modifications de s : « helper » (Claude Code de ce PC ou SSH :
+        toute la transcription et les sous-agents), « items » (cloud, Cursor : l'historique
+        affiché), ou None (conversation pas encore envoyée)."""
+        if not s or s["id"] in self.unsent:
+            return None
+        if s.get("source") is None and s["host"] != CLOUD:
+            return "helper"
+        return "items"
+
+    def refresh_edits(self, s, items):
+        """Après une lecture de l'historique : relit les modifications si une nouvelle est
+        apparue, si l'une attendait son résultat, ou la première fois."""
+        source = self.edits_source(s)
+        if source != "helper":
+            return self.load_edits(s)
+        last = next((it.get("id") for it in reversed(items) if it.get("role") == "tool"
+                     and it.get("name") in EDIT_TOOLS), None)
+        pending = any(e.get("status") == "pending" for e in s.get("edits") or [])
+        if "edits" not in s or last != s.get("edits_last") or pending:
+            s["edits_last"] = last
+            self.load_edits(s)
+
+    def schedule_edits(self, s):
+        """Une modification vient d'aboutir pendant une réponse : relecture groupée."""
+        if self.edits_timer or not self.current or self.current["id"] != s["id"]:
+            return
+
+        def later():
+            self.edits_timer = 0
+            if self.current and self.current["id"] == s["id"]:
+                self.load_edits(self.current)
+            return False
+        self.edits_timer = GLib.timeout_add(1500, later)
+
+    def load_edits(self, s):
+        """Lit les fichiers modifiés de s : bouton de l'en-tête et volet."""
+        source = self.edits_source(s)
+        if source != "helper":
+            s["edits"] = edits_from_items(s.get("items")) if source else []
+            return self.show_changes(s)
+        self.edits_gen += 1
+        gen, host, sid = self.edits_gen, s["host"], s["id"]
+
+        def done(res):
+            cur = self.current
+            if gen != self.edits_gen or not cur or cur["id"] != sid:
+                return
+            s["edits"] = cur["edits"] = res.get("edits") or []
+            self.show_changes(cur)
+        in_thread(lambda: run_helper(host, "edits", sid), done, lambda _e: None)
+
+    def changes_args(self, s):
+        """(dossier de la conversation, lecteur du diff d'une modification sans diff) pour le volet."""
+        cwd = s.get("cwd") if ":" not in (s.get("cwd") or "") else None
+        loader = None
+        if s.get("source") == "cursor" and not s.get("cursor_cloud"):
+            loader = lambda e: cursor_result(e["id"]).get("text")  # noqa: E731 — diff des versions
+        return cwd, loader
+
+    def show_changes(self, s):
+        """Bouton « fichiers modifiés » de l'en-tête (nombre de fichiers), et le volet s'il est ouvert."""
+        if not self.current or self.current["id"] != s["id"]:
+            return
+        files = group_files(s.get("edits"))
+        n = len(files)
+        added, removed = sum(f["added"] for f in files), sum(f["removed"] for f in files)
+        self.changes_btn.set_visible(bool(n))
+        self.changes_count.set_text(str(n))
+        tip = f"Fichiers modifiés par cette conversation : {n}"
+        if added or removed:
+            tip += f" (+{added} −{removed})"
+        self.changes_btn.set_tooltip_text(tip + "\nPour les relire avant de committer")
+        if self.changes_panel.get_visible():
+            self.changes_panel.show(s["id"], s.get("edits") or [], *self.changes_args(s))
+
+    def toggle_changes(self):
+        if (self.changes_panel.get_visible()
+                and self.side_stack.get_visible_child() is self.changes_panel):
+            return self.close_side("changes")
+        s = self.current
+        if s:
+            self.changes_panel.show(s["id"], s.get("edits") or [], *self.changes_args(s))
+            self.show_side("changes")
+
     # -- fichiers cités --
     def open_file_link(self, lbl, path, line, end):
         """Clic sur un chemin d'un message (appelé par render.on_link)."""
@@ -2565,7 +3213,8 @@ class Hub(Gtk.ApplicationWindow):
         self.update_side()
 
     def update_side(self):
-        pages = [c for c in (self.plan_panel, self.viewer, self.agents_panel) if c.get_visible()]
+        pages = [c for c in (self.plan_panel, self.viewer, self.agents_panel, self.changes_panel)
+                 if c.get_visible()]
         self.side_switch.set_visible(len(pages) > 1)
         if pages and not self.side.get_visible():
             self.side.set_visible(True)

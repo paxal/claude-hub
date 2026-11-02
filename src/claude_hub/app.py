@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from .gtk import Gdk, Gio, GLib, Gtk
-from .render import BREEZE_CSS, CSS, detect_dark
+from .render import BREEZE_CSS, CSS, DARK_CSS, detect_dark, is_dark
 from .window import Hub
 
 
@@ -34,6 +34,14 @@ class App(Gtk.Application):
         win = self.get_active_window() or Hub(self)
         win.present()
         detect_dark(win)
+        if is_dark() and not getattr(self, "dark_css", None):  # teintes des maquettes, sur fond sombre
+            self.dark_css = Gtk.CssProvider()
+            if hasattr(self.dark_css, "load_from_string"):
+                self.dark_css.load_from_string(DARK_CSS)
+            else:
+                self.dark_css.load_from_data(DARK_CSS.encode())
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.dark_css,
+                                                      Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
 
 
 

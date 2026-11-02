@@ -46,6 +46,12 @@ class TestPathLinks(unittest.TestCase):
         self.assertNotIn("hub-file:/c/d.py", s)
         self.assertIn("mon_fichier", s)  # pas d'italique dans un mot
 
+    def test_gras_dans_un_mot(self):
+        s = "Write, mcp__postgres__execute_sql, mcp__sentry__search"
+        self.assertEqual(md_inline(s), s)  # __ dans un mot : pas de gras
+        self.assertEqual(md_inline("un __mot__, x"), "un <b>mot</b>, x")
+        self.assertEqual(md_inline("a**b**c"), "a<b>b</b>c")  # ** dans un mot : gras
+
     def test_url_en_gras(self):
         self.assertEqual(md_inline("**https://a.b/c-1**"),
                          '<b><a href="https://a.b/c-1">https://a.b/c-1</a></b>')
