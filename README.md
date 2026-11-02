@@ -236,6 +236,12 @@ contrôle `initialize` du SDK, sans tour du modèle ni conversation enregistrée
 (`--no-session-persistence`). Elle est demandée au premier `/` puis gardée en
 mémoire par hôte et dossier. Pas de complétion pour le cloud.
 
+Dans le fil et la liste, une commande envoyée à Claude (skill, `/plan` suivi
+d'une demande) apparaît telle qu'on l'a tapée (`/nom arguments`) : elle sert de
+titre tant que claude n'en a pas généré. Les commandes locales du terminal
+(`/copy`, `/rename`…, précédées d'un avertissement dans la transcription) ne
+sont ni un message ni une activité.
+
 ## Tags et filtres
 
 Le bouton étiquette d'une conversation (dans la liste ou dans l'en-tête) ajoute

@@ -69,8 +69,8 @@ class Clamp(Gtk.Widget):
 
     def do_measure(self, orientation, for_size):
         if orientation == Gtk.Orientation.VERTICAL and for_size >= 0:
-            # jamais sous la largeur minimale de l'enfant : un tableau Markdown (mdview.Fit)
-            # part de sa largeur naturelle et ne se resserre qu'au fil des mises en page
+            # jamais sous la largeur minimale de l'enfant : il serait alloué plus large
+            # (do_size_allocate) et sa hauteur ne correspondrait plus
             mn = self.child.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
             for_size = min(for_size, max(self.maximum, mn))
         mn, nat, _b, _n = self.child.measure(orientation, for_size)

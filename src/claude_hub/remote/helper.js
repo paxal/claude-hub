@@ -84,8 +84,20 @@ function msgTime(line) {  // date (epoch) d'une ligne de message, null si elle n
   return Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000 + (m[7] ? +m[7].padEnd(3, "0") / 1000 : 0);
 }
 
-// Commande locale de claude (/rename…) : pas un message, ni une activité.
-const isCommand = line => line.includes("<local-command-caveat>") || line.includes('"content":"<command-name>/');
+// Commande slash telle que tapée (« /nom arguments ») d'après le message que claude
+// enregistre pour elle (<command-name>, <command-args>…) ; null si t n'en est pas une.
+function commandText(t) {
+  const m = t.trimStart().startsWith("<command-") ? /<command-name>(\/[^<]*)<\/command-name>/.exec(t) : null;
+  if (!m) return null;
+  const a = /<command-args>([\s\S]*?)<\/command-args>/.exec(t);
+  return (m[1] + " " + (a ? a[1] : "")).split(/\s+/).filter(Boolean).join(" ");
+}
+// Avertissement que claude écrit juste avant une commande locale (/rename, /copy…).
+const isCaveat = line => line.includes("<local-command-caveat>") && line.includes('"type":"user"');
+// Commande locale de claude (/rename…), avertissement compris : pas un message, ni une
+// activité. caveat : le message précédent était l'avertissement. Une commande qui en est
+// dépourvue (skill, /plan suivi d'une demande) part à Claude : c'est un message.
+const isCommand = (line, caveat) => isCaveat(line) || (caveat && line.includes('"content":"<command-name>/'));
 
 // Ligne qui change l'ordre de la liste : message envoyé, réponse finie ou question
 // posée. Les étapes d'une réponse (outils, réflexion, résultats) n'en font pas partie.
@@ -104,8 +116,13 @@ function summary(p) {
   const s = {id: path.basename(p, ".jsonl"), mtime: st.mtimeMs / 1000, size: st.size,
              cwd: null, title: null, first: null, next: null, msgs: 0, bridge: null};
   let last = null;  // dernier arrêt (isStop) : sa date sert au tri, pas celle du fichier
+  let caveat = false;  // message précédent : avertissement d'une commande locale
   for (const line of lines(p)) {
-    if (isCommand(line)) continue;
+    if (line.includes('"type":"user"')) {
+      const skip = isCommand(line, caveat);
+      caveat = isCaveat(line);
+      if (skip) continue;
+    }
     if (isStop(line)) last = line;
     if (line.includes('"type":"user"')) {
       s.msgs++;
@@ -118,7 +135,8 @@ function summary(p) {
     if (!r) continue;
     if (r.type === "user") {
       s.cwd = s.cwd || r.cwd || null;
-      const t = textOf((r.message || {}).content);
+      let t = textOf((r.message || {}).content);
+      t = commandText(t) || t;
       if (!s.first && !r.isMeta && !isNoise(t)) s.first = t.split(/\s+/).join(" ").trim().slice(0, 200);
     } else if (r.type === "custom-title") s.title = r.customTitle || s.title;
     else if (r.type === "agent-name") s.title = r.agentName || s.title;
@@ -166,6 +184,7 @@ function usageTokens(u) {
 function transcriptItems(p, sidechain = false, todos = null, usage = null) {
   const items = [], creating = new Set();
   let model = null, effort = null;
+  let caveat = false;  // message précédent : avertissement d'une commande locale (/rename…)
   for (const line of lines(p)) {
     if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')
         && !line.includes('"queued_command"')) continue;
@@ -185,6 +204,11 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
       if (usage) usage.context = null;
       continue;
     }
+    let local = false;
+    if (r.type === "user") {
+      local = caveat;
+      caveat = !!r.isMeta && textOf(c).includes("<local-command-caveat>");
+    }
     if (r.isMeta) {  // message relayé par Remote Control : on garde son texte
       const body = (r.origin || {}).kind === "peer" ? peerBody(textOf(c)) : null;
       if (body) items.push(peerItem(body));
@@ -193,7 +217,9 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
     if (r.type === "user") {
       const ev = creating.size && todos ? createdTask(r, creating) : null;
       if (ev) todos.push(ev);
-      const t = textOf(c), imgs = imagesOf(c);
+      let t = textOf(c);
+      if (!local) t = commandText(t) || t;  // commande tapée (skill, /plan …) : affichée comme dans le terminal
+      const imgs = imagesOf(c);
       if (imgs.length || !isNoise(t)) {
         items.push({role: "user", text: isNoise(t) ? "" : t, images: imgs});
         if (r.parentUuid && !sidechain) items[items.length - 1].parent = r.parentUuid;  // point de copie « avant ce message »

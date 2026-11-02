@@ -77,7 +77,11 @@ def valid_markup(markup):
 
 class Fit(Gtk.Widget):
     """Widget intégré au texte (tableau) : un TextView donne à ses widgets leur largeur
-    minimale ; ici, la naturelle, réduite si besoin à la largeur disponible."""
+    minimale ; ici, la naturelle, réduite si besoin à la largeur du texte.
+
+    Cette largeur ne remonte pas comme minimum du texte (MdView.do_measure) : sinon le
+    texte ne pourrait pas être plus étroit que le tableau, qui ne se règle que sur la
+    largeur précédente du texte, et tous deux ne perdraient que 4 pixels par image."""
 
     def __init__(self, child, view, left):
         super().__init__()
@@ -89,7 +93,7 @@ class Fit(Gtk.Widget):
             for_size = self.measure(Gtk.Orientation.HORIZONTAL, -1)[1]  # (le TextView ne la donne pas)
         mini, nat, _mb, _nb = self.child.measure(orientation, for_size)
         if orientation == Gtk.Orientation.HORIZONTAL:
-            avail = self.view.get_width() - self.left - 4
+            avail = self.view.last_width - self.left - 4  # celle qu'on est en train de lui donner
             mini = nat = max(mini, min(nat, avail)) if avail > 0 else nat
         return mini, nat, -1, -1
 
@@ -114,7 +118,8 @@ class MdView(Gtk.TextView):
         self.natural = None  # largeur naturelle (texte non replié), calculée au besoin
         self.widths = []  # (balisage, position, décalage) des lignes, pour la calculer
         self.fits = []  # tableaux, à remesurer quand la largeur change
-        self.last_width = 0  # pour remesurer la hauteur quand la largeur change
+        self.anchored = []  # (widget intégré, retrait), pour la largeur minimale
+        self.last_width = 0  # largeur allouée : celle des tableaux, et sa hauteur à remesurer
         self.decor = []  # (genre, position de début, position de fin, retrait) dessinés dessous
         self.after_gap = True  # rien encore : pas d'espace avant le premier bloc
         self.line_color = rgba("rgba(128,128,128,0.55)")
@@ -229,11 +234,12 @@ class MdView(Gtk.TextView):
         self.apply(tags, start)
         self.after_gap = False
 
-    def widget(self, child, source, tags):
-        """Widget intégré sur sa propre ligne ; `source` le remplace à la copie."""
+    def widget(self, child, source, left, tags):
+        """Widget intégré sur sa propre ligne, retiré de `left` ; `source` le remplace à la copie."""
         start = self.offset()
         anchor = self.buf.create_child_anchor(self.buf.get_end_iter())
         self.add_child_at_anchor(child, anchor)
+        self.anchored.append((child, left))
         self.sources[start] = source
         self.buf.insert(self.buf.get_end_iter(), "\n")
         self.apply(tags, start)
@@ -283,7 +289,7 @@ class MdView(Gtk.TextView):
                 self.gap()
                 fit = Fit(table(rows), self, left)
                 self.fits.append((fit, self.offset()))
-                self.widget(fit, "\n".join(l.strip() for l in raw), base)
+                self.widget(fit, "\n".join(l.strip() for l in raw), left, base)
             elif line.lstrip().startswith(">"):
                 quoted = []
                 while i < n and lines[i].lstrip().startswith(">"):
@@ -314,7 +320,7 @@ class MdView(Gtk.TextView):
         head = Gtk.Box(spacing=4)
         head.append(Gtk.Label(label=lang or "code", css_classes=["sid"]))
         head.append(copy_button(code, "Copier le code"))
-        self.widget(head, "", [self.margin(left), "codehead"])
+        self.widget(head, "", left, [self.margin(left), "codehead"])
         body = self.offset()
         self.sources[start + 1] = ""  # en-tête du bloc : ni widget ni ligne à la copie
         markup = highlight(code, lang)
@@ -387,8 +393,20 @@ class MdView(Gtk.TextView):
         if orientation == Gtk.Orientation.HORIZONTAL:
             if self.natural is None:
                 self.natural = self.unwrapped_width()
+            # Le TextView prend pour minimum la largeur de ses widgets ; un tableau (Fit)
+            # y a celle du texte, qui le gonflerait : on compte chacun à son plus étroit.
+            if self.anchored:
+                mini = min(mini, self.narrowest())
             return mini, max(nat, self.natural), -1, -1
         return mini, nat, mb, nb
+
+    def narrowest(self):
+        """Largeur minimale des widgets intégrés (un tableau peut replier ses cellules)."""
+        width = 0
+        for child, left in self.anchored:
+            inner = child.child if isinstance(child, Fit) else child
+            width = max(width, inner.measure(Gtk.Orientation.HORIZONTAL, -1)[0] + left + 4)
+        return width
 
     def unwrapped_width(self):
         width = 0
@@ -409,11 +427,15 @@ class MdView(Gtk.TextView):
         return width
 
     def do_size_allocate(self, width, height, baseline):
-        Gtk.TextView.do_size_allocate(self, width, height, baseline)
         if width != self.last_width:
             self.last_width = width
+            # Avant la mise en page du texte, qui remesure ses widgets : les tableaux
+            # prennent la nouvelle largeur dès maintenant, pas à l'image suivante.
+            for fit, _offset in self.fits:
+                fit.queue_resize()
             # Après la remise en page (idle de priorité plus haute), au repos.
             GLib.idle_add(self.rewrapped, priority=GLib.PRIORITY_DEFAULT_IDLE)
+        Gtk.TextView.do_size_allocate(self, width, height, baseline)
 
     def rewrapped(self):
         """Nouvelle largeur : le TextView replie son texte, mais annonce encore la hauteur

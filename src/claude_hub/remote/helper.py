@@ -94,9 +94,27 @@ def msg_time(line):
     ms = ts[20:23] if ts[19:20] == "." else ""
     return t + int(ms.ljust(3, "0")) / 1000.0 if ms.isdigit() else t
 
-def is_command(line):
-    """Commande locale de claude (/rename…) : pas un message, ni une activité."""
-    return '<local-command-caveat>' in line or '"content":"<command-name>/' in line
+COMMAND_NAME = re.compile(r"<command-name>(/[^<]*)</command-name>")
+COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+
+def command_text(t):
+    """Commande slash telle que tapée (« /nom arguments ») d'après le message que claude
+    enregistre pour elle (<command-name>, <command-args>…) ; None si t n'en est pas une."""
+    m = COMMAND_NAME.search(t) if t.lstrip().startswith("<command-") else None
+    if not m:
+        return None
+    a = COMMAND_ARGS.search(t)
+    return " ".join((m.group(1) + " " + (a.group(1) if a else "")).split())
+
+def is_caveat(line):
+    """Avertissement que claude écrit juste avant une commande locale (/rename, /copy…)."""
+    return '<local-command-caveat>' in line and '"type":"user"' in line
+
+def is_command(line, caveat):
+    """Commande locale de claude (/rename…), avertissement compris : pas un message, ni une
+    activité. caveat : le message précédent était l'avertissement. Une commande qui en est
+    dépourvue (skill, /plan suivi d'une demande) part à Claude : c'est un message."""
+    return is_caveat(line) or (caveat and '"content":"<command-name>/' in line)
 
 def is_stop(line):
     """Ligne qui change l'ordre de la liste : message envoyé, réponse finie ou question
@@ -114,10 +132,13 @@ def summary(p):
     s = {"id": p.stem, "mtime": p.stat().st_mtime, "size": p.stat().st_size,
          "cwd": None, "title": None, "first": None, "next": None, "msgs": 0, "bridge": None}
     last = None  # dernier arrêt (is_stop) : sa date sert au tri, pas celle du fichier
+    caveat = False  # message précédent : avertissement d'une commande locale
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
-            if is_command(line):
-                continue
+            if '"type":"user"' in line:
+                skip, caveat = is_command(line, caveat), is_caveat(line)
+                if skip:
+                    continue
             if is_stop(line):
                 last = line
             if '"type":"user"' in line:
@@ -135,6 +156,7 @@ def summary(p):
             if t == "user":
                 s["cwd"] = s["cwd"] or r.get("cwd")
                 txt = text_of(r.get("message", {}).get("content"))
+                txt = command_text(txt) or txt
                 if not s["first"] and not r.get("isMeta") and not is_noise(txt):
                     s["first"] = " ".join(txt.split())[:200]
             elif t == "custom-title":
@@ -220,6 +242,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
     ({"tokens", "model"}), None après une compaction.
     """
     items, model, effort, creating = [], None, None, set()
+    caveat = False  # message précédent : avertissement d'une commande locale (/rename…)
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
             if ('"type":"user"' not in line and '"type":"assistant"' not in line
@@ -246,6 +269,8 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 if usage is not None:
                     usage["context"] = None
                 continue
+            if r.get("type") == "user":
+                local, caveat = caveat, bool(r.get("isMeta")) and "<local-command-caveat>" in text_of(content)
             if r.get("isMeta"):
                 # Message relayé par Remote Control (Claude Hub, autre session) : on garde son texte.
                 body = peer_body(text_of(content)) if (r.get("origin") or {}).get("kind") == "peer" else None
@@ -257,6 +282,8 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 if ev:
                     todos.append(ev)
                 txt = text_of(content)
+                if not local:  # commande tapée (skill, /plan …) : affichée comme dans le terminal
+                    txt = command_text(txt) or txt
                 imgs = images_of(content)
                 if imgs or not is_noise(txt):
                     items.append({"role": "user", "text": "" if is_noise(txt) else txt,

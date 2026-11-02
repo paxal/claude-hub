@@ -1508,7 +1508,7 @@ class Hub(Gtk.ApplicationWindow):
         self.changes_btn.set_visible(False)
         if self.changes_panel.get_visible():
             self.changes_panel.show(s["id"], [], loading=bool(self.edits_source(s)))
-        self.title.set_text(s["title"] or s["first"] or "Nouvelle conversation")
+        self.title.set_text(title_of(s))
         self.show_subtitle(s)
         self.clear()
         if s.get("new"):
