@@ -34,6 +34,7 @@ from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
 from .agentsview import (AGENT_ID, AgentsPanel, agent_line, agent_state, agents_tooltip,
                          running_agents, workflow_text)
 from .toolcall import ToolCall, ToolRun
+from .feedtime import Timed, day_separator, last_day, unwrap
 from .todos import TodoList, TodoPanel, created_id
 from .rename import RenamePopover, can_rename, rename_session
 from .shell import ShellBlock, background_label, background_tooltip, shell_argv, shell_command
@@ -1941,10 +1942,17 @@ class Hub(Gtk.ApplicationWindow):
         return run_helper(s["host"], "history", s["id"], limit)
 
     def append_item(self, widget, item=None):
-        """Ajoute un élément au fil. Les appels d'outils consécutifs forment une suite
-        (ToolRun), repliée en « N étapes » quand un autre élément la ferme ; renvoie la
-        suite qui reçoit widget, ou None."""
+        """Ajoute un élément au fil, avec son heure à droite (« ts » de item), précédé
+        d'un séparateur quand le jour change. Les appels d'outils consécutifs forment une
+        suite (ToolRun), repliée en « N étapes » quand un autre élément la ferme ; renvoie
+        la suite qui reçoit widget, ou None."""
         last = self.msgs.get_last_child()
+        ts = (item or {}).get("ts")
+        if ts and local_date(ts) != last_day(self.msgs):
+            if isinstance(last, ToolRun):
+                last.close()
+            last = day_separator(ts)
+            self.msgs.append(last)
         if is_step(item):
             if not (isinstance(last, ToolRun) and last.open):
                 last = ToolRun()
@@ -1953,8 +1961,14 @@ class Hub(Gtk.ApplicationWindow):
             return last
         if isinstance(last, ToolRun):
             last.close()
-        self.msgs.append(widget)
+        self.msgs.append(Timed(widget, ts) if ts else widget)
         return None
+
+    def feed_child(self, widget):
+        """Élément du fil (enfant de self.msgs) qui contient widget, None s'il n'y est pas."""
+        while widget is not None and widget.get_parent() is not self.msgs:
+            widget = widget.get_parent()
+        return widget
 
     def item_widget(self, item, s, live=False):
         """Widget d'un élément de l'historique (live : reçu dans le flux de claude -p).
@@ -2642,9 +2656,8 @@ class Hub(Gtk.ApplicationWindow):
         if self.proc:
             return self.status.set_text("Copie possible une fois la réponse finie.")
         self.cancel_fork()
-        while widget.get_parent() is not None and widget.get_parent() is not self.msgs:
-            widget = widget.get_parent()
-        if widget.get_parent() is None:
+        widget = self.feed_child(widget)
+        if widget is None:
             return
         self.fork_at = {"sid": s["id"], "at": item["parent"] if before else item["uuid"],
                         "widget": widget, "before": before,
@@ -2714,8 +2727,8 @@ class Hub(Gtk.ApplicationWindow):
             return False
         self.shells_sent(s["id"], shells)
         if text or images:
-            self.append_item(message_widget({"role": "user", "text": text, "images": images,
-                                             "queued": True}))
+            item = {"role": "user", "text": text, "images": images, "queued": True, "ts": time.time()}
+            self.append_item(message_widget(item), item)
         self.scroll_end()
         self.status.set_text("Message transmis : Claude le lira après l'étape en cours.")
         return True
@@ -2785,7 +2798,8 @@ class Hub(Gtk.ApplicationWindow):
             return self.status.set_text(why)
         self.input.get_buffer().set_text("")  # les images jointes restent pour le message
         block = ShellBlock(command, done=False)
-        self.append_item(block)
+        block.ts = time.time()  # son heure, remise avec lui dans le fil rechargé (show_shells)
+        self.append_item(block, {"role": "bash", "ts": block.ts})
         self.scroll_end()
         argv, cwd = shell_argv(s["host"], s["cwd"], command)
         try:
@@ -2828,19 +2842,25 @@ class Hub(Gtk.ApplicationWindow):
             self.shells[s["id"]] = left
         else:
             self.shells.pop(s["id"], None)
-        if block.get_parent() is self.msgs:
-            self.msgs.remove(block)
+        top = self.feed_child(block)
+        if top is not None:
+            self.msgs.remove(top)
         self.refresh_state(s["id"])
 
     def show_shells(self, s):
         """Remet à la fin du fil (rechargé) les commandes « ! » de s pas encore envoyées."""
         for b in self.shells.get(s["id"], []):
-            if b.get_parent() is None:
-                self.msgs.append(b)
+            if self.feed_child(b) is not None:
+                continue
+            if b.get_parent() is not None:  # l'ancien conteneur de son heure
+                b.get_parent().remove(b)
+            ts = getattr(b, "ts", None)
+            self.msgs.append(Timed(b, ts) if ts else b)
 
     def show_user(self, text, images):
         if text or images:  # pas de bulle vide pour des commandes « ! » envoyées seules
-            self.append_item(message_widget({"role": "user", "text": text, "images": images}))
+            item = {"role": "user", "text": text, "images": images, "ts": time.time()}
+            self.append_item(message_widget(item), item)
         self.scroll_end()
 
     def send_via_remote(self, s, text):
@@ -3116,13 +3136,13 @@ class Hub(Gtk.ApplicationWindow):
         if t == "assistant":
             for b in ev.get("message", {}).get("content", []):
                 if b.get("type") == "text" and b.get("text", "").strip():
-                    item = {"role": "assistant", "text": b["text"]}
+                    item = {"role": "assistant", "text": b["text"], "ts": time.time()}
                     if ev.get("uuid"):
                         item["uuid"] = ev["uuid"]
                     self.append_item(message_widget(item, self.fork_handler(s)), item)
                 elif b.get("type") == "tool_use":
                     item = {"role": "tool", "name": b.get("name"), "input": b.get("input"),
-                            "id": b.get("id")}
+                            "id": b.get("id"), "ts": time.time()}
                     # Sous-agent suivi en direct, sans relecture du fichier ; le plan
                     # s'affiche dans sa carte.
                     if b.get("name") != "ExitPlanMode":
@@ -3678,11 +3698,12 @@ class Hub(Gtk.ApplicationWindow):
         shown = self.plan_panel.plan if self.plan_panel.get_visible() else None
         child = self.msgs.get_first_child()
         while child:
-            if hasattr(child, "plan_body"):
-                folded = child.plan_text == shown
-                child.plan_body.set_visible(not folded)
-                child.plan_side.set_tooltip_text("Remettre dans le fil" if folded
-                                                 else "Ouvrir dans le volet")
+            w = unwrap(child)  # plan de l'historique : avec son heure
+            if hasattr(w, "plan_body"):
+                folded = w.plan_text == shown
+                w.plan_body.set_visible(not folded)
+                w.plan_side.set_tooltip_text("Remettre dans le fil" if folded
+                                             else "Ouvrir dans le volet")
             child = child.get_next_sibling()
 
     def plan_run(self, mode):

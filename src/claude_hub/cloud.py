@@ -231,6 +231,7 @@ def cloud_history(sid, limit):
     items, agents = [], cloud_agents(events)
     for ev in events:
         content = (ev.get("message") or {}).get("content")
+        start = len(items)
         if ev.get("type") == "user" and (ev.get("isCompactSummary") or not ev.get("isSynthetic")):
             text = content if isinstance(content, str) else "\n".join(
                 b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
@@ -250,6 +251,9 @@ def cloud_history(sid, limit):
                                   "id": b.get("id")})
                     if b.get("id") in agents:
                         items[-1]["agent"] = agents[b["id"]]
+        ts = iso_ts(ev.get("timestamp") or ev.get("created_at"))
+        for it in items[start:] if ts else ():  # heure affichée dans le fil
+            it["ts"] = int(ts)
     return {"size": len(events), "total": len(items), "items": items[-limit:]}
 
 

@@ -190,6 +190,15 @@ def cursor_tool_item(cid, bid, tool):
     return item
 
 
+def bubble_time(b):
+    """Heure (epoch, à la seconde) d'une bulle Cursor (createdAt), None si elle n'est pas lisible."""
+    from datetime import datetime
+    try:
+        return int(datetime.fromisoformat(b.get("createdAt").replace("Z", "+00:00")).timestamp())
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def cursor_history(cid, limit):
     with cursor_db() as db:
         row = db.execute("select value from cursorDiskKV where key = ?",
@@ -206,17 +215,20 @@ def cursor_history(cid, limit):
             b = json.loads(bubbles.get(h["bubbleId"]) or "{}")
         except ValueError:
             continue
-        text = (b.get("text") or "").strip()
+        text, start = (b.get("text") or "").strip(), len(items)
         if h.get("type") == 1:
             text = text or (h.get("grouping") or {}).get("textPreview") or ""
             if text:
                 items.append({"role": "user", "text": text})
-            continue
-        tool = b.get("toolFormerData")
-        if tool and tool.get("name"):
-            items.append(cursor_tool_item(cid, h["bubbleId"], tool))
-        if text:
-            items.append({"role": "assistant", "text": text})
+        else:
+            tool = b.get("toolFormerData")
+            if tool and tool.get("name"):
+                items.append(cursor_tool_item(cid, h["bubbleId"], tool))
+            if text:
+                items.append({"role": "assistant", "text": text})
+        ts = bubble_time(b)
+        for it in items[start:] if ts else ():  # heure affichée dans le fil
+            it["ts"] = ts
     return {"found": row is not None, "size": updated, "total": len(items),
             "items": items[-limit:]}
 

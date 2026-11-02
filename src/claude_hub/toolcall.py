@@ -10,6 +10,7 @@ import re
 from .gtk import Gtk, Pango, in_thread
 from .changes import diff_block, input_hunks
 from .render import code_block, copy_button, esc, make_label, tool_detail, tool_line
+from .feedtime import Timed, time_label
 from .listrow import BUSY_ICON
 from .todos import TODO_TOOLS, todo_detail
 
@@ -164,18 +165,22 @@ def step_summary(item):
 class ToolRun(Gtk.Box):
     """Suite d'appels d'outils consécutifs du fil. Tant qu'elle est ouverte (réponse en
     direct), ses appels s'affichent tels quels ; fermée, elle se replie en « N étapes »
-    s'il y en a au moins GROUP."""
+    s'il y en a au moins GROUP. Chaque appel porte son heure (« ts » de l'élément), la
+    suite repliée celle du premier ; day : jour du dernier (séparateurs du fil)."""
 
     GROUP = 3
 
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["toolrun"])
-        self.items, self.open, self.expander = [], True, None
+        self.items, self.open, self.expander, self.day = [], True, None, None
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.append(self.body)
 
     def add(self, item, widget):
         self.items.append(item)
+        if item.get("ts"):
+            widget = Timed(widget, item["ts"])
+            self.day = widget.day
         self.body.append(widget)
 
     def close(self):
@@ -189,6 +194,9 @@ class ToolRun(Gtk.Box):
         summary = " · ".join(step_summary(it) for it in self.items[:12])
         head.append(Gtk.Label(label=summary, xalign=0, hexpand=True, css_classes=["steps-summary"],
                               ellipsize=Pango.EllipsizeMode.END))
+        ts = self.items[0].get("ts")
+        if ts:
+            head.append(time_label(ts))
         self.remove(self.body)
         self.expander = Gtk.Expander(label_widget=head, child=self.body)
         self.append(self.expander)

@@ -34,6 +34,7 @@ d'emploi dans `.claude/skills/piloter-claude-hub/SKILL.md`.
 | `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages, ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
 | `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie |
 | `listrow.py` | lignes de la liste (icône d'état, heure, boutons du survol), séparateurs de jour |
+| `feedtime.py` | heure des éléments du fil (colonne à droite) et séparateurs de jour du fil |
 | `switcher.py` | sélecteur rapide Ctrl+K et sa recherche approximative |
 | `views.py` | vues enregistrées (pastilles sous la recherche) |
 | `changes.py` | fichiers modifiés : diffs (claude ou recalculés), regroupement par fichier, volet |

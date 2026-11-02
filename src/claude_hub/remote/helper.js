@@ -237,11 +237,16 @@ function allFiles() {
 const isDir = d => { try { return fs.statSync(d).isDirectory(); } catch (e) { return false; } };
 const find = id => allFiles().find(p => path.basename(p) === id + ".jsonl");
 
-function msgTime(line) {  // date (epoch) d'une ligne de message, null si elle n'est pas lisible
-  const ts = (parse(line) || {}).timestamp;
+function recordTime(r) {  // date (epoch) d'un enregistrement de la transcription, null si elle n'est pas lisible
+  const ts = (r || {}).timestamp;
   const m = typeof ts === "string" && /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?/.exec(ts);
   if (!m) return null;
   return Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000 + (m[7] ? +m[7].padEnd(3, "0") / 1000 : 0);
+}
+function msgTime(line) { return recordTime(parse(line)); }  // date (epoch) d'une ligne de message, null si elle n'est pas lisible
+// Heure (epoch, à la seconde) des éléments items[start:], tirés d'un même enregistrement.
+function stamp(items, start, t) {
+  if (t !== null) for (const it of items.slice(start)) it.ts = Math.floor(t);
 }
 
 // Commande slash telle que tapée (« /nom arguments ») d'après le message que claude
@@ -362,11 +367,16 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
   const items = [], creating = new Set();
   let model = null, effort = null;
   let caveat = false;  // message précédent : avertissement d'une commande locale (/rename…)
+  let mark = 0, when = null;  // éléments de l'enregistrement en cours (à dater), sa date
   for (const line of lines(p)) {
     if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')
         && !line.includes('"queued_command"')) continue;
     const r = parse(line);
-    if (!r || (r.isSidechain && !sidechain)) continue;
+    if (!r) continue;
+    stamp(items, mark, when);
+    mark = items.length;
+    when = recordTime(r);
+    if (r.isSidechain && !sidechain) continue;
     if (r.type === "attachment") {  // message envoyé pendant une réponse, lu entre deux étapes
       const a = r.attachment || {};
       if (a.type === "queued_command" && (a.commandMode === undefined ? "prompt" : a.commandMode) === "prompt") {
@@ -425,6 +435,7 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
       }
     }
   }
+  stamp(items, mark, when);
   return [items, model, effort];
 }
 

@@ -102,15 +102,28 @@ def cmd_live():
             out[sid + ":since"] = since
     print(json.dumps(out))
 
-def msg_time(line):
-    """Date (epoch) d'une ligne de message, None si elle n'est pas lisible."""
+def record_time(r):
+    """Date (epoch) d'un enregistrement de la transcription, None si elle n'est pas lisible."""
     try:
-        ts = json.loads(line).get("timestamp")
+        ts = r.get("timestamp")
         t = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
     except (ValueError, AttributeError, TypeError):
         return None
     ms = ts[20:23] if ts[19:20] == "." else ""
     return t + int(ms.ljust(3, "0")) / 1000.0 if ms.isdigit() else t
+
+def msg_time(line):
+    """Date (epoch) d'une ligne de message, None si elle n'est pas lisible."""
+    try:
+        return record_time(json.loads(line))
+    except ValueError:
+        return None
+
+def stamp(items, start, t):
+    """Heure (epoch, à la seconde) des éléments items[start:], tirés d'un même enregistrement."""
+    if t is not None:
+        for it in items[start:]:
+            it["ts"] = int(t)
 
 COMMAND_NAME = re.compile(r"<command-name>(/[^<]*)</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -478,6 +491,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
     """
     items, model, effort, creating = [], None, None, set()
     caveat = False  # message précédent : avertissement d'une commande locale (/rename…)
+    mark, when = 0, None  # éléments de l'enregistrement en cours (à dater), sa date
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
             if ('"type":"user"' not in line and '"type":"assistant"' not in line
@@ -487,6 +501,8 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 r = json.loads(line)
             except ValueError:
                 continue
+            stamp(items, mark, when)
+            mark, when = len(items), record_time(r)
             if r.get("isSidechain") and not sidechain:
                 continue
             if r.get("type") == "attachment":
@@ -545,6 +561,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                         todos.append(items[-1])
                         if b.get("name") == "TaskCreate":
                             creating.add(b.get("id"))
+    stamp(items, mark, when)
     return items, model, effort
 
 def cmd_history(sid, limit):

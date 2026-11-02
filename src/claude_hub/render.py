@@ -613,6 +613,15 @@ textview.md, textview.md > text { background: none; }
 .msg.user > .bubble { padding-right: 40px; }
 .copy-md { margin: 4px; opacity: 0; background: alpha(black, 0.25); border-radius: 6px; }
 .msg:hover .copy-md { opacity: 0.9; }
+/* Heure des éléments du fil (feedtime.py) : colonne à droite, alignée pour tous ; les
+   suites d'étapes (.toolrun) ont déjà leur marge. */
+.msgs > .timed { margin: 0 8px; }
+.timed > * { margin-left: 0; margin-right: 0; }
+.timed > .msg.assistant, .timed > .bubble.assistant { margin-right: 0; }
+.msg-time { min-width: 40px; font-size: 0.85em; opacity: 0.6; font-feature-settings: "tnum"; }
+.msg-time.on-bubble { margin-top: 10px; }
+.feed-day { margin: 6px 8px 2px; }
+.feed-day > label { font-size: 0.78em; font-weight: bold; letter-spacing: 1px; opacity: 0.7; }
 .after-fork { opacity: 0.35; }
 .fork-bar { border-radius: 6px; padding: 4px 8px; background: rgba(61, 174, 233, 0.15); }
 .copy.flat { padding: 0 6px; }

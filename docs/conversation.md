@@ -39,6 +39,20 @@ actions du clic droit sur la liste (lue ou non lue, filtrer sur le dossier,
 archiver), plus « Copier l'identifiant » et, pour le cloud, « Ouvrir sur
 claude.ai ».
 
+## Heure des messages
+
+Comme dans une messagerie, chaque élément du fil (message, étape, sous-agent,
+commande « ! ») porte son heure à droite, dans une colonne de même largeur pour
+tous ; la date complète est en info-bulle. Une suite repliée en « N étapes »
+porte l'heure de la première, et chacune la sienne une fois dépliée. Quand le
+jour change, un séparateur « Aujourd'hui », « Hier », « Samedi 31 octobre »
+s'insère dans le fil, comme dans la liste.
+
+L'heure vient de la transcription (`timestamp` de chaque ligne, à la seconde),
+de l'API pour le cloud et du `createdAt` des bulles pour Cursor ; pendant une
+réponse lancée d'ici, c'est l'heure de réception, remplacée par celle de la
+transcription au rechargement suivant. Les agents cloud Cursor n'en ont pas.
+
 ## Copier une conversation à partir d'un message
 
 Au survol d'un message, le bouton « branche » (à côté de « copier le

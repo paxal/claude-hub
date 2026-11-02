@@ -100,6 +100,9 @@ class TestTranscription(unittest.TestCase):
 
     def test_historique(self):
         items = self.run_helper("python3", "helper.py", "history", SID, "50")["items"]
+        # heure de l'enregistrement (2026-11-02T10:00:00Z), aucune pour les lignes sans date
+        t = 1793613600
+        self.assertEqual([it.pop("ts", None) for it in items], [t, t, t, None, t, None, None])
         self.assertEqual(items, [
             {"role": "bash", "command": "uname", "stdout": "Linux", "stderr": ""},
             {"role": "bash", "command": "false", "stdout": "", "stderr": "Exit code 1"},
