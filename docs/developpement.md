@@ -28,7 +28,7 @@ d'emploi dans `.claude/skills/piloter-claude-hub/SKILL.md`.
 |---|---|
 | `gtk.py` | initialisation de GTK 4, `in_thread`, modificateur des raccourcis (Ctrl, ou Cmd sous macOS) |
 | `hosts.py` | configuration, hôtes local/SSH, exécution des scripts distants |
-| `remote/helper.py`, `remote/helper.js` | scripts envoyés aux hôtes (`python3 -` ou `node -`) pour lire `~/.claude` ; bibliothèque standard uniquement |
+| `remote/helper.py`, `remote/helper.js` | scripts envoyés aux hôtes (`python3 -` ou `node -`) pour lire `~/.claude` et les notes ; bibliothèque standard uniquement |
 | `cursor.py` | conversations Cursor (base `state.vscdb`, Linux ou macOS ; recherche) |
 | `cloud.py` | sessions claude.ai/code et agents cloud Cursor ; jeton lu dans `~/.claude` ou le trousseau macOS |
 | `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages, ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
@@ -52,6 +52,8 @@ d'emploi dans `.claude/skills/piloter-claude-hub/SKILL.md`.
 | `todos.py` | liste de tâches de Claude (TodoWrite, TaskCreate, TaskUpdate) et son volet |
 | `dirpicker.py` | sélecteur de dossier sur un hôte SSH |
 | `tags.py` | stockage des tags, analyse de la recherche (`#tag`, `dir:`) |
+| `notes.py` | notes Markdown : lecture et écriture sur l'hôte de la conversation (ce PC pour le cloud), index, file d'enregistrement, extraits pour la recherche |
+| `notesview.py` | volet « Notes » : aperçu, édition, enregistrement automatique |
 | `tagui.py` | pastilles, éditeur de tags, menus de filtre |
 | `commands.py` | complétion des commandes « / » (liste demandée à `claude`, filtrage, suggestions) |
 | `shell.py` | commandes « ! » : lancement sur l'hôte, bloc du fil, texte joint au message suivant ; textes de la pastille des shells en arrière-plan |

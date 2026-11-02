@@ -241,7 +241,47 @@ def cmd_list():
             s["cwd_exists"] = os.path.isdir(s["cwd"]) if s["cwd"] else None
             res.append(s)
     res.sort(key=lambda s: -s["mtime"])
-    print(json.dumps({"home": str(Path.home()), "sessions": res}))
+    print(json.dumps({"home": str(Path.home()), "sessions": res, "notes": notes_index()}))
+
+# Notes de claude-hub : ~/.config/claude-hub/notes/<id>.md (pas dans ~/.claude).
+NOTE_EXCERPT = 1000
+NOTE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+def notes_dir():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(str(Path.home()), ".config")
+    return os.path.join(base, "claude-hub", "notes")
+
+def read_note(p):
+    with open(p, encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+def notes_index():
+    """Début de chaque note rangée sur cet hôte, par id de conversation."""
+    d, out = notes_dir(), {}
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for n in names:
+        if n.startswith(".") or not n.endswith(".md"):
+            continue
+        try:
+            t = read_note(os.path.join(d, n))
+        except OSError:
+            continue
+        if t.strip():
+            out[n[:-3]] = t[:NOTE_EXCERPT]
+    return out
+
+def cmd_note(sid):
+    """Texte de la note d'une conversation (null s'il n'y en a pas)."""
+    if not NOTE_ID.match(sid):
+        return print(json.dumps({"error": "identifiant invalide"}))
+    try:
+        res = {"text": read_note(os.path.join(notes_dir(), sid + ".md"))}
+    except OSError as e:
+        res = {"text": None} if e.errno == 2 else {"error": "lecture refusée"}
+    print(json.dumps(res))
 
 TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
 BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
@@ -908,6 +948,8 @@ a = sys.argv[1:]
  "dirs": lambda: cmd_dirs(a[1]),
  "defaults": lambda: cmd_defaults(),
  "read": lambda: cmd_read(a[1]),
+ "note": lambda: cmd_note(a[1]),
+ "notes": lambda: print(json.dumps(notes_index())),
  "history": lambda: cmd_history(a[1], int(a[2])),
  "agent": lambda: cmd_agent(a[1], a[2], int(a[3])),
  "agents": lambda: cmd_agents(a[1]),

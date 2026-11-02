@@ -63,7 +63,7 @@ absolu). Sans installation, la fenêtre n'a pas d'icône.
   accueil et nouvelle conversation, liste et états, épingles et vues
   enregistrées, tags et filtres, clavier.
 - [Dans une conversation](docs/conversation.md) : en-tête (renommage,
-  contexte, coût), copie à partir d'un message, commandes « / » et « ! »,
+  contexte, coût), notes en Markdown, copie à partir d'un message, commandes « / » et « ! »,
   sorties des outils, conversations Cursor, fichiers cités et modifiés, tâches
   de Claude, écrire pendant une réponse, l'arrêter, fin des réponses.
 - [Mode plan, sous-agents et Remote Control](docs/plan-et-remote-control.md) :
@@ -84,4 +84,7 @@ Dans `~/.config/claude-hub/` :
   modèle, coût de la dernière réponse lancée d'ici) ;
 - `tags.json` : tags par conversation, avec son hôte et un résumé (titre,
   dossier, date) pour l'afficher sans interroger l'hôte. Propre à ce PC : à
-  synchroniser soi-même pour le partager.
+  synchroniser soi-même pour le partager ;
+- `notes/<id>.md` : note Markdown de chaque conversation de ce PC (et du cloud).
+  Celles des conversations d'un hôte SSH sont dans le même dossier, sur cet
+  hôte.

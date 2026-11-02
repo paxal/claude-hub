@@ -20,7 +20,8 @@ une réponse lancée depuis claude-hub, et absent pour Cursor et le cloud.
 Sous le titre, l'en-tête indique l'hôte, le modèle et l'effort de la dernière
 réponse (« Opus 5.5 (medium) », lus dans la transcription), le remplissage du
 contexte et le coût de la dernière réponse, le dossier, l'id abrégé (complet en
-info-bulle) et les tags.
+info-bulle) et les tags. Le bouton « note » ouvre la [note](#notes) de la
+conversation.
 
 Le **contexte** est la taille du dernier message de Claude (jetons d'entrée, cache
 compris, et de sortie), lue dans la transcription puis suivie en direct pendant une
@@ -194,6 +195,34 @@ l'historique affiché ; pour Cursor, dont les outils ne donnent que le fichier, 
 diff est lu dans sa base au dépliage. Les diffs affichés sont coupés après 400
 lignes ; « Copier » en haut du volet les copie entiers.
 
+## Notes
+
+Le bouton « note » de l'en-tête (feuille au coin plié, en bleu quand la
+conversation a une note) ouvre le volet **Notes** : un texte en Markdown attaché à
+la conversation (ce qui reste à faire, une décision, un lien…). Une conversation
+sans note s'ouvre directement en édition ; sinon le volet montre l'aperçu
+(Markdown mis en forme, chemins cliquables comme dans le fil, relatifs au dossier
+de la conversation) et le crayon passe au texte brut. « Note… » du clic droit sur
+la liste ouvre la conversation et sa note. Le volet suit la conversation affichée.
+
+La note s'enregistre toute seule une seconde après la dernière frappe, et aussitôt
+quand on revient à l'aperçu, qu'on change de conversation, qu'on ferme le volet ou
+claude-hub ; le pied du volet dit « Enregistrée à 14:02 ». Une note vidée est
+supprimée. Elle est relue à chaque ouverture du volet.
+
+La note est rangée **sur l'hôte de la conversation**, dans
+`~/.config/claude-hub/notes/<id>.md` (sous `$XDG_CONFIG_HOME` s'il est défini) :
+celle d'une conversation de cerberus est sur cerberus, et un autre PC qui affiche
+cet hôte la retrouve. Le cloud n'a pas d'hôte où écrire : les notes de ses
+conversations restent sur ce PC. Rien n'est écrit dans `~/.claude` : Claude ne lit
+pas les notes.
+
+- Si l'hôte ne répond pas, le volet le dit et ne permet pas d'écrire (on
+  écraserait la note qu'on n'a pas pu lire).
+- Deux claude-hub qui modifient la même note en même temps : le dernier
+  enregistrement l'emporte.
+- Pas de note pour une nouvelle conversation tant que Claude n'y a pas répondu.
+
 ## Tâches de Claude
 
 Quand Claude découpe son travail en tâches (outils `TaskCreate` et `TaskUpdate`,
@@ -277,6 +306,6 @@ Dans la liste, ces conversations restent marquées d'une pastille bleue (titre
 en gras, heure en bleu) tant qu'on ne les a pas ouvertes ; elles figurent aussi
 dans « À traiter ». Un clic droit sur une
 conversation de la liste ouvre un menu : marquer comme non lue (ou lue), tags,
-filtrer sur son dossier de travail (`dir:`), renommer, archiver. Si c'est
+note, filtrer sur son dossier de travail (`dir:`), renommer, archiver. Si c'est
 la conversation affichée, elle reste non lue jusqu'à ce qu'on en ouvre une autre
 puis qu'on y revienne.

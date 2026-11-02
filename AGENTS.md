@@ -24,6 +24,11 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   modifié que par `claude` lui-même (via `claude -p --resume`). Les bases
   Cursor (`state.vscdb`) sont ouvertes en lecture seule. L'archivage et les tags
   n'existent que dans `~/.config/claude-hub/` (`settings.json`, `tags.json`).
+  Les notes vont dans `~/.config/claude-hub/notes/` **de l'hôte de la
+  conversation** (ce PC pour le cloud) : lues par les scripts distants (`note`,
+  `notes`, index dans `list`), écrites par `sh` avec le texte sur l'entrée
+  standard (les scripts distants la prennent pour leur code, et un argument est
+  limité à 128 Ko).
 - **Scripts distants** (`remote/helper.py`, `remote/helper.js`) : bibliothèque
   standard uniquement, compatibles avec un python3 ancien. Les deux versions
   doivent rester équivalentes (même sortie, erreurs comprises) : certains hôtes
@@ -83,7 +88,10 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 
 ## Tester
 
-- Tests unitaires : `python3 -m unittest discover -s tests`.
+- Tests unitaires : `python3 -m unittest discover -s tests`. node n'est pas
+  installé sur ce PC : une quinzaine de tests échouent alors (`FileNotFoundError:
+  'node'`), sans rapport avec le changement. Comparer `helper.py` et
+  `helper.js` sur cerberus (node), dans un dossier temporaire supprimé ensuite.
 - **Hors écran** : tout test d'interface passe par `tests/ecran-virtuel.sh`,
   qui lance la commande sur une KWin virtuelle (`kwin_wayland --virtual`) avec
   son propre bus D-Bus. Rien ne s'affiche chez l'utilisateur, et le

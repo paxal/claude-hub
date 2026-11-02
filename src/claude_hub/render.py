@@ -639,6 +639,7 @@ textview.md, textview.md > text { background: none; }
 .side .viewer { border-left: none; }
 .viewer-md { padding: 8px 14px; }
 .viewer-code { font-family: monospace; font-size: 0.92em; }
+textview.note-input { font-family: monospace; font-size: 0.92em; }
 .tagchip, button.tagchip { font-size: 0.75em; padding: 0 6px; border-radius: 6px; min-height: 0;
                            min-width: 0; color: #3d8fd1; background: rgba(61, 174, 233, 0.15); }
 button.tagchip:hover { background: rgba(61, 174, 233, 0.3); }
@@ -658,6 +659,8 @@ row.strong .row-title { font-weight: bold; }
 .row-folder { opacity: 0.7; }
 .row-folder.missing { color: #e5534b; opacity: 1; }
 .row-draft { font-style: italic; opacity: 0.7; }
+.row-note { -gtk-icon-size: 12px; color: #3d8fd1; }
+button.has-note { color: #3d8fd1; }
 .row-time { font-size: 0.9em; opacity: 0.7; font-feature-settings: "tnum"; }
 .row-time.unread { color: #3d8fd1; font-weight: bold; opacity: 1; }
 .row-time.busy { color: #d4860b; font-weight: bold; opacity: 1; }

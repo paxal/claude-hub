@@ -49,7 +49,9 @@ gauche donne l'état : pastille bleue (réponse non lue : titre en gras, heure e
 bleu), roue orange (Claude travaille : « en cours »), triangle rouge (plan,
 question ou autorisation à valider : « à valider »), coche verte (terminé, la
 session reste ouverte dans un terminal), crayon (brouillon). La roue est fixe :
-une animation par ligne coûtait ~20 % de CPU avec le rendu cairo.
+une animation par ligne coûtait ~20 % de CPU avec le rendu cairo. Une petite
+feuille bleue, devant le dossier, signale une
+[note](conversation.md#notes) ; son début s'affiche en info-bulle.
 
 Les boutons « Toutes / À traiter / En cours », sous la recherche, filtrent la
 liste par état ; les pastilles comptent les conversations à traiter (non lues et
@@ -88,7 +90,8 @@ Dans la recherche, on peut combiner :
 - `#stockly/` : seulement ce qui est rangé sous `stockly/` ;
 - `dir:~/devel/gauth` : conversations lancées dans ce dossier ou en dessous
   (`dir:"~/mes docs"` si le chemin contient des espaces) ;
-- du texte libre : titres, puis contenu des conversations de l'hôte affiché.
+- du texte libre : titres, notes (le passage trouvé s'affiche sous la ligne,
+  « Note : … »), puis contenu des conversations de l'hôte affiché.
 
 Les boutons étiquette et dossier à droite de la recherche (listes des tags et
 des dossiers de travail) et les pastilles des conversations remplissent ces

@@ -1,6 +1,6 @@
 """Lignes de la liste des conversations et séparateurs de jour.
 
-Une ligne : icône d'état, titre, puis hôte, dossier et tags ; à droite l'heure du
+Une ligne : icône d'état, titre, puis hôte, note, dossier et tags ; à droite l'heure du
 dernier message, ou « en cours », « à valider ». Au survol, l'heure laisse la place
 aux boutons tags, épingle et archive. Les lignes sont regroupées par jour
 (« Aujourd'hui », « Hier », « Samedi 31 octobre »…), d'où l'heure seule à droite ;
@@ -91,14 +91,17 @@ class StateIcon(Gtk.Box):
 
 
 PIN_ICON = "claude-hub-pin-symbolic"
+NOTE_ICON = "claude-hub-note-symbolic"
 
 
 class SessionRow(Gtk.ListBoxRow):
     """Ligne d'une conversation. on_tags(ligne), on_pin(ligne) et on_archive(ligne) :
-    boutons du survol (absents pour une nouvelle conversation pas encore envoyée)."""
+    boutons du survol (absents pour une nouvelle conversation pas encore envoyée).
+    note : début de la note de la conversation (icône, texte en info-bulle)."""
 
     def __init__(self, s, host, title, cwd, *, show_host, tags, on_tag, missing=False, archived=False,
-                 source=None, snippet=None, on_tags=None, on_archive=None, pinned=False, on_pin=None):
+                 source=None, snippet=None, on_tags=None, on_archive=None, pinned=False, on_pin=None,
+                 note=None):
         super().__init__()
         self.add_css_class("session")  # en plus de « activatable »
         self.session, self.host, self.cwd_text, self.missing = s, host, cwd, missing
@@ -117,6 +120,9 @@ class SessionRow(Gtk.ListBoxRow):
             meta.append(host_chip(host))
         if source:
             meta.append(Gtk.Label(label=source[0], css_classes=["badge"] + source[1:]))
+        self.note = Gtk.Image(icon_name=NOTE_ICON, css_classes=["row-note"], valign=Gtk.Align.CENTER)
+        meta.append(self.note)
+        self.set_note(note)
         folder = ("dossier supprimé · " + cwd) if missing else cwd
         meta.append(Gtk.Label(label=folder, xalign=0, ellipsize=Pango.EllipsizeMode.END,
                               css_classes=["row-folder"] + (["missing"] if missing else []),
@@ -166,6 +172,11 @@ class SessionRow(Gtk.ListBoxRow):
             self.right.add_named(actions, "actions")
             self.set_archived(self.has_css_class("archived"))
         self.right.set_visible_child_name("actions" if shown and self.archive_btn else "time")
+
+    def set_note(self, note):
+        """Icône de la note (None : pas de note), son début en info-bulle."""
+        self.note.set_visible(bool(note))
+        self.note.set_tooltip_text(f"Note :\n{note}" if note else None)
 
     def set_pinned(self, pinned):
         """Épinglée ou non ; le tri et les séparateurs de la liste sont à refaire."""

@@ -43,9 +43,11 @@ from .widgets import (
     ChoiceButton, Clamp, count_badge, host_chip, host_icon, host_kind, menu_popover, section_title, set_count,
     short_host, themed_icon, with_placeholder,
 )
-from .listrow import ACTION_STATES, SessionRow, day_label, elapsed_text, local_date, status_kind
+from .listrow import ACTION_STATES, NOTE_ICON, SessionRow, day_label, elapsed_text, local_date, status_kind
 from .home import DirButton, HomePage, plan_digest
 from .changes import EDIT_TOOLS, ChangesPanel, edits_from_items, group_files
+from .notes import excerpt, host_index, note_preview, note_snippet, store_of, valid_id, where_text
+from .notesview import NotesPanel
 from .switcher import Switcher
 from .launcher import Launcher
 from .views import ViewsBar, add_view, remove_view
@@ -133,6 +135,7 @@ class Hub(Gtk.ApplicationWindow):
         self.search_gen = 0
         self.polling_states = False
         self.tag_store = TagStore()
+        self.note_index = {}     # hôte où sont rangées les notes -> {id: début de la note}
         self.shown = 0           # conversations affichées par fill_list
         self.plans_opened = set()  # demandes de plan déjà ouvertes dans le volet (une seule ouverture auto)
         self.launcher = Launcher()  # nombre de conversations à traiter sur l'icône de la barre des tâches
@@ -152,17 +155,20 @@ class Hub(Gtk.ApplicationWindow):
         self.agents_panel = AgentsPanel(lambda: self.close_side("agents"))
         self.agents_polling = False
         self.changes_panel = ChangesPanel(lambda: self.close_side("changes"), self.edit_time)
+        self.notes_panel = NotesPanel(lambda: self.close_side("notes"), self.note_saved, self.note_failed)
         self.side_stack = Gtk.Stack(vexpand=True)
         self.side_stack.add_titled(self.plan_panel, "plan", "Plan")
         self.side_stack.add_titled(self.viewer, "file", "Fichier")
         self.side_stack.add_titled(self.agents_panel, "agents", "Agents")
         self.side_stack.add_titled(self.changes_panel, "changes", "Modifications")
+        self.side_stack.add_titled(self.notes_panel, "notes", "Notes")
         self.side_switch = Gtk.StackSwitcher(stack=self.side_stack, halign=Gtk.Align.CENTER,
                                              margin_top=6)
         self.side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["side"])
         self.side.append(self.side_switch)
         self.side.append(self.side_stack)
-        for w in (self.viewer, self.plan_panel, self.agents_panel, self.changes_panel, self.side):
+        for w in (self.viewer, self.plan_panel, self.agents_panel, self.changes_panel, self.notes_panel,
+                  self.side):
             w.set_visible(False)
         self.chat_paned.set_end_child(self.side)
         paned.set_end_child(self.chat_paned)
@@ -176,8 +182,9 @@ class Hub(Gtk.ApplicationWindow):
             shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(accel),
                                                     Gtk.CallbackAction.new(lambda *_a, f=action: f() or True)))
         self.add_controller(shortcuts)
-        # fermer la fenêtre retire la pastille de l'icône
-        self.connect("close-request", lambda _w: self.launcher.set_count(0) or False)
+        # fermer la fenêtre retire la pastille de l'icône, et enregistre la note en cours
+        # (claude-hub attend la fin de l'enregistrement pour quitter)
+        self.connect("close-request", lambda _w: self.launcher.set_count(0) or self.close_notes() or False)
 
         # revenir sur la fenêtre vaut lecture de la conversation affichée
         self.connect("notify::is-active", lambda w, _p: w.is_active() and w.current
@@ -279,7 +286,8 @@ class Hub(Gtk.ApplicationWindow):
         for name, handler in (("toggle-unread", self.toggle_unread), ("row-tags", self.row_tags),
                               ("row-rename", self.row_rename), ("row-archive", self.row_archive),
                               ("row-dir", self.row_dir), ("copy-id", self.copy_id),
-                              ("open-web", self.open_web), ("row-pin", self.toggle_pin)):
+                              ("open-web", self.open_web), ("row-pin", self.toggle_pin),
+                              ("row-notes", self.row_notes)):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             # après la fermeture du menu : un popover ouvert par-dessus lui serait refusé
             action.connect("activate", lambda _a, sid, handler=handler:
@@ -390,6 +398,9 @@ class Hub(Gtk.ApplicationWindow):
                                        tooltip_text=f"Nouvelle conversation dans ce dossier ({PRIMARY_KEY}N)")
         self.new_here_btn.connect("clicked", lambda _b: self.new_here())
         buttons.append(self.new_here_btn)
+        self.note_btn = Gtk.Button(icon_name=NOTE_ICON, visible=False, css_classes=["flat"])
+        self.note_btn.connect("clicked", lambda _b: self.toggle_notes())
+        buttons.append(self.note_btn)
         self.tag_btn = Gtk.Button(icon_name=TAG_ICON, visible=False, css_classes=["flat"],
                                   tooltip_text="Tags de cette conversation")
         self.tag_btn.connect("clicked", lambda b: self.edit_tags(b, self.current, self.current["host"]))
@@ -786,6 +797,16 @@ class Hub(Gtk.ApplicationWindow):
         all_hosts = list(self.hosts)
         with_claude, with_cursor = self.show_claude.get_active(), self.show_cursor.get_active()
 
+        def notes(host, listed):
+            """Index des notes de l'hôte : donné par `list`, sinon demandé à part (pas
+            après un `list` qui a échoué : l'hôte ne répond pas)."""
+            if store_of(host) != "local" and with_claude and listed is None:
+                return None
+            try:
+                return host_index(host, listed)
+            except Exception:  # noqa: BLE001 — sans index, pas d'icône ; le volet relit la note
+                return None
+
         def fetch(host):
             errors, res, cursor = [], {"home": None, "sessions": []}, []
             if host == CLOUD:
@@ -799,10 +820,11 @@ class Hub(Gtk.ApplicationWindow):
                         cursor = cursor_cloud_list()
                     except Exception as e:  # noqa: BLE001
                         errors.append(f"Cursor : {e}")
-                return res, cursor, errors
+                return res, cursor, errors, notes(host, None)
+            listed = None
             if with_claude:
                 try:
-                    res = run_helper(host, "list")
+                    res = listed = run_helper(host, "list")
                 except Exception as e:  # noqa: BLE001 — Cursor reste lisible hors ligne
                     errors.append(f"{host} : {e}")
             if with_cursor:
@@ -811,12 +833,16 @@ class Hub(Gtk.ApplicationWindow):
                     check_dirs(host, cursor)
                 except Exception as e:  # noqa: BLE001
                     errors.append(f"Cursor ({host}) : {e}")
-            return res, cursor, errors
+            return res, cursor, errors, notes(host, listed)
 
         def done(host, gen, out):
             if gen != self.list_gens[host] or host not in self.shown_hosts():
                 return  # chargement dépassé, ou hôte décoché entre-temps
-            res, cursor, errors = out
+            res, cursor, errors, notes_found = out
+            if notes_found is not None:
+                self.note_index[store_of(host)] = notes_found
+                if self.current and store_of(self.current["host"]) == store_of(host):
+                    self.show_note_btn(self.current)
             self.loading.discard(host)
             self.list_errors[host] = errors
             if res["home"]:
@@ -895,13 +921,18 @@ class Hub(Gtk.ApplicationWindow):
             if home and cwd.startswith(home):
                 cwd = "~" + cwd[len(home):]
             hit = self.content_hits.get(s["id"])
+            note, note_hit = self.note_text(host, s["id"]), None
             if q and not hit and q not in norm_text(f"{label} {cwd} {s['id']} {' '.join(tags)}"):
-                continue
+                note_hit = note_snippet(note, q) if note else None
+                if not note_hit:
+                    continue
             self.shown += 1
             snippet = None
             if hit:
                 prefix = {"user": "Toi : ", "assistant": "Claude : "}.get(hit["role"], "")
                 snippet = esc(prefix) + highlight_words(" ".join(hit["snippet"].split()), query)
+            elif note_hit:
+                snippet = esc("Note : ") + highlight_words(note_hit, query)
             source = {"cursor": ["Cursor"], "claude-cloud": ["claude.ai", "cloud"]}.get(s.get("source"))
             unsent = s["id"] in self.unsent  # pas de tags ni d'archive : elle n'existe pas encore pour claude
             missing = s.get("cwd_exists") is False
@@ -911,7 +942,8 @@ class Hub(Gtk.ApplicationWindow):
                 snippet=snippet, on_archive=None if unsent else lambda r: self.toggle_archive(r.session),
                 on_tags=None if unsent else lambda r: self.edit_tags(r, r.session, r.host),
                 pinned=s["id"] in self.settings["pinned"],
-                on_pin=None if unsent else lambda r: self.toggle_pin(r.session["id"]))
+                on_pin=None if unsent else lambda r: self.toggle_pin(r.session["id"]),
+                note=note_preview(note) if note else None)
             if missing:
                 row.set_tooltip_text(f"Le dossier {s['cwd']} n'existe plus sur {host}")
             if host in hosts:
@@ -1401,6 +1433,7 @@ class Hub(Gtk.ApplicationWindow):
                  "toggle-unread"),
                 ("Désépingler" if sid in self.settings["pinned"] else "Épingler", "row-pin"),
                 ("Tags…", "row-tags"),
+                ("Note…" if self.note_text(row.host, sid) else "Ajouter une note…", "row-notes"),
                 *([("Ne plus filtrer sur ce dossier" if row_dir in parse_query(self.search.get_text())[1]
                     else "Filtrer sur ce dossier", "row-dir")] if row_dir else []),
                 *([("Renommer…", "row-rename")] if can_rename(s) else []),
@@ -1529,6 +1562,12 @@ class Hub(Gtk.ApplicationWindow):
         self.tag_btn.set_visible(True)
         self.more_btn.set_visible(True)
         self.rename_btn.set_visible(can_rename(s))
+        self.show_note_btn(s)
+        if self.notes_panel.get_visible():  # le volet suit la conversation affichée
+            if self.can_note(s):
+                self.notes_panel.show(s["host"], s["id"])
+            else:
+                self.close_side("notes")
         tag_chips(self.head_tags, self.tag_store.tags(s["id"]), self.filter_tag)
         self.size = -1
         if self.plan_panel.sid != s["id"]:
@@ -1581,7 +1620,7 @@ class Hub(Gtk.ApplicationWindow):
         self.listbox.unselect_all()
         if self.segment != "all":
             self.listbox.invalidate_filter()
-        for page in ("plan", "agents", "changes"):
+        for page in ("plan", "agents", "changes", "notes"):
             self.close_side(page)
         if host in self.new_hosts:
             self.syncing_new = True
@@ -3198,6 +3237,7 @@ class Hub(Gtk.ApplicationWindow):
         if shown:
             self.current.pop("new", None)
             self.rename_btn.set_visible(can_rename(self.current))
+            self.show_note_btn(self.current)
         # « Envoyer tout de suite » : le message en tête de file part après l'interruption.
         then_send = s.pop("then_send", False)
         if self.queues.get(s["id"]) and (code == 0 or then_send):
@@ -3626,6 +3666,66 @@ class Hub(Gtk.ApplicationWindow):
             self.changes_panel.show(s["id"], s.get("edits") or [], *self.changes_args(s))
             self.show_side("changes")
 
+    # -- notes --
+    def note_text(self, host, sid):
+        """Début de la note de sid (index lu avec la liste, tenu à jour à l'enregistrement)."""
+        return self.note_index.get(store_of(host), {}).get(sid)
+
+    def can_note(self, s):
+        """Une note n'est possible qu'une fois la conversation créée par claude."""
+        return bool(s) and s["id"] not in self.unsent and not s.get("new") and valid_id(s["id"])
+
+    def show_note_btn(self, s):
+        """Bouton « note » de l'en-tête : en couleur quand la conversation en a une."""
+        ok = self.can_note(s)
+        self.note_btn.set_visible(ok)
+        if not ok:
+            return
+        text = self.note_text(s["host"], s["id"])
+        (self.note_btn.add_css_class if text else self.note_btn.remove_css_class)("has-note")
+        self.note_btn.set_tooltip_text(f"Note :\n{note_preview(text)}" if text else
+                                       f"Ajouter une note (Markdown, rangée {where_text(s['host'])})")
+
+    def toggle_notes(self):
+        if self.notes_panel.get_visible() and self.side_stack.get_visible_child() is self.notes_panel:
+            return self.close_side("notes")
+        self.show_notes()
+
+    def show_notes(self):
+        s = self.current
+        if self.can_note(s):
+            self.notes_panel.show(s["host"], s["id"], focus=True)
+            self.show_side("notes")
+
+    def row_notes(self, sid):
+        """« Note… » du clic droit : ouvre la conversation et sa note."""
+        if not self.current or self.current["id"] != sid:
+            self.open_sid(sid)
+        if self.current and self.current["id"] == sid:
+            self.show_notes()
+
+    def note_saved(self, host, sid, text):
+        index = self.note_index.setdefault(store_of(host), {})
+        if text.strip():
+            index[sid] = excerpt(text)
+        else:
+            index.pop(sid, None)
+        row = self.rows.get(sid)
+        if row is not None and row.host == host:
+            row.set_note(note_preview(text) if text.strip() else None)
+        if self.current and self.current["id"] == sid:
+            self.show_note_btn(self.current)
+
+    def note_failed(self, host, sid, e):
+        """Échec d'un enregistrement : le volet le dit pour la note affichée, sinon la barre d'état."""
+        if (host, sid) != (self.notes_panel.host, self.notes_panel.sid):
+            self.status.set_text(f"Note non enregistrée {where_text(host)} : {e}")
+
+    def close_notes(self):
+        """Fermeture de la fenêtre : enregistre la note en cours et attend la fin (15 s au plus)."""
+        self.notes_panel.flush()
+        self.notes_panel.io.wait(15)
+
     # -- fichiers cités --
     def open_file_link(self, lbl, path, line, end):
         """Clic sur un chemin d'un message (appelé par render.on_link)."""
@@ -3659,11 +3759,13 @@ class Hub(Gtk.ApplicationWindow):
         self.side_stack.get_child_by_name(page).set_visible(False)
         if page == "plan":
             self.sync_plan_cards()
+        elif page == "notes":
+            self.notes_panel.forget()  # enregistrée ; relue à la prochaine ouverture
         self.update_side()
 
     def update_side(self):
-        pages = [c for c in (self.plan_panel, self.viewer, self.agents_panel, self.changes_panel)
-                 if c.get_visible()]
+        pages = [c for c in (self.plan_panel, self.viewer, self.agents_panel, self.changes_panel,
+                             self.notes_panel) if c.get_visible()]
         self.side_switch.set_visible(len(pages) > 1)
         if pages and not self.side.get_visible():
             self.side.set_visible(True)

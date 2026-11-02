@@ -708,6 +708,30 @@ function search(query, limit) {
   return res;
 }
 
+// Notes de claude-hub : ~/.config/claude-hub/notes/<id>.md (pas dans ~/.claude).
+const NOTE_EXCERPT = 1000, NOTE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const notesDir = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
+                                 "claude-hub", "notes");
+// Début de chaque note rangée sur cet hôte, par id de conversation.
+function notesIndex() {
+  const d = notesDir(), out = {};
+  let names;
+  try { names = fs.readdirSync(d).sort(); } catch (e) { return out; }
+  for (const n of names) {
+    if (n.startsWith(".") || !n.endsWith(".md")) continue;
+    let t;
+    try { t = fs.readFileSync(path.join(d, n), "utf8"); } catch (e) { continue; }
+    if (t.trim()) out[n.slice(0, -3)] = t.length <= NOTE_EXCERPT ? t : Array.from(t).slice(0, NOTE_EXCERPT).join("");
+  }
+  return out;
+}
+// Texte de la note d'une conversation (null s'il n'y en a pas).
+function note(id) {
+  if (!NOTE_ID.test(id || "")) return {error: "identifiant invalide"};
+  try { return {text: fs.readFileSync(path.join(notesDir(), id + ".md"), "utf8")}; }
+  catch (e) { return e.code === "ENOENT" ? {text: null} : {error: "lecture refusée"}; }
+}
+
 const a = process.argv.slice(2);
 let out;
 if (a[0] === "list") {
@@ -715,7 +739,11 @@ if (a[0] === "list") {
   const sessions = allFiles().map(summary).filter(s => s.msgs && !s.next)
     .map(s => Object.assign(s, {live: live[s.id] || null, cwd_exists: s.cwd ? isDir(s.cwd) : null}))
     .sort((x, y) => y.mtime - x.mtime);
-  out = {home: os.homedir(), sessions};
+  out = {home: os.homedir(), sessions, notes: notesIndex()};
+} else if (a[0] === "note") {
+  out = note(a[1]);
+} else if (a[0] === "notes") {
+  out = notesIndex();
 } else if (a[0] === "stat") {
   const p = find(a[1]), sess = liveSessions()[a[1]] || null;
   const scan = p ? scanMain(p, msOf((sess || {}).startedAt)) : {bridge: null, pending: [], tail: null, shells: []};
