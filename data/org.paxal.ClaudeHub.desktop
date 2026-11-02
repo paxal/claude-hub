@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Hub
+Comment=Sessions Claude Code locales et SSH
+Exec=claude-hub
+Icon=org.paxal.ClaudeHub
+Categories=Development;Utility;
+StartupWMClass=org.paxal.ClaudeHub

@@ -1,0 +1,41 @@
+"""Application GTK."""
+from pathlib import Path
+
+from .gtk import Gdk, Gio, GLib, Gtk
+from .render import BREEZE_CSS, CSS, detect_dark
+from .window import Hub
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.paxal.ClaudeHub")
+        # clic sur une notification « Claude a terminé »
+        action = Gio.SimpleAction.new("open-session", GLib.VariantType.new("s"))
+        action.connect("activate", self.on_open_session)
+        self.add_action(action)
+
+    def on_open_session(self, _action, sid):
+        self.activate()
+        self.get_active_window().open_notified(sid.get_string())
+
+    def do_activate(self):
+        css = Gtk.CssProvider()
+        theme = Gtk.Settings.get_default().get_property("gtk-theme-name") or ""
+        text = CSS + (BREEZE_CSS if theme.lower().startswith("breeze") else "")
+        if hasattr(css, "load_from_string"):
+            css.load_from_string(text)
+        else:
+            css.load_from_data(text.encode())
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(
+            str(Path(__file__).parent / "icons"))  # icônes propres à claude-hub
+        Gtk.Window.set_default_icon_name(self.get_application_id())  # installée par install.sh
+        win = self.get_active_window() or Hub(self)
+        win.present()
+        detect_dark(win)
+
+
+
+def main():
+    App().run(None)

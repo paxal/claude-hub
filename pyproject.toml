@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-hub"
+dynamic = ["version"]
+description = "Interface GTK4 pour les sessions Claude Code locales, SSH et cloud"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyGObject"]
+
+[project.optional-dependencies]
+highlight = ["pygments"]
+
+[project.scripts]
+claude-hub = "claude_hub.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "claude_hub.__version__" }
+
+[tool.setuptools.package-data]
+claude_hub = ["remote/helper.py", "remote/helper.js", "icons/*.svg"]
+
+[tool.ruff]
+line-length = 110
