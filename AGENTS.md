@@ -1,7 +1,8 @@
 # AGENTS.md
 
-Consignes pour les agents qui travaillent sur claude-hub. Le README décrit
-l'usage et l'organisation des modules ; ce fichier ajoute ce qu'on a appris en
+Consignes pour les agents qui travaillent sur claude-hub. Le README et
+`docs/` décrivent l'usage, `docs/developpement.md` les tests et
+l'organisation des modules ; ce fichier ajoute ce qu'on a appris en
 le développant.
 
 ## Le projet
@@ -122,7 +123,8 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 ## Façon de travailler avec l'utilisateur
 
 - Échanges en **français**, comme les commentaires, docstrings et textes de
-  l'interface. Le README est à tenir à jour (tableau des modules compris).
+  l'interface. Le README et le guide (`docs/`) sont à tenir à jour, tableau
+  des modules de `docs/developpement.md` compris.
 - Pour une fonctionnalité ouverte (« tu proposes quoi ? »), proposer une
   conception avec une recommandation et des options, puis attendre le feu vert.
   Une demande directe (« ajoute… », « corrige… ») s'exécute sans détour.
