@@ -77,8 +77,10 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   les éléments nouveaux ou changés (`update_feed`, `feedsync.py`). Tout élément de
   l'historique passe par `add_entry`, qui le retient dans `Hub.feed` ; ce qui suit
   le dernier d'entre eux (réponse en direct, avis, cartes) est remplacé à la
-  relecture suivante, sauf les cartes encore en attente et les commandes « ! »
-  pas envoyées.
+  relecture suivante, sauf les cartes encore en attente, les commandes « ! »
+  pas envoyées et les messages transmis pendant la réponse que claude n'a pas
+  encore lus (`Hub.injected`) : claude ne les écrit dans sa transcription
+  qu'en les lisant, et il ne les lit pas tant qu'une demande attend.
 - **Volet de droite par conversation** : un seul volet (plan, fichier,
   sous-agents, modifications, note) sert à toutes les conversations ; ce que
   chacune y avait ouvert est retenu dans `Hub.sides` en la quittant

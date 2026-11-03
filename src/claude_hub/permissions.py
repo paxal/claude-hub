@@ -156,7 +156,8 @@ class RequestCard(Gtk.Box):
 
     # -- plan --
     def build_plan(self):
-        plan_widget(self.input.get("plan") or "", self.input.get("planFilePath"), self)
+        plan_widget(self.input.get("plan") or "", self.input.get("planFilePath"), self,
+                    plan_id=self.request.get("tool_use_id"))
         row = self.buttons(
             ("Continuer à planifier", "Refuser le plan : le texte de la saisie est transmis "
              "à Claude comme remarque", self.plan_refuse, None),
