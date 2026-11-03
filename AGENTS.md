@@ -56,6 +56,16 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   piloter un vrai `claude` interactif sans tmux : `pty.fork()`, puis taper le
   prompt une fois l'invite affichée (celui passé en argument se perd après le
   dialogue de confiance d'un dossier neuf).
+- **Branches d'une transcription** : chaque enregistrement pointe vers le
+  précédent (`parentUuid`). Modifier un message (`claude -p --resume <id>
+  --resume-session-at <uuid>`, sans `--fork-session` : même session) ou revenir
+  en arrière dans le terminal (message annulé par Échap puis retapé, Échap deux
+  fois) ajoute une branche au même fichier, et claude reprend la plus récente.
+  Les scripts distants (`abandoned`) écartent ce qui descend d'un point d'où un
+  message tapé est reparti. Les appels d'outils en parallèle forment aussi des
+  branches (l'appel suivant et le résultat du premier ont le même parent) : ce
+  ne sont pas des retours en arrière. Le premier message n'a pas de parent : on
+  ne peut pas repartir d'avant lui.
 - **Plusieurs conversations à la fois** : chaque conversation a son propre
   processus `claude -p` (`Hub.streams`, par id de session). Ne pas réintroduire
   d'état global « le processus en cours » : c'était la cause du bug où le

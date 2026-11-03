@@ -123,7 +123,9 @@ class Hub(Gtk.ApplicationWindow):
         # id de session -> [(élément, bulle)] messages transmis pendant la réponse, pas encore
         # lus par claude (absents de sa transcription : remis à la fin du fil relu)
         self.injected = {}
-        self.fork_at = None      # copie en préparation : {"sid", "at" (uuid), "widget", "before"}
+        # copie (ou message modifié : "edit") en préparation :
+        # {"sid", "at" (uuid), "widget", "before", "text", "edit"}
+        self.fork_at = None
         self.pending = {}        # id de session -> {request_id: demande can_use_tool sans réponse}
         # (celles d'un terminal ou de claude.ai portent « remote » : l'id Remote Control)
         self.remote_answered = set()  # demandes répondues d'ici, encore publiées un moment par l'API
@@ -459,15 +461,22 @@ class Hub(Gtk.ApplicationWindow):
         chat.append(Clamp(bottom, 780, extra=self.activity_extra, hexpand=True, margin_start=20, margin_end=20,
                           margin_bottom=14))
 
-        # Copie de la conversation à partir d'un message (bouton au survol des messages).
+        # Copie de la conversation à partir d'un message, ou message modifié (boutons au
+        # survol des messages). L'avertissement : une réponse en cours sera arrêtée.
         self.fork_bar = Gtk.Box(spacing=6, css_classes=["fork-bar"], visible=False)
-        self.fork_bar.append(Gtk.Image(icon_name="claude-hub-fork-symbolic"))
+        self.fork_icon = Gtk.Image(icon_name="claude-hub-fork-symbolic")
+        self.fork_bar.append(self.fork_icon)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        self.fork_warn = Gtk.Label(xalign=0, wrap=True, visible=False)
+        self.fork_warn.add_css_class("fork-warn")
+        texts.append(self.fork_warn)
         self.fork_label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
-        self.fork_bar.append(self.fork_label)
-        cancel = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat"],
-                            tooltip_text="Annuler la copie", valign=Gtk.Align.CENTER)
-        cancel.connect("clicked", lambda _b: self.cancel_fork())
-        self.fork_bar.append(cancel)
+        texts.append(self.fork_label)
+        self.fork_bar.append(texts)
+        self.fork_cancel = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat"],
+                                      tooltip_text="Annuler la copie", valign=Gtk.Align.CENTER)
+        self.fork_cancel.connect("clicked", lambda _b: self.cancel_fork())
+        self.fork_bar.append(self.fork_cancel)
         bottom.append(self.fork_bar)
 
         # Un seul cadre : la saisie (main), et la liste de ce qui tourne et de ce qui
@@ -1784,6 +1793,7 @@ class Hub(Gtk.ApplicationWindow):
 
     def update_send_btn(self):
         busy = bool(self.proc)
+        self.show_fork_warning()
         self.update_activity()  # « Arrêter » sur la ligne de Claude ; aide de la saisie
         # /rename passe par un autre claude -p : pas pendant que celui du hub écrit
         self.rename_btn.set_sensitive(not busy)
@@ -2131,10 +2141,12 @@ class Hub(Gtk.ApplicationWindow):
                 last = ToolRun()
                 self.msgs.append(last)
             last.add(item, widget)
+            self.grey_after_cut()
             return last
         if isinstance(last, ToolRun):
             last.close()
         self.msgs.append(Timed(widget, ts) if ts else widget)
+        self.grey_after_cut()
         return None
 
     def feed_child(self, widget):
@@ -2155,7 +2167,7 @@ class Hub(Gtk.ApplicationWindow):
         if item.get("via") == "agent" and agents and item.get("from"):
             return with_open_button(message_widget(item), lambda: self.open_agent(item["from"]))
         if item.get("role") != "tool" or item.get("name") == "ExitPlanMode":
-            return message_widget(item, self.fork_handler(s))
+            return message_widget(item, self.fork_handler(s), self.edit_handler(s))
         tid = item.get("id")
         claude = bool(tid) and s.get("source") is None and s["host"] != CLOUD
         # Cursor : sorties et sous-agents lus dans sa base locale, même pour un hôte distant.
@@ -2748,7 +2760,10 @@ class Hub(Gtk.ApplicationWindow):
             return self.run_shell(s, command)
         ready = bool(self.ready_shells(s["id"]))  # commandes « ! » finies : partent avec le message
         if self.fork_at and self.fork_at["sid"] == s["id"]:
-            if (text or self.attachments or ready) and not self.proc:
+            if self.fork_at.get("edit"):
+                if text or self.attachments:
+                    self.launch_edit(s, text)
+            elif (text or self.attachments or ready) and not self.proc:
                 self.launch_fork(s, text)
             return
         # Un plan attend : claude ne lirait le message qu'une fois le plan tranché. « Envoyer »
@@ -2813,6 +2828,11 @@ class Hub(Gtk.ApplicationWindow):
             return self.start_fork
         return None
 
+    def edit_handler(self, s):
+        """Action « modifier ce message » des messages de s : les mêmes conversations que
+        la copie (claude y reprend la conversation à un point donné)."""
+        return self.start_edit if self.fork_handler(s) else None
+
     def start_fork(self, item, before, widget):
         """Prépare une copie de la conversation arrêtée au message de widget (ou juste
         avant, pour un message de l'utilisateur remis dans la saisie) : le prochain envoi
@@ -2827,17 +2847,87 @@ class Hub(Gtk.ApplicationWindow):
         self.fork_at = {"sid": s["id"], "at": item["parent"] if before else item["uuid"],
                         "widget": widget, "before": before,
                         "text": item.get("text") if before else None}
-        w = widget if before else widget.get_next_sibling()
-        while w is not None:  # ce qui ne fera pas partie de la copie
-            w.add_css_class("after-fork")
-            w = w.get_next_sibling()
+        self.grey_after_cut(widget if before else widget.get_next_sibling())
         if before and item.get("text"):
             self.input.get_buffer().set_text(item["text"])
+        self.fork_icon.set_from_icon_name("claude-hub-fork-symbolic")
+        self.fork_cancel.set_tooltip_text("Annuler la copie")
         self.fork_label.set_text("Copie de la conversation " + (
             "juste avant ce message : modifie-le puis envoie." if before else
             "arrêtée à ce message : ton prochain message partira dans une nouvelle conversation."))
+        self.show_fork_warning()
         self.fork_bar.set_visible(True)
         self.input.grab_focus()
+
+    def in_terminal(self, s):
+        """Vrai si un claude tourne pour s ailleurs que dans claude-hub (terminal) : l'état
+        relevé le dit, et ce n'est pas le claude -p d'ici, en cours ou fini depuis moins de
+        30 s (le relevé suivant ne l'a peut-être pas encore vu s'arrêter)."""
+        return (bool(s.get("live")) and s["id"] not in self.streams
+                and time.monotonic() - self.hub_done.get(s["id"], -60) > 30)
+
+    def start_edit(self, item, widget):
+        """Prépare la modification d'un message de l'utilisateur : son texte et ses images
+        reviennent dans la saisie, lui et la suite sont grisés. L'envoi (launch_edit)
+        relance claude sur la même conversation, arrêtée juste avant ce message : pas de
+        copie, la suite est abandonnée. Une réponse en cours n'est arrêtée qu'à l'envoi."""
+        s = self.current
+        if self.in_terminal(s):  # ce claude-là garderait l'ancienne suite en mémoire
+            return self.status.set_text("Conversation ouverte dans un terminal : modifie le "
+                                        "message là-bas (Échap deux fois).")
+        self.cancel_fork()
+        widget = self.feed_child(widget)
+        if widget is None:
+            return
+        self.fork_at = {"sid": s["id"], "at": item["parent"], "widget": widget, "before": True,
+                        "text": item.get("text"), "edit": True}
+        self.grey_after_cut(widget)
+        self.input.get_buffer().set_text(item.get("text") or "")
+        # les images trop anciennes ne sont plus dans l'historique lu (budget des scripts distants)
+        images = [img for img in item.get("images") or [] if img.get("data")]
+        self.attachments = [(img["type"], base64.b64decode(img["data"])) for img in images]
+        self.show_attachments()
+        missing = len(item.get("images") or []) - len(images)
+        self.fork_icon.set_from_icon_name("document-edit-symbolic")
+        self.fork_cancel.set_tooltip_text("Annuler la modification")
+        self.fork_label.set_text(
+            "Modifie le message puis envoie : Claude repartira de là, dans cette conversation. "
+            "La suite grisée sera abandonnée (les fichiers modifiés restent tels quels)."
+            + (" Image trop ancienne, non reprise." if missing == 1 else
+               f" {missing} images trop anciennes, non reprises." if missing else ""))
+        self.show_fork_warning()
+        self.fork_bar.set_visible(True)
+        self.input.grab_focus()
+
+    def show_fork_warning(self):
+        """Message modifié pendant une réponse : le bandeau prévient que l'envoi arrêtera Claude."""
+        on = bool(self.fork_at and self.fork_at.get("edit") and self.proc)
+        self.fork_warn.set_text("Claude est en train de répondre : l'envoi l'arrêtera." if on else "")
+        self.fork_warn.set_visible(on)
+        (self.fork_bar.add_css_class if on else self.fork_bar.remove_css_class)("warn")
+
+    def grey_after_cut(self, start=None):
+        """Grise ce qui ne fera pas partie de la suite préparée (copie, message modifié) :
+        tout à partir de start, ou ce qui vient d'être ajouté au fil. Les commandes « ! » pas
+        encore envoyées partiront avec le message : elles restent telles quelles. Si le fil a
+        été refait sans le message choisi, la préparation est annulée."""
+        f = self.fork_at
+        if not f or self.current is None or f["sid"] != self.current["id"]:
+            return
+        if f["widget"].get_parent() is not self.msgs:
+            self.cancel_fork()
+            return self.status.set_text("Fil rechargé : " + (
+                "modification" if f.get("edit") else "copie") + " annulée.")
+        keep = [self.feed_child(b) for b in self.shells.get(f["sid"], [])]
+        if start is None:  # du dernier élément jusqu'au premier déjà grisé (ou au message choisi)
+            w, step = self.msgs.get_last_child(), Gtk.Widget.get_prev_sibling
+        else:
+            w, step = start, Gtk.Widget.get_next_sibling
+        while w is not None and (start is not None or not (
+                w is f["widget"] or w.has_css_class("after-fork"))):
+            if not any(w is k for k in keep):
+                w.add_css_class("after-fork")
+            w = step(w)
 
     def cancel_fork(self):
         if self.fork_at:
@@ -2849,8 +2939,46 @@ class Hub(Gtk.ApplicationWindow):
             if self.fork_at["text"] and buf.get_text(buf.get_start_iter(), buf.get_end_iter(),
                                                      False) == self.fork_at["text"]:
                 buf.set_text("")  # message remis dans la saisie, pas retouché
+                if self.fork_at.get("edit"):  # ses images aussi
+                    self.attachments = []
+                    self.show_attachments()
             self.fork_at = None
         self.fork_bar.set_visible(False)
+
+    def cut_feed(self, widget):
+        """Retire du fil widget et tout ce qui le suit (message modifié et suite abandonnée),
+        sauf les commandes « ! » pas encore envoyées, remises à la fin ; self.feed suit."""
+        w = widget if widget.get_parent() is self.msgs else None
+        while w is not None:
+            nxt = w.get_next_sibling()
+            self.msgs.remove(w)
+            w = nxt
+        while (last := self.msgs.get_last_child()) is not None and last.has_css_class("feed-day"):
+            self.msgs.remove(last)  # le jour des éléments retirés
+        k = next((i for i, (_, t) in enumerate(self.feed) if t.get_parent() is not self.msgs),
+                 len(self.feed))
+        del self.feed[k:]
+        ids = {it.get("id") for it, _ in self.feed}  # appels retirés oubliés
+        self.tool_calls = {t: c for t, c in self.tool_calls.items() if t in ids}
+        self.agent_blocks = {t: b for t, b in self.agent_blocks.items() if t in ids}
+        if self.current:
+            self.show_shells(self.current)
+
+    def launch_edit(self, s, text):
+        """Envoie le message modifié préparé par start_edit : claude reprend la même
+        conversation (`--resume-session-at`, sans `--fork-session`) arrêtée juste avant le
+        message d'origine, et ce qui suivait est abandonné. Une réponse en cours est d'abord
+        arrêtée ; le message part quand claude s'est arrêté (on_finished)."""
+        f = self.fork_at
+        self.fork_at = None
+        self.fork_bar.set_visible(False)
+        self.cut_feed(f["widget"])
+        images = self.take_input()
+        st = self.streams.get(s["id"], (None, None))[1]
+        if st is not None:
+            st["then_edit"] = (text, images, f["at"])
+            return self.stop()
+        self.launch(s, text, images, at=f["at"])
 
     def launch_fork(self, s, text):
         """Lance la copie préparée par start_fork avec le premier message text."""
@@ -3322,7 +3450,7 @@ class Hub(Gtk.ApplicationWindow):
                     self.step(s, f"Claude utilise {b.get('name')}", tool_detail(b.get("input")))
         if self.track_todos(ev, s) and s is self.current:
             self.show_todos(s["todos"])
-        if s is not self.current:
+        if s is not self.current or s.get("then_edit"):  # réponse abandonnée : plus affichée
             return
         if t == "user":  # sorties d'outils (de la conversation ou d'un sous-agent)
             content = ev.get("message", {}).get("content")
@@ -3409,6 +3537,10 @@ class Hub(Gtk.ApplicationWindow):
             self.current.pop("new", None)
             self.rename_btn.set_visible(can_rename(self.current))
             self.show_note_btn(self.current)
+        edit = s.pop("then_edit", None)
+        if edit:  # message modifié pendant la réponse : il part maintenant que claude s'est arrêté
+            text, images, at = edit
+            return self.launch(self.current if shown else s, text, images, at=at)
         # « Envoyer tout de suite » : le message en tête de file part après l'interruption.
         then_send = s.pop("then_send", False)
         if self.queues.get(s["id"]) and (code == 0 or then_send):
