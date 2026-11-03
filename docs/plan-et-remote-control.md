@@ -19,8 +19,10 @@ s'affichent dans le fil sous forme de cartes :
   droite, avec les mêmes actions ; dans le fil, sa carte est alors repliée
   (titre et boutons). Le bouton « volet » de chaque plan, y compris ceux de
   l'historique, l'y ouvre ou l'y referme. Fermé à la main, un plan ne se rouvre
-  pas tout seul ; il se ferme quand on change de conversation. Quand un plan et
-  un fichier sont ouverts, deux onglets « Plan » / « Fichier » les séparent.
+  pas tout seul. Il appartient à sa conversation : il disparaît quand on en
+  change et revient quand on y retourne, avec ses actions s'il attend encore sa
+  validation. Quand un plan et un fichier sont ouverts, deux onglets « Plan » /
+  « Fichier » les séparent.
   Une fois tranché, le plan reste dans le fil, suivi de son exécution : ses
   boutons laissent la place à une pastille « ✓ Validé · modifications
   acceptées » (le mode choisi), « ✗ Refusé » avec la remarque transmise à

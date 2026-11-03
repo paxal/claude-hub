@@ -61,6 +61,14 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   le dernier d'entre eux (réponse en direct, avis, cartes) est remplacé à la
   relecture suivante, sauf les cartes encore en attente et les commandes « ! »
   pas envoyées.
+- **Volet de droite par conversation** : un seul volet (plan, fichier,
+  sous-agents, modifications, note) sert à toutes les conversations ; ce que
+  chacune y avait ouvert est retenu dans `Hub.sides` en la quittant
+  (`stash_side`) et rétabli en y revenant (`restore_side`). Une nouvelle page ne
+  doit pas rester ouverte d'une conversation à l'autre : l'ajouter à
+  `SIDE_PAGES` et à `side_state`/`restore_side`. Ouvrir ou fermer une page passe
+  par `set_side_page` : GTK 4.22 garde l'onglet (`Gtk.StackSwitcher`) d'une page
+  dont seul le widget est caché.
 - **Widgets jamais libérés** : un gestionnaire branché sur un enfant ou un
   contrôleur d'un widget (`self.expander.connect(…, self.on_x)`, `GestureClick`
   avec `self.methode`, lambda qui capture le widget parent), ou un attribut d'un

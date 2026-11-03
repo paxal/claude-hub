@@ -160,6 +160,16 @@ s'ouvre dans le volet, voir ci-dessous). Le clic droit ajoute « Ouvrir le lien 
 et « Copier l'adresse du lien » au menu ; pour un fichier, « Copier le chemin »
 copie le chemin tel qu'il est cité, ligne comprise (`src/app.py:42`).
 
+## Volet de droite
+
+Le fichier cité, les fichiers modifiés, la note, le plan de Claude et les
+sous-agents s'ouvrent dans un volet à droite du chat, avec un onglet par page
+quand il y en a plusieurs. Chaque conversation a le sien : en changer cache le
+volet de celle qu'on quitte et montre celui de l'autre, tel qu'on l'a laissé
+(pages ouvertes, page affichée, fichier et ligne, plan, sous-agent, largeur). Une
+conversation où l'on n'a rien ouvert s'affiche sans volet, comme l'accueil.
+claude-hub retient ces volets jusqu'à sa fermeture.
+
 ## Fichiers cités
 
 Les chemins cités dans les messages (`/chemin/plan.md`, `~/.bashrc`,
@@ -210,7 +220,8 @@ la conversation (ce qui reste à faire, une décision, un lien…). Une conversa
 sans note s'ouvre directement en édition ; sinon le volet montre l'aperçu
 (Markdown mis en forme, chemins cliquables comme dans le fil, relatifs au dossier
 de la conversation) et le crayon passe au texte brut. « Note… » du clic droit sur
-la liste ouvre la conversation et sa note. Le volet suit la conversation affichée.
+la liste ouvre la conversation et sa note. La note reste ouverte pour cette
+conversation seulement (voir [Volet de droite](#volet-de-droite)).
 
 La note s'enregistre toute seule une seconde après la dernière frappe, et aussitôt
 quand on revient à l'aperçu, qu'on change de conversation, qu'on ferme le volet ou
