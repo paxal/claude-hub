@@ -158,7 +158,9 @@ d'un sous-agent est lue à l'ouverture de son bloc.
 Un clic sur un lien d'un message l'ouvre dans le navigateur (un fichier cité
 s'ouvre dans le volet, voir ci-dessous). Le clic droit ajoute « Ouvrir le lien »
 et « Copier l'adresse du lien » au menu ; pour un fichier, « Copier le chemin »
-copie le chemin tel qu'il est cité, ligne comprise (`src/app.py:42`).
+copie le chemin tel qu'il est cité, ligne comprise (`src/app.py:42`). Dans un
+tableau, une ligne d'outil, la liste des fichiers modifiés ou le chemin du plan,
+c'est « Copier l'adresse du lien » qui copie ce chemin.
 
 ## Fichiers cités
 

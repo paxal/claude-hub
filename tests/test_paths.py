@@ -10,7 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from claude_hub.render import copied_link, file_href, md_inline, parse_file_href, path_link  # noqa: E402
+from claude_hub.render import (copied_link, file_href, label_links, label_target, md_inline,  # noqa: E402
+                               parse_file_href, path_link)
 from claude_hub.viewer import resolve  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
@@ -74,6 +75,27 @@ class TestPathLinks(unittest.TestCase):
         self.assertEqual(copied_link(file_href("/a b/c.py")), "/a b/c.py")
         self.assertEqual(copied_link(file_href("src/a.py", 12)), "src/a.py:12")
         self.assertEqual(copied_link(file_href("src/a.py", 3, 5)), "src/a.py:3-5")
+
+    def test_liens_des_labels(self):
+        # Gtk.Label copie l'adresse telle quelle : celle d'un fichier est son chemin cité
+        lien = label_links(md_inline("voir `src/a.py:12` et [doc](docs/b.md) ou https://x.y/z"))
+        self.assertIn('<a href="src/a.py:12">', lien)
+        self.assertIn('<a href="docs/b.md">', lien)
+        self.assertIn('<a href="https://x.y/z">', lien)
+        self.assertNotIn("hub-file:", lien)
+        self.assertIn('<a href="/a b/c&amp;d.py:3-5">',
+                      label_links(f'<a href="{file_href("/a b/c&d.py", 3, 5)}">c</a>'))
+        # relus par on_link
+        self.assertEqual(label_target("src/a.py:12"), ("src/a.py", 12, None))
+        self.assertEqual(label_target("/a b/c.py:3-5"), ("/a b/c.py", 3, 5))
+        self.assertEqual(label_target("~/.bashrc"), ("~/.bashrc", None, None))
+        self.assertEqual(label_target(file_href("x.py", 2)), ("x.py", 2, None))
+        for uri in ("https://x.y/z", "mailto:a@b.c", "#ancre"):
+            self.assertIsNone(label_target(uri), uri)
+        # chemins qui se reliraient autrement : adresse hub-file: gardée
+        for path in ("a:b/c.py", "notes:12", "#x.md"):
+            markup = f'<a href="{file_href(path)}">x</a>'
+            self.assertEqual(label_links(markup), markup, path)
 
     def test_lexer(self):
         from claude_hub.render import lang_for, lex
