@@ -50,16 +50,15 @@ Chaque sous-agent (outil Agent) a son bloc dépliable : type, description,
 avancement et jetons en direct, puis sa consigne et son travail. Dans
 l'historique, sa transcription est lue à l'ouverture du bloc.
 
-Tant que des sous-agents travaillent, le bandeau d'activité de la saisie porte
-une pastille « 🤖 3 sous-agents », suivie de l'étape de celui qui a agi en dernier
-(« Review fix › Bash cargo test… ») quand Claude lui-même n'a rien de plus précis
-à dire : pendant un appel Agent, quand il attend ses sous-agents (« Claude attend
-ses sous-agents »), ou quand la conversation tourne dans un terminal (sauf
-workflow en cours, dont l'avancement reste affiché). L'info-bulle de la pastille
-liste les sous-agents au travail et leur dernière étape ; un clic ouvre le volet
-**Sous-agents**. Pour une réponse lancée d'ici, la pastille et l'étape suivent le
-flux de claude en direct ; sinon, la liste relue sur l'hôte toutes les 4 s.
-Conversations Claude Code seulement (ce PC, SSH), pas le cloud ni Cursor.
+Tant que des sous-agents travaillent, chacun a sa ligne dans la liste d'activité,
+à côté de la saisie, sous celle de Claude : sa description et sa dernière étape
+(« Bash cargo test… »), le plus récemment actif en premier, trois au plus puis
+« … et 2 autres sous-agents ». L'info-bulle donne son type ; le bouton › ouvre
+l'agent dans le volet **Sous-agents**. Quand Claude a fini son tour mais attend
+ses sous-agents, sa ligne dit « Claude attend ses sous-agents ». Pour une réponse
+lancée d'ici, les lignes suivent le flux de claude en direct ; sinon, la liste
+relue sur l'hôte toutes les 4 s. Conversations Claude Code seulement (ce PC,
+SSH), pas le cloud ni Cursor.
 
 Le bouton « sous-agents » de l'en-tête (icône d'arbre et nombre ; conversations
 Claude Code, locales ou SSH)

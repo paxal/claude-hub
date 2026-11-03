@@ -1,6 +1,6 @@
 """Shells et monitors que Claude laisse tourner en arrière-plan (« 1 shell », « 1 monitor » du
-terminal) : commande « stat » des scripts distants, flux de claude -p et textes de la pastille
-de l'en-tête."""
+terminal) : commande « stat » des scripts distants, flux de claude -p et textes de leurs
+lignes dans la liste d'activité, à côté de la saisie."""
 import calendar
 import json
 import os
@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REMOTE = ROOT / "src/claude_hub/remote"
 sys.path.insert(0, str(ROOT / "src"))
 
-from claude_hub.shell import background_label, background_tooltip, since_text, waiting_text  # noqa: E402
+from claude_hub.shell import background_counts, background_tooltip, since_text, waiting_text  # noqa: E402
 from claude_hub.window import Hub  # noqa: E402
 
 PROJ = "-tmp-x"
@@ -257,14 +257,14 @@ class TestFlux(unittest.TestCase):
                           "tool_use_id": "toolu_m", "task_type": "local_bash", "description": "deploy"}, s)
         self.assertEqual([(sh["id"], sh["kind"]) for sh in s["bg_shells"]], [("bm1", "monitor"), ("bs1", "shell")])
         Hub.on_background_tasks(hub, changed, s)
-        self.assertEqual(background_label(s["bg_shells"]), "1 shell et 1 monitor en cours")
+        self.assertEqual(background_counts(s["bg_shells"]), "1 shell et 1 monitor")
         # sans task_started (claude plus ancien) : le résultat de l'outil
         s = {"id": "s2", "tasks": set(), "idle": False}
         Hub.on_background_tasks(hub, dict(changed, tasks=changed["tasks"][:1]), s)
         Hub.on_event(hub, {"type": "user", "parent_tool_use_id": None, "message": {"content": [
             {"type": "tool_result", "tool_use_id": "toolu_m", "content": "Monitor started (task bm1…)"}]},
             "tool_use_result": {"taskId": "bm1", "timeoutMs": 1800000, "persistent": False}}, s)
-        self.assertEqual(background_label(s["bg_shells"]), "1 monitor en cours")
+        self.assertEqual(background_counts(s["bg_shells"]), "1 monitor")
 
     def test_shells_oublies_a_l_arret(self):
         s = {"live": "idle", "shells": [{"id": "b"}]}
@@ -276,13 +276,13 @@ class TestFlux(unittest.TestCase):
 
 
 class TestTextes(unittest.TestCase):
-    def test_pastille(self):
-        self.assertEqual(background_label([]), "")
-        self.assertEqual(background_label([{}]), "1 shell en cours")
-        self.assertEqual(background_label([{}, {}]), "2 shells en cours")
+    def test_compte(self):
+        self.assertEqual(background_counts([]), "")
+        self.assertEqual(background_counts([{}]), "1 shell")
+        self.assertEqual(background_counts([{}, {}]), "2 shells")
         m = {"kind": "monitor"}
-        self.assertEqual(background_label([m]), "1 monitor en cours")
-        self.assertEqual(background_label([{}, m, m]), "1 shell et 2 monitors en cours")
+        self.assertEqual(background_counts([m]), "1 monitor")
+        self.assertEqual(background_counts([{}, m, m]), "1 shell et 2 monitors")
 
     def test_bandeau(self):
         self.assertEqual(waiting_text([{}]), "Claude attend un shell")

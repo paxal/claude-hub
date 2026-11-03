@@ -75,13 +75,20 @@ def section_title(text):
 
 
 class Clamp(Gtk.Widget):
-    """Centre son enfant en limitant sa largeur : colonne de lecture du fil et de la saisie."""
+    """Centre son enfant en limitant sa largeur : colonne de lecture du fil et de la saisie.
 
-    def __init__(self, child, maximum=780, **kw):
+    extra() : largeur que l'enfant peut prendre en plus, à droite de la colonne (la
+    liste d'activité à côté de la saisie) ; la colonne reste alignée sur celle du fil
+    tant que la marge de droite suffit, et se décale vers la gauche sinon."""
+
+    def __init__(self, child, maximum=780, extra=None, **kw):
         super().__init__(**kw)
-        self.maximum = maximum
+        self.maximum, self.extra = maximum, extra
         self.child = child
         child.set_parent(self)
+
+    def widest(self):
+        return self.maximum + (self.extra() if self.extra else 0)
 
     def do_get_request_mode(self):
         return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
@@ -91,16 +98,17 @@ class Clamp(Gtk.Widget):
             # jamais sous la largeur minimale de l'enfant : il serait alloué plus large
             # (do_size_allocate) et sa hauteur ne correspondrait plus
             mn = self.child.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
-            for_size = min(for_size, max(self.maximum, mn))
+            for_size = min(for_size, max(self.widest(), mn))
         mn, nat, _b, _n = self.child.measure(orientation, for_size)
         if orientation == Gtk.Orientation.HORIZONTAL:
-            nat = max(mn, min(nat, self.maximum))
+            nat = max(mn, min(nat, self.widest()))
         return mn, nat, -1, -1
 
     def do_size_allocate(self, width, height, _baseline):
         mn = self.child.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
-        w = min(width, max(mn, self.maximum))
-        x = max(0, (width - w) // 2)
+        w = min(width, max(mn, self.widest()))
+        # colonne centrée comme celle du fil, l'éventuel surplus à droite, dans la marge
+        x = max(0, min((width - self.maximum) // 2, width - w))
         self.child.allocate(w, height, -1, Gsk.Transform().translate(Graphene.Point().init(x, 0)))
 
     def do_dispose(self):

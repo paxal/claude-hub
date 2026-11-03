@@ -33,6 +33,7 @@ Transcription : si HOME n'est pas le vrai dossier personnel (tests/piloter.sh
   {"question": "…", "options": ["A", "B"]}             AskUserQuestion
   {"sous_agent": "Explore", "description": "…", "etapes": [{"texte"…}, {"outil"…}]}
   {"shell": "cargo build", "description": "…", "duree": 5}  Bash en arrière-plan, fini duree s après
+  {"monitor": "gh run watch", "description": "…", "duree": 5}  outil Monitor, fini duree s après
   {"erreur": "…"}                                      fin en erreur (is_error)
 """
 import json
@@ -425,6 +426,26 @@ def play(steps, parent=None):
                 out(type="system", subtype="task_notification", task_id=task, tool_use_id=tid,
                     status="completed", summary=f"Background command \"{inp['description']}\" completed "
                                                 "(exit code 0)", session_id=sid)
+                background_tasks()
+            threading.Thread(target=finish, daemon=True).start()
+        elif "monitor" in st:
+            # Outil Monitor : le flux le décrit comme un shell (local_bash) ; le hub le reconnaît
+            # à l'appel de l'outil (claude 2.1.316). Fini « duree » secondes plus tard.
+            tid, task = f"toolu_{uuid.uuid4().hex[:20]}", f"b{uuid.uuid4().hex[:8]}"
+            inp = {"command": st["monitor"], "description": st.get("description", ""), "timeout_ms": 1800000}
+            assistant([{"type": "tool_use", "id": tid, "name": "Monitor", "input": inp}], parent)
+            shells[task] = inp["description"]
+            background_tasks()
+            out(type="system", subtype="task_started", task_id=task, tool_use_id=tid,
+                description=inp["description"], task_type="local_bash", session_id=sid)
+            tool_result(tid, f"Monitor started (task {task}, expires in 30m unless the source ends first).",
+                        parent)
+
+            def finish(task=task, tid=tid, duree=st.get("duree", 5)):
+                time.sleep(duree * speed)
+                shells.pop(task, None)
+                out(type="system", subtype="task_updated", task_id=task, patch={"status": "completed"},
+                    session_id=sid)
                 background_tasks()
             threading.Thread(target=finish, daemon=True).start()
         elif "erreur" in st:

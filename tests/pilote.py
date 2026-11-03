@@ -34,7 +34,7 @@ import time
 import traceback
 
 from claude_hub.app import App
-from claude_hub.gtk import Gio, GLib, Gtk
+from claude_hub.gtk import Gio, GLib, Graphene, Gtk
 
 app = None
 notifications = []   # id des notifications envoyées par le hub (elles ne partent pas)
@@ -177,13 +177,31 @@ def envoyer(texte=None, mode="auto", force=False):
 
 def capture(nom):
     """Vraie capture du compositeur (spectacle) ; renvoie son chemin. Laisser d'abord
-    GTK redessiner (`yield 0.5`) après un changement."""
+    GTK redessiner (`yield 0.5`) après un changement.
+
+    Si spectacle ne répond pas (vu bloqué sur l'écran virtuel), rendu de la fenêtre par
+    GTK : il montre la mise en page, pas les défauts de rafraîchissement."""
     d = os.environ.get("PILOTE_CAPTURES") or os.path.join(dossier(), "captures")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, nom if nom.endswith(".png") else nom + ".png")
-    subprocess.run(["spectacle", "-b", "-n", "-f", "-o", path], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print(f"capture : {path}" if os.path.exists(path) else f"capture ratée : {path}", flush=True)
+    try:
+        subprocess.run(["spectacle", "-b", "-n", "-f", "-o", path], check=False, timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        pass
+    if os.path.exists(path):
+        print(f"capture : {path}", flush=True)
+        return path
+    w = fenetre()
+    try:
+        width, height = w.get_width(), w.get_height()
+        snap = Gtk.Snapshot()
+        Gtk.WidgetPaintable.new(w).snapshot(snap, width, height)
+        texture = w.get_renderer().render_texture(snap.to_node(), Graphene.Rect().init(0, 0, width, height))
+        texture.save_to_png(path)
+        print(f"capture (rendu GTK, spectacle n'a pas répondu) : {path}", flush=True)
+    except Exception as e:  # noqa: BLE001 - une capture ratée n'arrête pas le scénario
+        print(f"capture ratée : {path} ({e})", flush=True)
     return path
 
 

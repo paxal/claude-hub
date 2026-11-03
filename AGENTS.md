@@ -91,8 +91,9 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `add_css_class`, ou `widgets.menu_popover` pour un menu.
 - **Animations** : avec le rendu cairo, chaque `Gtk.Spinner` qui tourne redessine
   en continu (~20 % de CPU pour une demi-douzaine dans la liste, 0 % figés). N'en
-  animer que dans la pastille de l'en-tête et le bandeau de la saisie ; ailleurs,
-  l'icône fixe `claude-hub-busy-symbolic`. Mesurer le CPU au repos après un
+  animer que dans la ligne de Claude de la liste d'activité (à côté de la
+  saisie) ; ailleurs, l'icône fixe `claude-hub-busy-symbolic` ou une icône propre
+  à la ligne. Mesurer le CPU au repos après un
   changement d'affichage (`os.times()` dans le script de pilotage), quelques
   secondes après la dernière action : sinon la remise en page du fil (volet
   ouvert ou fermé) compte, et l'on croit à une consommation continue.
@@ -113,6 +114,10 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 - **Largeur de la barre latérale** : un texte long (chemin, statut, libellé de
   bouton) l'élargit et coupe les messages. Tronquer (ellipsize) et préférer des
   boutons à icône.
+- **Largeur de la saisie** : sa barre (modèle, effort, mode, Envoyer) demande
+  environ 530 px. La liste d'activité (`activity.py`) s'ajoute donc à droite de la
+  saisie, dans la marge (`Clamp(extra=…)`), plutôt que de la rétrécir ; elle ne
+  passe au-dessus que quand la place manque vraiment.
 
 ## Tester
 
