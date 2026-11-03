@@ -63,7 +63,7 @@ scénario lève une exception).
 TodoWrite, Edit), `plan`, `build` (plan puis exécution : tâches, Edit, Write, autorisation
 Bash, réponse finale), `autorisation`, `question`, `sous-agent`, `erreur`, `lent`
 (10 étapes d'une seconde : ligne de Claude, « Arrêter », file d'attente), `shell` (Bash
-laissé en arrière-plan 6 s : ligne « Shell » à côté de la saisie), ou le chemin d'un
+laissé en arrière-plan 6 s : ligne « Shell » au-dessus de la saisie), ou le chemin d'un
 JSON avec ses propres étapes (format en tête de `tests/faux-claude`, monitor compris).
 La liste d'activité se lit avec `w.activity_panel.labels()` (« libellé · détail »).
 `FAUX_CLAUDE_VITESSE=0` supprime les pauses, `2` les double.

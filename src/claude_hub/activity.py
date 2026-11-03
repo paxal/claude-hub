@@ -1,4 +1,4 @@
-"""Ce qui tourne et ce qui attend, à côté de la saisie : Claude (étape, durée, « Arrêter »),
+"""Ce qui tourne et ce qui attend, au-dessus de la saisie : Claude (étape, durée, « Arrêter »),
 la demande qui attend une réponse, les sous-agents au travail, les shells et monitors en
 arrière-plan, les tâches de Claude et les messages en file.
 
@@ -6,19 +6,17 @@ Une ligne par élément (ActivityRow), décrite par un dictionnaire (« spec »)
 libellé, détail… update_activity (window.py) est appelé à chaque événement du flux de
 claude -p : les lignes sont mises à jour sur place, d'après leur clé, plutôt que refaites.
 
-ActivitySplit place la liste à droite de la saisie quand la place le permet, au-dessus
-sinon (volet ouvert, fenêtre étroite). Seul Claude au travail a une roue animée (voir
+La liste se place au-dessus du texte, dans le cadre de la saisie (window.py), qui garde
+ainsi toute la largeur de la colonne. Seul Claude au travail a une roue animée (voir
 AGENTS.md, « Animations ») ; les autres lignes ont une icône fixe.
 """
 import time
 
-from .gtk import Gio, GLib, Graphene, Gsk, Gtk, Pango
+from .gtk import Gio, GLib, Gtk, Pango
 from .agentsview import agent_line, last_step
 from .listrow import elapsed_text
 from .shell import background_tooltip, is_monitor
 
-SIDE_WIDTH = 280    # largeur de la liste, à droite de la saisie
-MAIN_MIN = 380      # largeur minimale laissée à la saisie à côté de la liste
 MAX_HEIGHT = 300    # au-delà, la liste défile
 MAX_AGENTS = 3      # sous-agents listés un par un ; les suivants en une ligne
 
@@ -300,66 +298,3 @@ class ActivityPanel(Gtk.Box):
                 out.append(" · ".join(t for t in (child.label.get_text(), child.detail.get_text()) if t))
                 child = child.get_next_sibling()
         return out
-
-
-class ActivitySplit(Gtk.Widget):
-    """Saisie (main) et liste d'activité (side) : côte à côte quand la saisie garde au
-    moins MAIN_MIN pixels, sinon la liste au-dessus. Côte à côte, la saisie prend la
-    hauteur de la liste si celle-ci est plus haute (le champ de texte s'étire)."""
-
-    def __init__(self, main, side, **kw):
-        # vexpand explicite : celui du champ de texte ne doit pas remonter à la colonne
-        super().__init__(vexpand=False, **kw)
-        self.main, self.side = main, side
-        main.set_parent(self)
-        side.set_parent(self)  # dessinée après la saisie : son trait de séparation par-dessus
-
-    def wide(self, width):
-        need = max(self.main.measure(Gtk.Orientation.HORIZONTAL, -1)[0], MAIN_MIN)
-        return width - SIDE_WIDTH >= need
-
-    def do_get_request_mode(self):
-        return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
-
-    def do_measure(self, orientation, for_size):
-        side = self.side.get_visible()
-        if orientation == Gtk.Orientation.HORIZONTAL:
-            mn, nat = self.main.measure(orientation, -1)[:2]
-            if side:
-                mn = max(mn, self.side.measure(orientation, -1)[0])
-                nat += SIDE_WIDTH
-            return mn, nat, -1, -1
-        if not side:
-            mn, nat = self.main.measure(orientation, for_size)[:2]
-            return mn, nat, -1, -1
-        if for_size < 0:
-            for_size = self.do_measure(Gtk.Orientation.HORIZONTAL, -1)[1]
-        if self.wide(for_size):
-            m = self.main.measure(orientation, for_size - SIDE_WIDTH)
-            s = self.side.measure(orientation, SIDE_WIDTH)
-            return max(m[0], s[0]), max(m[1], s[1]), -1, -1
-        m = self.main.measure(orientation, for_size)
-        s = self.side.measure(orientation, for_size)
-        return m[0] + s[0], m[1] + s[1], -1, -1
-
-    def do_size_allocate(self, width, height, _baseline):
-        if not self.side.get_visible():
-            self.main.allocate(width, height, -1, None)
-        elif self.wide(width):
-            self.main.allocate(width - SIDE_WIDTH, height, -1, None)
-            self.side.allocate(SIDE_WIDTH, height, -1, translate(width - SIDE_WIDTH, 0))
-        else:
-            main_min = self.main.measure(Gtk.Orientation.VERTICAL, width)[0]
-            side = max(0, min(self.side.measure(Gtk.Orientation.VERTICAL, width)[1], height - main_min))
-            self.side.allocate(width, side, -1, None)
-            self.main.allocate(width, height - side, -1, translate(0, side))
-
-    def do_dispose(self):
-        for child in (self.main, self.side):
-            if child is not None:
-                child.unparent()
-        self.main = self.side = None
-
-
-def translate(x, y):
-    return Gsk.Transform().translate(Graphene.Point().init(x, y))

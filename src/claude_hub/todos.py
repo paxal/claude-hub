@@ -133,7 +133,7 @@ class TodoList:
 
 class TodoPanel(Gtk.Revealer):
     """Volet repliable « Tâches 3/7 », avec la tâche en cours en dessous, dans la liste
-    d'activité à côté de la saisie (activity.py)."""
+    d'activité au-dessus de la saisie (activity.py)."""
 
     def __init__(self):
         super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,

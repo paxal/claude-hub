@@ -68,7 +68,7 @@ avancement et jetons en direct, puis sa consigne et son travail. Dans
 l'historique, sa transcription est lue à l'ouverture du bloc.
 
 Tant que des sous-agents travaillent, chacun a sa ligne dans la liste d'activité,
-à côté de la saisie, sous celle de Claude : sa description et sa dernière étape
+au-dessus de la saisie, sous celle de Claude : sa description et sa dernière étape
 (« Bash cargo test… »), le plus récemment actif en premier, trois au plus puis
 « … et 2 autres sous-agents ». L'info-bulle donne son type ; le bouton › ouvre
 l'agent dans le volet **Sous-agents**. Quand Claude a fini son tour mais attend

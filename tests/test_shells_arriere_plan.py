@@ -1,6 +1,6 @@
 """Shells et monitors que Claude laisse tourner en arrière-plan (« 1 shell », « 1 monitor » du
 terminal) : commande « stat » des scripts distants, flux de claude -p et textes de leurs
-lignes dans la liste d'activité, à côté de la saisie."""
+lignes dans la liste d'activité, au-dessus de la saisie."""
 import calendar
 import json
 import os
