@@ -107,8 +107,9 @@ class WindowTest(unittest.TestCase):
         self.assertNotIn("waiting_for", s)
 
     def test_sans_remote_control(self):
-        hub = fake_hub()
+        hub = fake_hub(settings={"launched": {}})
         hub.is_streaming = lambda s: Hub.is_streaming(hub, s)
+        hub.orphan = lambda s: Hub.orphan(hub, s)
         check = lambda s: Hub.without_remote_control(hub, s)  # noqa: E731
         self.assertTrue(check(terminal(linked=False)))
         self.assertTrue(check(terminal(linked=False, live="idle", host="cerberus")))
@@ -121,6 +122,9 @@ class WindowTest(unittest.TestCase):
         self.assertFalse(check(None))
         s = terminal(linked=False)
         hub.streams["s1"] = (object(), s)  # claude -p lancé d'ici
+        self.assertFalse(check(s))
+        del hub.streams["s1"]
+        hub.settings["launched"]["s1"] = "local"  # lancé d'ici avant un redémarrage : pas de terminal
         self.assertFalse(check(s))
 
     def test_demande_du_terminal(self):

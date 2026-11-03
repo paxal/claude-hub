@@ -160,3 +160,32 @@ aussi depuis claude-hub (voir [Mode plan, demandes de Claude et
 sous-agents](#mode-plan-demandes-de-claude-et-sous-agents)) : la demande est lue dans l'API
 (`external_metadata.pending_actions` de la session), la réponse part en
 `control_response`, par le même chemin et avec le même en-tête.
+
+### Conversations lancées avant un redémarrage
+
+Les conversations lancées depuis claude-hub tournent en `claude -p`, sans
+terminal : Remote Control ne s'y applique pas (`--remote-control` et
+`remoteControlAtStartup` ne valent que pour un `claude` interactif), et
+claude-hub n'en a pas besoin, puisqu'il parle directement à ce `claude`. Mais
+si claude-hub se ferme (ou plante) pendant une réponse, ce `claude` continue
+sans lui : le claude-hub relancé ne peut plus lui écrire ni répondre à ses
+demandes. Sur un hôte SSH, il ne s'arrête même pas une fois sa réponse finie.
+
+claude-hub retient donc les conversations qu'il lance, jusqu'à la fin de leur
+`claude` (`launched` dans `settings.json`). Après un redémarrage, celles dont le
+`claude` tourne encore portent la pastille grise « Lancée avant le
+redémarrage » (un clic l'explique), et la ligne « Claude travaille (lancé avant
+le redémarrage) » au-dessus de la saisie, avec un bouton pour l'arrêter. Sa
+réponse s'affiche au fur et à mesure, comme celle d'un terminal.
+
+- Dès que sa réponse est finie et qu'il n'attend plus rien en arrière-plan
+  (shell, monitor, workflow, sous-agent), claude-hub l'arrête : la conversation
+  redevient normale, sans rien perdre.
+- Un message écrit d'ici là attend dans la file et part à ce moment-là (une
+  reprise de la conversation, pas une copie). « Envoyer tout de suite » arrête
+  l'ancien `claude` aussitôt.
+- S'il reste bloqué sur une question ou une autorisation (personne ne peut plus
+  y répondre), le bouton d'arrêt l'arrête : ce qu'il a déjà écrit est gardé.
+
+Seul un `claude` sans terminal lancé par claude-hub est arrêté ainsi, jamais
+celui d'un terminal.

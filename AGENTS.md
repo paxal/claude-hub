@@ -49,7 +49,11 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   Code doit perdre les variables `CLAUDE*` : sinon il se croit sous-session et
   n'écrit pas sa transcription. Un `claude` en cours est relié à Remote Control
   si son fichier `~/.claude/sessions/<pid>.json` a `bridgeSessionId` : la
-  transcription garde les `bridge-session` des lancements précédents. Sans
+  transcription garde les `bridge-session` des lancements précédents. Un
+  `claude -p` a aussi ce fichier (`"entrypoint":"sdk-cli"`, jamais de
+  `bridgeSessionId`) : celui que lançait un claude-hub fermé depuis n'est pas un
+  terminal (`Hub.orphan`, « `claude -p` qui survit à claude-hub » dans
+  `docs/mode-plan-et-sous-agents.md`). Sans
   Remote Control, ne pas compter sur la transcription pour montrer la question
   en attente : en mode auto, Claude Code ne l'écrit qu'une fois répondue
   (`docs/mode-plan-et-sous-agents.md`, « Terminal sans Remote Control »). Pour

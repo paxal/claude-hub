@@ -67,7 +67,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `attachments.py` | conversion des images jointes |
 | `viewer.py` | volet et fenêtre d'affichage des fichiers cités |
 | `permissions.py` | cartes des demandes de Claude (plan, questions, autorisations) et réponses |
-| `remotecontrol.py` | conversation ouverte dans un terminal sans Remote Control : pastille de l'en-tête et son explication, carte du fil quand Claude attend une réponse dans le terminal |
+| `remotecontrol.py` | conversation dont Claude Hub ne peut pas joindre le Claude (terminal sans Remote Control, `claude -p` lancé avant un redémarrage) : pastille de l'en-tête et son explication, carte du fil quand Claude attend une réponse dans le terminal |
 | `planview.py` | plan de Claude dans le volet latéral, avec ses actions |
 | `subagents.py` | blocs des sous-agents (suivi en direct, transcription à la demande) |
 | `agentsview.py` | volet « Sous-agents » : arbre des sous-agents, agents des workflows groupés par workflow et par phase, état et transcription suivie |

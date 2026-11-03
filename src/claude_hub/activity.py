@@ -52,12 +52,12 @@ def minutes_text(seconds):
     return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d}"
 
 
-def claude_spec(text, detail=None, since=None, stop=None):
+def claude_spec(text, detail=None, since=None, stop=None, stop_tip="Interrompre Claude (Échap)"):
     """Claude au travail : étape (« Claude utilise Bash »), son détail et sa durée."""
     return {"key": "claude", "kind": "claude", "spin": True, "label": text,
             "detail": one_line(detail), "mono": True, "since": since, "timed": True,
             "tooltip": one_line(detail) or None,
-            "actions": {"stop": ("Interrompre Claude (Échap)", stop)} if stop else {}}
+            "actions": {"stop": (stop_tip, stop)} if stop else {}}
 
 
 def request_spec(entry, jump=None):
