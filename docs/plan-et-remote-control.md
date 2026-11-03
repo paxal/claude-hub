@@ -42,9 +42,14 @@ Si cette session de terminal est reliée à Remote Control (ou si c'est une
 session claude.ai), ses demandes s'affichent avec les mêmes cartes, et on y
 répond d'ici comme sur claude.ai : le Claude du terminal reprend avec la
 réponse, et sa boîte de dialogue se ferme. Une réponse donnée entre-temps dans
-le terminal retire la carte au relevé suivant. Sans Remote Control, la question
-est seulement dépliée dans le fil, en lecture seule : on y répond dans le
-terminal.
+le terminal retire la carte au relevé suivant.
+
+Sans Remote Control, on y répond dans le terminal. Une carte à la fin du fil le
+rappelle (« Claude attend ta réponse dans son terminal », en précisant s'il
+s'agit d'une autorisation), et la question est dépliée dans le fil si elle y
+est. Souvent, elle n'y est pas encore : Claude Code ne l'écrit dans la
+conversation qu'une fois répondue (en mode auto, ou quand la fin d'une tâche de
+fond l'a relancé). Elle n'est alors visible que dans le terminal.
 
 Chaque sous-agent (outil Agent) a son bloc dépliable : type, description,
 avancement et jetons en direct, puis sa consigne et son travail. Dans
@@ -95,7 +100,17 @@ processus `claude` interactif lui-même, qui seul peut l'allumer (`/remote-contr
 ou `claude --remote-control`). Rien ne permet de l'activer de l'extérieur sur une
 session déjà ouverte, par exemple dans un terminal SSH sur un autre poste.
 Relancer la conversation avec `claude --resume <id> --remote-control` ferait
-tourner deux processus sur la même conversation.
+tourner deux processus sur la même conversation. `/remote-control` ne se tape pas
+pendant qu'une question est affichée dans le terminal (elle prend la saisie) :
+y répondre d'abord.
+
+Une conversation ouverte dans un terminal **sans** Remote Control porte la
+pastille « Sans Remote Control » dans son en-tête, à côté de l'hôte. Depuis
+claude-hub, on ne peut alors ni lui écrire (claude-hub propose une copie), ni
+répondre à ses demandes, ni toujours voir sa question avant d'y avoir répondu.
+Un clic sur la pastille l'explique, avec la marche à suivre pour cette session
+et pour les suivantes. Le texte sous la saisie le rappelle. La pastille
+disparaît dès que la session est reliée (relevé toutes les 4 s).
 
 Pour l'avoir sur toutes les sessions, l'activer par défaut sur chaque hôte où
 tourne `claude` (option « Enable Remote Control for all sessions » de `/config`) :

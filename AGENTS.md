@@ -47,7 +47,15 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `control_response` sur le même chemin (`remote_respond`), toujours après un
   clic de l'utilisateur. Un `claude` de test lancé depuis une session Claude
   Code doit perdre les variables `CLAUDE*` : sinon il se croit sous-session et
-  n'écrit pas sa transcription.
+  n'écrit pas sa transcription. Un `claude` en cours est relié à Remote Control
+  si son fichier `~/.claude/sessions/<pid>.json` a `bridgeSessionId` : la
+  transcription garde les `bridge-session` des lancements précédents. Sans
+  Remote Control, ne pas compter sur la transcription pour montrer la question
+  en attente : en mode auto, Claude Code ne l'écrit qu'une fois répondue
+  (`docs/mode-plan-et-sous-agents.md`, « Terminal sans Remote Control »). Pour
+  piloter un vrai `claude` interactif sans tmux : `pty.fork()`, puis taper le
+  prompt une fois l'invite affichée (celui passé en argument se perd après le
+  dialogue de confiance d'un dossier neuf).
 - **Plusieurs conversations à la fois** : chaque conversation a son propre
   processus `claude -p` (`Hub.streams`, par id de session). Ne pas réintroduire
   d'état global « le processus en cours » : c'était la cause du bug où le

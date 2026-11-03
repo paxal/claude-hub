@@ -72,6 +72,7 @@ function liveIds() {
   return out;
 }
 const msOf = v => typeof v === "number" ? v : null;  // date (ms) du fichier de session
+const textOrNull = v => typeof v === "string" && v ? v : null;  // texte non vide du fichier de session
 
 // Ligne « user » de la conversation principale (pas d'un sous-agent), null sinon.
 function userRecord(line) {
@@ -804,7 +805,12 @@ if (a[0] === "list") {
   const p = find(a[1]), sess = liveSessions()[a[1]] || null;
   const scan = p ? scanMain(p, msOf((sess || {}).startedAt)) : {bridge: null, pending: [], tail: null, shells: []};
   const workflows = sess ? scan.pending.map(w => workflowProgress(w, p)) : [];
-  out = {size: p ? fs.statSync(p).size : 0, live: sess ? sess.status || "idle" : null, bridge: scan.bridge,
+  // claude en cours : sa session Remote Control est notée dans son fichier de session
+  // (la transcription garde celles des lancements précédents)
+  const bridge = sess ? textOrNull(sess.bridgeSessionId) : scan.bridge;
+  out = {size: p ? fs.statSync(p).size : 0, live: sess ? sess.status || "idle" : null, bridge,
+         // ce qu'attend claude : « input needed » (question, plan), « permission prompt »
+         waiting_for: sess ? textOrNull(sess.waitingFor) : null,
          since: sess ? msOf(sess.statusUpdatedAt) : null, workflows,
          // shells et monitors en arrière-plan (« 1 shell », « 1 monitor » du terminal)
          shells: sess ? runningShells(p, scan.shells, sess.pid, sess.status) : [],

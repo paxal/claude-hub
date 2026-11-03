@@ -28,6 +28,7 @@ from .dirpicker import RemoteDirDialog
 from .tags import TagStore, dir_matches, dir_token, parse_query, tag_matches, toggle_token
 from .tagui import TAG_ICON, TagPopover, filter_popover, tag_chips
 from .viewer import FileViewer, ViewerWindow, follow_link, resolve
+from .remotecontrol import PERMISSION, RcChip, WaitCard
 from .permissions import EXEC_MODES, PLAN_REFUSAL, RequestCard, control_response, plan_allow, plan_deny
 from .planview import PlanPanel
 from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
@@ -120,6 +121,7 @@ class Hub(Gtk.ApplicationWindow):
         self.pending = {}        # id de session -> {request_id: demande can_use_tool sans réponse}
         # (celles d'un terminal ou de claude.ai portent « remote » : l'id Remote Control)
         self.remote_answered = set()  # demandes répondues d'ici, encore publiées un moment par l'API
+        self.wait_card = None    # carte « Claude attend ta réponse dans son terminal » du fil
         self.agent_blocks = {}   # id de l'appel Agent -> bloc du sous-agent dans la vue affichée
         self.tool_calls = {}     # id d'un autre appel d'outil -> sa ligne dépliable
         self.remote_home = {}
@@ -416,6 +418,7 @@ class Hub(Gtk.ApplicationWindow):
         # hôte · modèle et effort de la dernière réponse · dossier · id · tags
         self.head_meta = Gtk.Box(spacing=8, css_classes=["head-meta"])
         self.head_host = Gtk.Box()
+        self.rc_chip = RcChip()  # terminal sans Remote Control (remotecontrol.py)
         self.head_model = Gtk.Label()
         self.head_cwd = Gtk.Label(css_classes=["mono"], ellipsize=Pango.EllipsizeMode.MIDDLE,
                                   selectable=True)
@@ -423,8 +426,8 @@ class Hub(Gtk.ApplicationWindow):
         self.head_tags = Gtk.Box(spacing=4, visible=False)
         self.head_usage = UsageBox()  # contexte rempli, coût de la dernière réponse
         self.head_seps = [Gtk.Label(label="·") for _ in range(2)]
-        for w in (self.head_host, self.head_model, self.head_usage, self.head_seps[0], self.head_cwd,
-                  self.head_seps[1], self.head_id, self.head_tags):
+        for w in (self.head_host, self.rc_chip, self.head_model, self.head_usage, self.head_seps[0],
+                  self.head_cwd, self.head_seps[1], self.head_id, self.head_tags):
             self.head_meta.append(w)
         head.append(self.head_meta)
         conv.append(head)
@@ -1663,8 +1666,11 @@ class Hub(Gtk.ApplicationWindow):
         sinon une action à faire là où tourne claude (terminal, claude.ai)."""
         reqs = self.pending.get(s["id"])
         if not reqs:
-            where = "sur claude.ai" if s.get("source") == "claude-cloud" else "dans son terminal"
-            return {"kind": "action", "text": f"Claude attend une réponse {where}."}
+            if s.get("source") == "claude-cloud":
+                return {"kind": "action", "text": "Claude attend une réponse sur claude.ai."}
+            if s.get("waiting_for") == PERMISSION:  # lu par « stat » (conversation affichée)
+                return {"kind": "action", "text": "Claude demande une autorisation dans son terminal."}
+            return {"kind": "action", "text": "Claude attend une réponse dans son terminal."}
         rid, req = next(iter(reqs.items()))
         tool, inp = req.get("tool_name"), req.get("input") or {}
         if tool == "ExitPlanMode":
@@ -1832,19 +1838,57 @@ class Hub(Gtk.ApplicationWindow):
         self.agent_blocks = {}
         self.tool_calls = {}
         self.feed, self.feed_start = [], 0
+        self.wait_card = None
 
     def open_question(self, items):
         """Conversation qui attend une réponse dans son terminal, sans Remote Control : déplie
         la question de Claude (AskUserQuestion) si c'est son dernier appel, pour la lire sans
-        chercher (on y répond dans le terminal)."""
+        chercher (on y répond dans le terminal). Faux si elle n'est pas dans le fil : en mode
+        auto, ou dans un tour relancé par la fin d'une tâche de fond, Claude Code ne l'écrit
+        qu'une fois répondue (docs/mode-plan-et-sous-agents.md)."""
         item = items[-1] if items else {}
         call = self.tool_calls.get(item.get("id")) if item.get("name") == "AskUserQuestion" else None
         if call is None or call.get_root() is not self:
-            return
+            return False
         run = call.get_ancestor(ToolRun.__gtype__)
         if run is not None:
             run.reveal()  # repliée en « N étapes »
         call.expander.set_expanded(True)
+        return True
+
+    def note_stat(self, s, res):
+        """Remote Control et attente du Claude de s (terminal), relus par la commande « stat »."""
+        if res.get("live"):
+            s["linked"], s["waiting_for"] = bool(res.get("bridge")), res.get("waiting_for")
+        else:
+            s.pop("linked", None)
+            s.pop("waiting_for", None)
+
+    def without_remote_control(self, s):
+        """s tourne dans un terminal sans être reliée à Remote Control (selon le dernier
+        « stat ») : Claude Hub ne peut ni lui écrire ni répondre à ses demandes."""
+        return (bool(s) and s.get("source") is None and s["host"] != CLOUD and not s.get("new")
+                and not self.is_streaming(s) and bool(s.get("live")) and s.get("linked") is False)
+
+    def wait_in_terminal(self, s, shown):
+        """Carte « Claude attend ta réponse dans son terminal » à la fin du fil, quand s attend
+        sans carte à laquelle répondre d'ici (shown : sa question est dépliée dans le fil) ;
+        refaite d'après son état, ou retirée."""
+        had = self.drop_wait_card()
+        if (s is not self.current or s.get("source") is not None or s["host"] == CLOUD
+                or s.get("live") not in ACTION_STATES or self.pending.get(s["id"])):
+            return
+        self.wait_card = WaitCard(s.get("waiting_for"), s.get("linked") is not False, shown)
+        self.append_item(self.wait_card)
+        if not had:
+            self.scroll_end()
+
+    def drop_wait_card(self):
+        """Retire la carte « Claude attend ta réponse dans son terminal » ; vrai s'il y en avait une."""
+        card, self.wait_card = self.wait_card, None
+        if card is not None and card.get_parent() is self.msgs:
+            self.msgs.remove(card)
+        return card is not None
 
     @staticmethod
     def can_answer_remote(s):
@@ -1855,27 +1899,38 @@ class Hub(Gtk.ApplicationWindow):
 
     def load_requests(self, s, items):
         """Conversation qui attend (terminal, claude.ai) : ses demandes en attente, lues dans
-        l'API Remote Control, en cartes auxquelles on répond d'ici. Sans Remote Control,
-        la question est seulement dépliée dans le fil."""
+        l'API Remote Control, en cartes auxquelles on répond d'ici. Sinon (pas de Remote
+        Control, API indisponible), la question est dépliée dans le fil si elle y est, et une
+        carte dit d'aller répondre dans le terminal."""
         if not self.can_answer_remote(s):
             return self.open_question(items)
         sid = s["id"]
 
         def fetch():
-            bridge = sid if s.get("source") == "claude-cloud" else run_helper(
-                s["host"], "stat", sid).get("bridge")
-            return [(rid, dict(req, remote=bridge)) for rid, req in remote_pending(bridge)] if bridge else []
+            res = None if s.get("source") == "claude-cloud" else run_helper(s["host"], "stat", sid)
+            bridge = sid if res is None else res.get("bridge")
+            try:
+                reqs = [(rid, dict(req, remote=bridge)) for rid, req in remote_pending(bridge)
+                        ] if bridge else []
+            except Exception:  # noqa: BLE001 — API indisponible : les cartes déjà là restent
+                reqs = None
+            return res, reqs
 
-        def done(reqs):
+        def done(out):
+            res, reqs = out
             if s is not self.current or self.is_streaming(s):
                 return
-            self.show_remote_requests(s, reqs)
+            if res is not None:
+                self.note_stat(s, res)
+            if reqs is not None:
+                self.show_remote_requests(s, reqs)
             if not self.pending.get(sid):
-                self.open_question(items)
+                self.wait_in_terminal(s, self.open_question(items))
+            self.update_status()
 
-        def fail(_e):  # API indisponible : la question reste lisible dans le fil
+        def fail(_e):  # script distant injoignable : la question reste lisible dans le fil
             if s is self.current:
-                self.open_question(items)
+                self.wait_in_terminal(s, self.open_question(items))
         in_thread(fetch, done, fail)
 
     def show_remote_requests(self, s, reqs):
@@ -1909,7 +1964,9 @@ class Hub(Gtk.ApplicationWindow):
 
     def drop_remote_requests(self, s):
         """s n'attend plus rien (selon son hôte ou claude.ai) : oublie ses demandes lues
-        dans l'API, et retire leurs cartes."""
+        dans l'API, et retire leurs cartes (et celle qui disait de répondre dans le terminal)."""
+        if s is self.current:
+            self.drop_wait_card()
         mine = self.pending.get(s["id"])
         if mine and any(req.get("remote") for req in mine.values()):
             self.show_remote_requests(s, [])
@@ -1999,8 +2056,9 @@ class Hub(Gtk.ApplicationWindow):
         l'index start de la transcription), sans le reconstruire : les éléments inchangés
         restent tels quels (dépliés, sélection, défilement) ; ce qui suit le dernier d'entre
         eux (éléments changés, réponse reçue en direct, avis) laisse la place aux éléments
-        relus. Les cartes des demandes encore en attente et les commandes « ! » pas encore
-        envoyées restent à la fin. Faux s'il faut tout reconstruire."""
+        relus. Les cartes des demandes encore en attente (et celle qui dit de répondre dans
+        le terminal) et les commandes « ! » pas encore envoyées restent à la fin. Faux s'il
+        faut tout reconstruire."""
         if self.feed_of is not s or not self.feed or self.feed[-1][1].get_parent() is not self.msgs:
             return False  # fil d'une autre conversation (copie, suite d'une conversation Cursor)
         at = changed_from([it for it, _ in self.feed], self.feed_start, items, start)
@@ -2023,7 +2081,7 @@ class Hub(Gtk.ApplicationWindow):
         while first is not None:
             nxt = first.get_next_sibling()
             self.msgs.remove(first)
-            if isinstance(first, RequestCard) and first.request_id in pending:
+            if (isinstance(first, RequestCard) and first.request_id in pending) or first is self.wait_card:
                 cards.append(first)
             first = nxt
         while (last := self.msgs.get_last_child()) is not None and last.has_css_class("feed-day"):
@@ -2141,6 +2199,8 @@ class Hub(Gtk.ApplicationWindow):
             s["workflows"] = res.get("workflows") or []  # workflows en arrière-plan pas encore finis
             s["workflows_waiting"] = bool(res.get("waiting"))  # Claude a fini son tour et les attend
             s["shells"] = res.get("shells") or []  # shells en arrière-plan qui tournent
+            if s.get("source") is None:
+                self.note_stat(s, res)
             self.update_status()
             if res["size"] != self.size and self.size != -1:
                 self.load_history()  # relit aussi les demandes en attente
@@ -2208,7 +2268,7 @@ class Hub(Gtk.ApplicationWindow):
                     else f"Claude attend {n} workflows" if n
                     else "Claude travaille (dans un terminal)")
             rows.append(claude_spec(text, workflow_text(s.get("workflows")), self.busy_start(s)))
-        elif s and s.get("live") in ACTION_STATES:
+        elif s and s.get("live") in ACTION_STATES:  # on y répond là où tourne claude
             rows.append(request_spec(self.request_entry(s)))
         if s and not busy:
             s.pop("busy_since", None)
@@ -2255,6 +2315,10 @@ class Hub(Gtk.ApplicationWindow):
     def update_status(self):
         s = self.current
         self.update_activity()
+        if self.without_remote_control(s):
+            self.rc_chip.show_for(s["host"])
+        else:
+            self.rc_chip.set_visible(False)
         if self.proc:
             return
         if s is None:
@@ -2272,6 +2336,9 @@ class Hub(Gtk.ApplicationWindow):
         elif s and s.get("source") == "cursor":
             self.status.set_text("Conversation Cursor (lecture seule) : ton message démarre une "
                                  "session Claude sur le même hôte, avec cette conversation en contexte.")
+        elif s and s.get("live") and not s.get("new") and s.get("linked") is False:
+            self.status.set_text("Ouverte dans un terminal sans Remote Control : Claude Hub te "
+                                 "proposera une copie (voir « Sans Remote Control » en haut).")
         elif s and s.get("live") and not s.get("new"):
             self.status.set_text("Ouverte dans un terminal : ton message lui sera transmis via "
                                  "Remote Control (sinon, Claude Hub te proposera une copie).")
