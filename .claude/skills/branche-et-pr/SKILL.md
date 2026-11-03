@@ -18,14 +18,15 @@ Après le feu vert sur la conception, avant le premier changement :
 ```sh
 git fetch origin
 git status --short                     # dans la copie principale
-git rev-parse master origin/master
+git log --oneline origin/master..master  # commits non poussés
 ```
 
 - Les modifications non commitées de la copie principale ne suivent pas dans le
   worktree. Si elles concernent la tâche, demander quoi en faire ; sinon, le
   signaler en une ligne et ne pas y toucher (ni stash, ni reset).
 - Si `master` a des commits non poussés, le signaler : la branche part
-  d'`origin/master`.
+  d'`origin/master`. Un `master` en retard sur `origin/master` est normal : on
+  ne le met pas à jour après un merge (étape 6).
 - Nom : court, en kebab-case ASCII, d'après la tâche (`notes-markdown`,
   `fuite-widgets`). Il sert pour le dossier et la branche.
 
@@ -140,14 +141,16 @@ Puis `ExitWorktree(action: "keep")` pour revenir dans la copie principale
 ```sh
 git worktree remove .claude/worktrees/<nom>
 git branch -D <nom>       # -d refuse après un squash : normal, la PR est MERGED
-git fetch --prune origin  # oublie origin/<nom>, supprimée par GitHub
-git pull --ff-only        # si la copie principale est sur master
+git fetch --prune origin  # met à jour origin/master, oublie origin/<nom>
 ```
 
-Si `git pull --ff-only` refuse à cause de modifications locales de
-l'utilisateur : ni stash, ni reset, ni checkout ; le dire et le laisser faire.
-Vérifier `git log --oneline -3` et `git worktree list`, puis rappeler de relancer
-claude-hub pour voir le changement.
+**Ni `git pull` ni merge dans `master`** : claude-hub tourne depuis la copie
+principale (`bin/claude-hub` pointe sur le dépôt), et changer ses fichiers sous
+l'instance ouverte la fait planter. Vérifier `git log --oneline -1 origin/master`
+(le commit du squash) et `git worktree list`, puis dire à l'utilisateur, une fois
+claude-hub fermé, de mettre master à jour dans la copie principale
+(`git merge --ff-only origin/master`) et de relancer claude-hub pour voir le
+changement.
 
 ## 7. Si l'utilisateur refuse ou remet à plus tard
 
