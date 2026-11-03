@@ -33,7 +33,18 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   standard uniquement, compatibles avec un python3 ancien. Les deux versions
   doivent rester équivalentes (même sortie, erreurs comprises) : certains hôtes
   n'ont que node (cerberus est un NixOS sans python3). Toute nouvelle commande
-  s'ajoute aux deux, et on compare leurs sorties.
+  s'ajoute aux deux, et on compare leurs sorties. Une date de fichier commune aux
+  deux se prend en ms entières tirées des ns (`st_mtime_ns // 1000000`,
+  `mtimeNs / 1000000n`) : `st_mtime` et `mtimeMs / 1000` diffèrent au dernier bit.
+- **Liste par pages** : `list` lit des pages de transcriptions dans l'ordre des
+  fichiers (stat, presque gratuit), pas toute la liste (sur cerberus, 1 Go lu en
+  10 s). Tout ce qui parcourt `self.sessions` ne voit donc que les pages lues :
+  ce qui doit trouver une conversation ancienne la demande par son id (`list`
+  avec `ids` : épinglées, résultats de la recherche). Sans filtre, `fill_list`
+  s'arrête à `list_edge` : plus bas, des conversations Claude manquent encore.
+  Une liste qui tient dans la fenêtre avant comme après un changement ne fait
+  pas émettre « changed » à l'ajustement du défilement : d'où
+  `schedule_more_check` après `fill_list` et le changement de filtre.
 - **Le cloud passe par l'API interne** de Claude Code (celle de `--teleport`).
   Elle peut casser : une panne ne doit toucher que l'hôte cloud. Le jeton est lu
   dans `~/.claude/.credentials.json` et ne doit jamais être affiché ni journalisé.

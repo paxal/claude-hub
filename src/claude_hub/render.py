@@ -878,6 +878,9 @@ button.row-btn { min-width: 24px; min-height: 24px; padding: 0; margin-top: -4px
 .segments > togglebutton:checked { font-weight: bold; }
 .list-footer { padding: 6px 12px; border-top: 1px solid rgba(128, 128, 128, 0.25); font-size: 0.9em; }
 .list-footer > label { opacity: 0.7; }
+/* Sous la liste, pendant la lecture des conversations plus anciennes (roue fixe : pas d'animation) */
+.list-more { padding: 10px 16px 14px; font-size: 0.85em; opacity: 0.7; }
+.list-more image { -gtk-icon-size: 14px; }
 
 /* Vues enregistrées (pastilles sous la recherche) */
 button.viewchip { font-size: 0.85em; min-height: 0; padding: 1px 8px; border-radius: 10px; box-shadow: none;
