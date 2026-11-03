@@ -415,9 +415,52 @@ function usageTokens(u) {
     .reduce((n, k) => n + (Number.isInteger(u[k]) ? u[k] : 0), 0);
 }
 
+// Message tapé par l'utilisateur : ni résultat d'outil, ni texte ajouté par claude, ni
+// mention d'une interruption.
+function isPrompt(r) {
+  if (r.type !== "user" || r.isMeta || r.isCompactSummary) return false;
+  const c = (r.message || {}).content;
+  if (Array.isArray(c) && c.some(b => isObj(b) && b.type === "tool_result")) return false;
+  return !textOf(c).startsWith("[Request interrupted");
+}
+
+// uuid des enregistrements abandonnés de la transcription p. Un message modifié
+// (claude-hub lance `claude -p --resume <id> --resume-session-at <uuid>`) ou un retour
+// en arrière du terminal ajoute un message de l'utilisateur rattaché (parentUuid) à un
+// enregistrement qui a déjà une suite : claude ne garde que la branche la plus récente,
+// ce qui descendait déjà de ce point est abandonné. Les appels d'outils en parallèle
+// forment aussi des branches (l'appel suivant et le résultat du premier ont le même
+// parent) : seul un message tapé marque un retour.
+function abandoned(p) {
+  const kids = new Map(), dropped = new Set();
+  for (const line of lines(p)) {
+    if (!line.includes('"uuid"')) continue;
+    const r = parse(line);
+    const uid = isObj(r) && !r.isSidechain ? r.uuid : null;
+    const up = uid ? r.parentUuid || r.logicalParentUuid : null;  // après /compact : le dernier message d'avant
+    if (!up) continue;
+    if (kids.has(up) && isPrompt(r)) {
+      const todo = [...kids.get(up)];
+      while (todo.length) {
+        const u = todo.pop();
+        if (!dropped.has(u)) {
+          dropped.add(u);
+          todo.push(...(kids.get(u) || []));
+        }
+      }
+    }
+    if (!kids.has(up)) kids.set(up, []);
+    kids.get(up).push(uid);
+  }
+  return dropped;
+}
+
+// Pour la conversation principale, les branches abandonnées (message modifié) sont
+// ignorées : seule compte celle que claude reprendra.
 // usage : objet dont "context" reçoit la taille du contexte au dernier message de Claude
 // ({tokens, model}), null après une compaction.
 function transcriptItems(p, sidechain = false, todos = null, usage = null) {
+  const dropped = sidechain ? new Set() : abandoned(p);
   const items = [], creating = new Set();
   const plans = new Map();  // id de l'appel ExitPlanMode -> élément du plan, qui recevra la décision
   let model = null, effort = null;
@@ -431,7 +474,7 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
     stamp(items, mark, when);
     mark = items.length;
     when = recordTime(r);
-    if (r.isSidechain && !sidechain) continue;
+    if ((r.isSidechain && !sidechain) || (dropped.size && dropped.has(r.uuid))) continue;
     if (r.type === "attachment") {  // message envoyé pendant une réponse, lu entre deux étapes
       const a = r.attachment || {};
       if (a.type === "queued_command" && (a.commandMode === undefined ? "prompt" : a.commandMode) === "prompt") {

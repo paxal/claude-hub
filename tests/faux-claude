@@ -212,7 +212,16 @@ if home != real_home and "--no-session-persistence" not in args:
     project = os.path.join(home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
     os.makedirs(project, exist_ok=True)
     transcript = os.path.join(project, sid + ".jsonl")
-last_uuid = None
+# Comme claude, la suite se rattache (parentUuid) au point de reprise demandé, sinon au
+# dernier enregistrement de la conversation reprise.
+last_uuid = arg("--resume-session-at")
+if last_uuid is None and transcript and "--resume" in args and os.path.exists(transcript):
+    with open(transcript) as f:
+        for _line in f:
+            try:
+                last_uuid = json.loads(_line).get("uuid") or last_uuid
+            except ValueError:
+                pass
 
 
 def record(kind, message, **extra):

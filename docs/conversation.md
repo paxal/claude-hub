@@ -55,6 +55,36 @@ de l'API pour le cloud et du `createdAt` des bulles pour Cursor ; pendant une
 réponse lancée d'ici, c'est l'heure de réception, remplacée par celle de la
 transcription au rechargement suivant. Les agents cloud Cursor n'en ont pas.
 
+## Modifier un message
+
+Au survol d'un de ses messages, le bouton crayon (à gauche de la bulle, avec
+« branche » et « copier le Markdown ») le remet dans la saisie, avec ses images,
+pour le modifier. Le message et ce qui le suit sont grisés, et un bandeau
+au-dessus de la saisie rappelle la modification en cours (la croix l'annule).
+
+À l'envoi, Claude reprend **la même conversation** à partir de la nouvelle
+version : `claude -p --resume <id> --resume-session-at <uuid>` (le parent du
+message d'origine), sans `--fork-session`. Ce qui suivait est abandonné : Claude
+ne le voit plus, et le fil ne le montre plus. Rien n'est effacé pour autant :
+claude ajoute la nouvelle branche à la transcription, et reprend toujours la
+plus récente (dans un terminal aussi). Les fichiers modifiés entre-temps restent
+tels quels.
+
+- **Pendant une réponse**, le bandeau prévient en orange : « Claude est en train
+  de répondre : l'envoi l'arrêtera ». À l'envoi, la réponse est interrompue
+  (comme avec « Arrêter »), puis le message modifié part.
+- Le premier message d'une conversation ne se modifie pas : claude ne sait pas
+  repartir d'avant lui (faire une nouvelle conversation).
+- Pas de modification pour une conversation ouverte dans un terminal : son Claude
+  garderait l'ancienne suite en mémoire ; y revenir en arrière avec Échap deux
+  fois. Ni pour le cloud et Cursor, ni pour les messages envoyés pendant une
+  réponse ou par Remote Control.
+
+Le fil suit la branche que claude reprendra, quelle qu'en soit l'origine : un
+message envoyé puis aussitôt annulé dans le terminal (Échap, puis retapé), ou un
+retour en arrière, n'y apparaît plus (les scripts distants écartent ce qui
+descend d'un point d'où un nouveau message est reparti).
+
 ## Copier une conversation à partir d'un message
 
 Au survol d'un message, le bouton « branche » (à côté de « copier le
