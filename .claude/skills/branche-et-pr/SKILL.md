@@ -128,11 +128,11 @@ commit (détaillé, comme un commit du dépôt, terminé par la ligne
 ```sh
 gh pr merge <N> --squash --subject "<titre> (#N)" --body-file <fichier>
 gh pr view <N> --json state --jq .state     # doit afficher MERGED
-git push origin --delete <nom>
 ```
 
-Pas de `--delete-branch` : depuis un worktree, gh essaie d'extraire `master`, déjà
-extrait dans la copie principale, et échoue.
+GitHub supprime la branche distante au merge (réglage « Automatically delete
+head branches » du dépôt). Pas de `--delete-branch` : depuis un worktree, gh
+essaie d'extraire `master`, déjà extrait dans la copie principale, et échoue.
 
 Puis `ExitWorktree(action: "keep")` pour revenir dans la copie principale
 (ExitWorktree ne supprime pas un worktree créé avec `git worktree add`), et :
@@ -140,6 +140,7 @@ Puis `ExitWorktree(action: "keep")` pour revenir dans la copie principale
 ```sh
 git worktree remove .claude/worktrees/<nom>
 git branch -D <nom>       # -d refuse après un squash : normal, la PR est MERGED
+git fetch --prune origin  # oublie origin/<nom>, supprimée par GitHub
 git pull --ff-only        # si la copie principale est sur master
 ```
 
