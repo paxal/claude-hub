@@ -82,6 +82,51 @@ SCENARIOS = {
          "resultat": "File created"},
         {"texte": "Plan exécuté."},
     ],
+    # plan puis exécution (le « build ») comme le fait Claude : liste de tâches, modifications,
+    # Bash qui redemande l'autorisation en mode « modifications acceptées », réponse finale
+    "build": [
+        {"pause": 0.3},
+        {"outil": "Read", "entree": {"file_path": "/tmp/projet/src/app.py"}, "resultat": "def main(): ..."},
+        {"outil": "Grep", "entree": {"pattern": "add_parser"}, "resultat": "app.py:14\napp.py:22"},
+        {"texte": "J'ai regardé le code ; voici ce que je propose."},
+        {"plan": "# Plan : commande `bonjour`\n\n## Contexte\n\n`app.py` déclare ses sous-commandes "
+                 "avec `argparse` ; aucune ne salue l'utilisateur.\n\n## Étapes\n\n"
+                 "1. Ajouter la sous-commande `bonjour` dans `src/app.py`\n"
+                 "2. Créer `src/salut.py` avec la fonction `saluer(nom)`\n"
+                 "3. Ajouter un test dans `tests/test_salut.py`\n\n## Vérification\n\n"
+                 "- `python3 -m unittest` passe\n"},
+        {"texte": "C'est parti."},
+        {"outil": "TodoWrite", "entree": {"todos": [
+            {"content": "Ajouter la sous-commande", "status": "in_progress", "activeForm": "Ajout de la sous-commande"},
+            {"content": "Créer salut.py", "status": "pending", "activeForm": "Création de salut.py"},
+            {"content": "Ajouter le test", "status": "pending", "activeForm": "Ajout du test"}]},
+         "resultat": "ok"},
+        {"pause": 0.5},
+        {"outil": "Edit", "entree": {"file_path": "/tmp/projet/src/app.py",
+                                     "old_string": "    sub = parser.add_subparsers()",
+                                     "new_string": "    sub = parser.add_subparsers()\n"
+                                                   "    sub.add_parser(\"bonjour\").add_argument(\"nom\")"},
+         "resultat": "ok", "duree": 0.8},
+        {"outil": "Write", "entree": {"file_path": "/tmp/projet/src/salut.py",
+                                      "content": "def saluer(nom):\n    return f\"Bonjour {nom}\"\n"},
+         "resultat": "File created", "duree": 0.8},
+        {"outil": "TodoWrite", "entree": {"todos": [
+            {"content": "Ajouter la sous-commande", "status": "completed", "activeForm": "Ajout de la sous-commande"},
+            {"content": "Créer salut.py", "status": "completed", "activeForm": "Création de salut.py"},
+            {"content": "Ajouter le test", "status": "in_progress", "activeForm": "Ajout du test"}]},
+         "resultat": "ok"},
+        {"outil": "Write", "entree": {"file_path": "/tmp/projet/tests/test_salut.py",
+                                      "content": "import unittest\nfrom salut import saluer\n"},
+         "resultat": "File created", "duree": 0.8},
+        {"autorisation": "Bash", "entree": {"command": "python3 -m unittest", "description": "Lancer les tests"},
+         "resultat": "Ran 13 tests\n\nOK"},
+        {"outil": "TodoWrite", "entree": {"todos": [
+            {"content": "Ajouter la sous-commande", "status": "completed", "activeForm": "Ajout de la sous-commande"},
+            {"content": "Créer salut.py", "status": "completed", "activeForm": "Création de salut.py"},
+            {"content": "Ajouter le test", "status": "completed", "activeForm": "Ajout du test"}]},
+         "resultat": "ok"},
+        {"texte": "**Plan exécuté** : la commande `bonjour` est ajoutée, avec son test ; les 13 tests passent."},
+    ],
     "autorisation": [
         {"pause": 0.3},
         {"autorisation": "Bash", "entree": {"command": "rm -rf build", "description": "Nettoyer"},

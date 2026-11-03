@@ -2,10 +2,11 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from claude_hub.cloud import cloud_agents  # noqa: E402
+from claude_hub.cloud import cloud_agents, cloud_history  # noqa: E402
 
 
 def call(tid, name="Agent", prompt="Cherche"):
@@ -70,6 +71,19 @@ class CloudAgents(unittest.TestCase):
         agents = cloud_agents([call("t1"), call("b1", name="Bash"), progress("b1", "tâche de fond"),
                                tool_result("b1", "sortie")])
         self.assertEqual(list(agents), ["t1"])
+
+
+class CloudPlans(unittest.TestCase):
+    def test_decision_du_plan(self):
+        """Plan refusé puis plan validé : la décision suit chaque plan, comme pour les .jsonl."""
+        refus = tool_result("p1", "Ajoute la date")
+        refus["message"]["content"][0]["is_error"] = True
+        evs = [call("p1", name="ExitPlanMode"), refus, call("p2", name="ExitPlanMode"),
+               tool_result("p2", "User has approved your plan."), call("p3", name="ExitPlanMode")]
+        with mock.patch("claude_hub.cloud.cloud_get", return_value={"data": evs}):
+            items = cloud_history("s", 50)["items"]
+        self.assertEqual([i.get("decision") for i in items], [
+            {"ok": False, "text": "Ajoute la date"}, {"ok": True, "text": ""}, None])
 
 
 if __name__ == "__main__":

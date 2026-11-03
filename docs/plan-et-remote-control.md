@@ -20,7 +20,12 @@ s'affichent dans le fil sous forme de cartes :
   (titre et boutons). Le bouton « volet » de chaque plan, y compris ceux de
   l'historique, l'y ouvre ou l'y referme. Fermé à la main, un plan ne se rouvre
   pas tout seul ; il se ferme quand on change de conversation. Quand un plan et
-  un fichier sont ouverts, deux onglets « Plan » / « Fichier » les séparent ;
+  un fichier sont ouverts, deux onglets « Plan » / « Fichier » les séparent.
+  Une fois tranché, le plan reste dans le fil, suivi de son exécution : ses
+  boutons laissent la place à une pastille « ✓ Validé · modifications
+  acceptées » (le mode choisi), « ✗ Refusé » avec la remarque transmise à
+  Claude, ou « ⏹ Interrompu ». Dans l'historique, la pastille dit seulement
+  « ✓ Validé » : la conversation ne garde pas le mode choisi ;
 - **question** : options à cocher, ou réponse libre ;
 - **autorisation** d'un outil (mode `default` surtout) : commande ou contenu
   du fichier, puis « Autoriser », « Pour la session » (la règle proposée par

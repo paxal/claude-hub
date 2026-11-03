@@ -9,7 +9,7 @@ import json
 
 from .gtk import Gtk, Pango
 from .hosts import MODE_LABELS
-from .render import code_block, esc, file_href, lang_for, make_label, plan_widget
+from .render import code_block, esc, file_href, lang_for, make_label, plan_widget, show_plan_decision
 from .widgets import weak_handler
 
 # Modes proposés pour exécuter un plan validé (le premier est le choix par défaut).
@@ -67,6 +67,16 @@ def plan_deny(message):
 
 
 PLAN_REFUSAL = "Continue à planifier : le plan n'est pas encore validé."
+
+
+def decision_of(response):
+    """Décision lue dans une réponse au plan (render.show_plan_decision) : validé, avec le
+    mode d'exécution transmis, ou refusé, avec la remarque."""
+    if response.get("behavior") == "allow":
+        mode = next((p.get("mode") for p in response.get("updatedPermissions") or []
+                     if isinstance(p, dict) and p.get("type") == "setMode"), None)
+        return {"ok": True, "mode": mode, "text": ""}
+    return {"ok": False, "text": response.get("message") or ""}
 
 
 def mode_row():
@@ -129,8 +139,12 @@ class RequestCard(Gtk.Box):
         text = self.feedback()
         return text or default
 
-    def done(self, summary, ok=True):
-        """Remplace la carte par une ligne qui résume la décision."""
+    def done(self, summary, ok=True, response=None):
+        """Remplace la carte par une ligne qui résume la décision (response : la réponse
+        envoyée à Claude, s'il y en a une). Un plan reste dans le fil, comme dans
+        l'historique : ses actions laissent la place à la décision."""
+        if self.tool == "ExitPlanMode" and hasattr(self, "plan_head"):
+            return self.plan_done(summary, ok, response)
         while (child := self.get_first_child()):
             self.remove(child)
         self.set_css_classes(["card", "done", "ok" if ok else "refused"])
@@ -152,6 +166,22 @@ class RequestCard(Gtk.Box):
         # Sur sa propre ligne : à côté des boutons, la carte serait trop large quand le
         # plan est ouvert dans le volet.
         self.insert_child_after(modes, row.get_prev_sibling())
+
+    def plan_done(self, summary, ok, response):
+        if getattr(self, "decided", False):
+            return
+        self.decided = True
+        child = self.plan_body.get_next_sibling()
+        while child:  # choix du mode et boutons
+            nxt = child.get_next_sibling()
+            self.remove(child)
+            child = nxt
+        if response is not None:
+            decision = decision_of(response)
+        else:  # demande expirée ou annulée : pas de réponse partie d'ici
+            decision = {"ok": ok, "label": summary.rstrip(".").split(" : ")[0], "text": ""}
+        decision["tip"] = summary
+        show_plan_decision(self, decision)
 
     def plan_run(self):
         self.send(*plan_allow(self.request, EXEC_MODES[self.mode_dd.get_selected()][0]))

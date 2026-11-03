@@ -563,6 +563,25 @@ def created_task(r, creating):
             return {"created": b["tool_use_id"], "task": tid}
     return None
 
+PLAN_REMARK = 2000  # caractères gardés de la remarque jointe au refus d'un plan
+
+def plan_decision(content, plans):
+    """Décision prise sur un plan (ExitPlanMode), d'après le résultat de l'outil : validé
+    (ok), refusé avec la remarque transmise à Claude (text), ou demande interrompue.
+    Notée sur l'élément du plan (plans : id de l'appel -> élément). Le mode d'exécution
+    choisi en validant n'est pas dans la transcription."""
+    for b in content if isinstance(content, list) else []:
+        if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                and isinstance(b.get("tool_use_id"), str) and b["tool_use_id"] in plans):
+            continue
+        ok = not b.get("is_error")
+        text = "" if ok else result_text(b.get("content"))
+        if text.startswith("[Request interrupted by user"):
+            d = {"ok": False, "text": "", "interrupted": True}
+        else:
+            d = {"ok": ok, "text": text[:PLAN_REMARK]}
+        plans[b["tool_use_id"]]["decision"] = d
+
 def usage_tokens(u):
     """Taille du contexte après un message de Claude : jetons d'entrée (cache compris) et de sortie."""
     if not isinstance(u, dict):
@@ -579,6 +598,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
     ({"tokens", "model"}), None après une compaction.
     """
     items, model, effort, creating = [], None, None, set()
+    plans = {}  # id de l'appel ExitPlanMode -> élément du plan, qui recevra la décision
     caveat = False  # message précédent : avertissement d'une commande locale (/rename…)
     mark, when = 0, None  # éléments de l'enregistrement en cours (à dater), sa date
     with open(str(p), encoding="utf-8", errors="replace") as f:
@@ -618,6 +638,8 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                     items.append(peer_item(body))
                 continue
             if r["type"] == "user":
+                if plans:
+                    plan_decision(content, plans)
                 ev = created_task(r, creating) if creating and todos is not None else None
                 if ev:
                     todos.append(ev)
@@ -646,6 +668,8 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 elif b.get("type") == "tool_use":
                     items.append({"role": "tool", "name": b.get("name"), "input": b.get("input"),
                                   "id": b.get("id")})
+                    if b.get("name") == "ExitPlanMode" and isinstance(b.get("id"), str):
+                        plans[b["id"]] = items[-1]
                     if todos is not None and b.get("name") in TODO_TOOLS:
                         todos.append(items[-1])
                         if b.get("name") == "TaskCreate":

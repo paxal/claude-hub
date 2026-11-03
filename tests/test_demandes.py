@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from claude_hub.permissions import allow, control_response, deny, plan_allow, plan_deny, session_only  # noqa: E402
+from claude_hub.permissions import (  # noqa: E402
+    allow, control_response, decision_of, deny, plan_allow, plan_deny, session_only)
+from claude_hub.render import plan_decision_text  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
 SID = "11111111-2222-3333-4444-555555555555"
@@ -109,6 +111,74 @@ class TestReponses(unittest.TestCase):
         resp, summary = plan_deny("Ajoute des tests")
         self.assertEqual(resp, deny("Ajoute des tests"))
         self.assertEqual(summary, "✗ Plan refusé : Ajoute des tests")
+
+    def test_decision_du_plan(self):
+        """Décision affichée sur un plan tranché d'ici : mode d'exécution, ou remarque."""
+        req = {"tool_name": "ExitPlanMode", "input": {"plan": "# P"}}
+        d = decision_of(plan_allow(req, "acceptEdits")[0])
+        self.assertEqual(d, {"ok": True, "mode": "acceptEdits", "text": ""})
+        self.assertEqual(plan_decision_text(d), "✓ Validé · modifications acceptées")
+        self.assertEqual(plan_decision_text({"ok": True}), "✓ Validé")  # historique : mode inconnu
+        d = decision_of(plan_deny("Ajoute des tests")[0])
+        self.assertEqual(d, {"ok": False, "text": "Ajoute des tests"})
+        self.assertEqual(plan_decision_text(d), "✗ Refusé")
+        self.assertEqual(plan_decision_text({"ok": False, "interrupted": True}), "⏹ Interrompu")
+        self.assertEqual(plan_decision_text({"ok": False, "label": "Demande expirée"}), "Demande expirée")
+
+
+class TestDecisionPlan(unittest.TestCase):
+    """Décision prise sur chaque plan, relue dans la transcription (format de claude 2.1.3xx :
+    refus = résultat en erreur portant la remarque ; validation = « User has approved… »)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.home = tempfile.mkdtemp()
+        proj = Path(cls.home, ".claude/projects/-tmp-x")
+        proj.mkdir(parents=True)
+
+        def plan(tid, text):
+            return line(type="assistant", message={"model": "claude-haiku-5-5", "content": [
+                {"type": "tool_use", "id": tid, "name": "ExitPlanMode",
+                 "input": {"plan": text, "planFilePath": "/p.md"}}]})
+
+        def result(tid, content, error=None, **extra):
+            block = {"type": "tool_result", "content": content, "tool_use_id": tid}
+            if error is not None:
+                block["is_error"] = error
+            return line(type="user", message={"role": "user", "content": [block]}, **extra)
+        (proj / f"{SID}.jsonl").write_text(
+            line(type="user", message={"role": "user", "content": "Fais un plan"}, permissionMode="plan")
+            + plan("toolu_1", "# Plan\n1. a")
+            + result("toolu_1", "Ajoute une étape : afficher la date.", True,
+                     toolUseResult="Error: Ajoute une étape : afficher la date.")
+            + plan("toolu_2", "# Plan\n1. a\n2. date")
+            + result("toolu_2", "User has approved your plan. You can now start coding.",
+                     toolUseResult={"plan": "# Plan\n1. a\n2. date", "isAgent": False, "filePath": "/p.md"})
+            + plan("toolu_3", "# Autre plan")
+            + result("toolu_3", [{"type": "text", "text": "[Request interrupted by user for tool use]"}], True)
+            + plan("toolu_4", "# Plan sans réponse"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.home)
+
+    run_helper = TestAgent.run_helper
+
+    def test_decisions(self):
+        res = self.run_helper("python3", "helper.py", "history", SID, "50")
+        plans = {i["id"]: i.get("decision") for i in res["items"] if i.get("name") == "ExitPlanMode"}
+        self.assertEqual(plans, {
+            "toolu_1": {"ok": False, "text": "Ajoute une étape : afficher la date."},
+            "toolu_2": {"ok": True, "text": ""},
+            "toolu_3": {"ok": False, "text": "", "interrupted": True},
+            "toolu_4": None})
+        # les résultats ne deviennent pas des messages
+        self.assertEqual([i["role"] for i in res["items"]], ["user", "tool", "tool", "tool", "tool"])
+
+    @unittest.skipUnless(shutil.which("node"), "node absent")
+    def test_python_et_node_identiques(self):
+        self.assertEqual(self.run_helper("python3", "helper.py", "history", SID, "50"),
+                         self.run_helper("node", "helper.js", "history", SID, "50"))
 
 
 if __name__ == "__main__":

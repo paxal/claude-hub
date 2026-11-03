@@ -3466,7 +3466,7 @@ class Hub(Gtk.ApplicationWindow):
                 proc, control_response(rid, response)):
             return self.request_done(sid, rid, "Demande expirée : Claude ne l'attend plus.", ok=False)
         del self.pending[sid][rid]
-        self.request_done(sid, rid, summary, ok=response["behavior"] == "allow")
+        self.request_done(sid, rid, summary, ok=response["behavior"] == "allow", response=response)
         if mode in PERMISSION_MODES and self.current and self.current["id"] == sid:
             self.streams[sid][1]["mode"] = mode  # déjà transmis avec la réponse
             self.mode_dd.set_selected(PERMISSION_MODES.index(mode))  # messages suivants dans ce mode
@@ -3486,7 +3486,7 @@ class Hub(Gtk.ApplicationWindow):
             self.pending.get(sid, {}).pop(rid, None)
             if not self.pending.get(sid):
                 self.pending.pop(sid, None)
-            self.request_done(sid, rid, summary, ok=response["behavior"] == "allow")
+            self.request_done(sid, rid, summary, ok=response["behavior"] == "allow", response=response)
             if self.current and self.current["id"] == sid:
                 self.current["live"] = "busy"  # Claude reprend : la vue suivra son fichier
                 self.status.set_text("Réponse transmise : Claude reprend.")
@@ -3517,10 +3517,11 @@ class Hub(Gtk.ApplicationWindow):
         if self.plan_panel.sid == sid and self.plan_panel.request_id == rid:
             self.plan_panel.done("Réponse donnée dans le terminal.", True)
 
-    def request_done(self, sid, rid, summary, ok):
-        """Demande close : sa carte dans le fil et le volet du plan affichent la décision."""
+    def request_done(self, sid, rid, summary, ok, response=None):
+        """Demande close : sa carte dans le fil et le volet du plan affichent la décision
+        (response : la réponse envoyée à Claude, s'il y en a une)."""
         for card in self.cards(sid, rid):
-            card.done(summary, ok)
+            card.done(summary, ok, response)
         if self.plan_panel.sid == sid and self.plan_panel.request_id == rid:
             self.plan_panel.done(summary, ok)
 
