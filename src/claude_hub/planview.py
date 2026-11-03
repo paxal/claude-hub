@@ -12,7 +12,8 @@ from .render import copy_button, esc, file_href, label_links, make_label, render
 class PlanPanel(Gtk.Box):
     def __init__(self, on_run, on_refuse, on_close):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["viewer"])
-        self.sid = self.request_id = self.plan = None
+        self.sid = self.request_id = self.plan = self.path = None
+        self.decision = None  # (résumé, accepté) une fois la demande close
         head = Gtk.Box(spacing=4, margin_top=6, margin_start=8, margin_end=4, margin_bottom=4)
         names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         names.append(Gtk.Label(label="📋 Plan proposé par Claude", xalign=0,
@@ -53,7 +54,8 @@ class PlanPanel(Gtk.Box):
 
     def show(self, sid, plan, path=None, request_id=None):
         """Affiche un plan ; request_id : demande en attente (actions proposées)."""
-        self.sid, self.plan, self.request_id = sid, plan, request_id
+        self.sid, self.plan, self.path, self.request_id = sid, plan, path, request_id
+        self.decision = None
         if path:
             self.where.set_markup(label_links(f'<a href="{esc(file_href(path))}">{esc(path)}</a>'))
             self.where.set_tooltip_text(path)
@@ -74,6 +76,7 @@ class PlanPanel(Gtk.Box):
     def done(self, summary, ok=True):
         """Demande close (réponse donnée d'ici ou du fil, annulation) : le résumé remplace les actions."""
         self.request_id = None
+        self.decision = (summary, ok)
         self.actions.set_visible(False)
         self.summary.set_text(summary)
         self.summary.set_css_classes(["plan-summary", "ok" if ok else "refused"])

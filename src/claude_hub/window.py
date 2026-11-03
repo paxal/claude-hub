@@ -59,6 +59,7 @@ from .usage import UsageBox, context_tokens, cost_text, learn_windows, remember_
 HOME = ""  # clé du brouillon de la saisie de l'accueil (nouvelle conversation)
 CHAT_HINT = "Écrire à Claude…   « / » pour les commandes"
 HOME_HINT = "Que doit faire Claude ?   « / » pour les commandes"
+SIDE_PAGES = ("plan", "file", "agents", "changes", "notes")  # pages du volet de droite
 
 
 def title_of(s):
@@ -148,6 +149,7 @@ class Hub(Gtk.ApplicationWindow):
         self.note_index = {}     # hôte où sont rangées les notes -> {id: début de la note}
         self.shown = 0           # conversations affichées par fill_list
         self.plans_opened = set()  # demandes de plan déjà ouvertes dans le volet (une seule ouverture auto)
+        self.sides = {}          # id -> volet laissé ouvert dans cette conversation (side_state)
         self.launcher = Launcher()  # nombre de conversations à traiter sur l'icône de la barre des tâches
         self.switcher = None     # sélecteur Ctrl+K, créé à la première ouverture
         self.views_pending = False
@@ -177,9 +179,9 @@ class Hub(Gtk.ApplicationWindow):
         self.side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["side"])
         self.side.append(self.side_switch)
         self.side.append(self.side_stack)
-        for w in (self.viewer, self.plan_panel, self.agents_panel, self.changes_panel, self.notes_panel,
-                  self.side):
-            w.set_visible(False)
+        for page in SIDE_PAGES:
+            self.set_side_page(page, False)
+        self.side.set_visible(False)
         self.chat_paned.set_end_child(self.side)
         paned.set_end_child(self.chat_paned)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.GLOBAL)
@@ -1554,6 +1556,7 @@ class Hub(Gtk.ApplicationWindow):
     def open(self, s):
         self.cancel_fork()
         self.stash_input()
+        self.stash_side()
         self.current = s
         self.kept_unread = None
         self.set_page("chat")
@@ -1566,22 +1569,14 @@ class Hub(Gtk.ApplicationWindow):
         self.more_btn.set_visible(True)
         self.rename_btn.set_visible(can_rename(s))
         self.show_note_btn(s)
-        if self.notes_panel.get_visible():  # le volet suit la conversation affichée
-            if self.can_note(s):
-                self.notes_panel.show(s["host"], s["id"])
-            else:
-                self.close_side("notes")
         tag_chips(self.head_tags, self.tag_store.tags(s["id"]), self.filter_tag)
         self.size = -1
-        if self.plan_panel.sid != s["id"]:
-            self.close_side("plan")  # le plan affiché est celui d'une autre conversation
-        if self.agents_panel.get_visible() and not self.has_agents_files(s):
-            self.close_side("agents")
+        agent = self.restore_side(s)  # le volet tel que cette conversation l'a laissé
+        if agent:
+            s["agents_want"] = agent  # rouvert par show_agents, dès la liste lue s'il le faut
         self.show_agents(s)
         self.edits_gen += 1  # une lecture en cours concerne la conversation qu'on quitte
         self.changes_btn.set_visible(False)
-        if self.changes_panel.get_visible():
-            self.changes_panel.show(s["id"], [], loading=bool(self.edits_source(s)))
         self.title.set_text(title_of(s))
         self.show_subtitle(s)
         self.clear()
@@ -1618,13 +1613,15 @@ class Hub(Gtk.ApplicationWindow):
         conversation (sur host, dans cwd, s'ils sont donnés)."""
         self.cancel_fork()
         self.stash_input()
+        self.stash_side()
         self.current = None
         self.kept_unread = None
         self.listbox.unselect_all()
         if self.segment != "all":
             self.listbox.invalidate_filter()
-        for page in ("plan", "agents", "changes", "notes"):
-            self.close_side(page)
+        for page in SIDE_PAGES:
+            if self.side_stack.get_child_by_name(page).get_visible():
+                self.close_side(page)
         if host in self.new_hosts:
             self.syncing_new = True
             self.new_host_btn.set_selected(self.new_hosts.index(host))
@@ -3169,6 +3166,8 @@ class Hub(Gtk.ApplicationWindow):
                     self.queues[ev["session_id"]] = self.queues.pop(s["id"])
                 if s["id"] in self.shells:
                     self.shells[ev["session_id"]] = self.shells.pop(s["id"])
+                if s["id"] in self.sides:
+                    self.sides[ev["session_id"]] = self.sides.pop(s["id"])
                 s["id"] = ev["session_id"]
                 self.keep_mode(s["id"], s.get("mode"))
                 if s is self.current:
@@ -3606,7 +3605,8 @@ class Hub(Gtk.ApplicationWindow):
         return bool(s.get("live")) or s["id"] in self.streams
 
     def show_agents(self, s):
-        """Bouton « 🤖 n » de l'en-tête, et le volet s'il montre cette conversation."""
+        """Bouton « 🤖 n » de l'en-tête, et le volet s'il montre cette conversation (sur
+        l'agent demandé, s["agents_want"], s'il est maintenant dans la liste)."""
         if s is not self.current:
             return
         agents = s.get("agents") or [] if self.has_agents_files(s) else []
@@ -3625,6 +3625,8 @@ class Hub(Gtk.ApplicationWindow):
                 lambda it: self.item_widget(it, s))
             if self.agents_panel.get_visible():
                 self.agents_panel.update(agents, alive)
+                if s.get("agents_want") and self.agents_panel.open_agent(s["agents_want"]):
+                    del s["agents_want"]
 
     def agent_step(self, s, tool_id, ev):
         """Message d'un sous-agent reçu en direct : sa dernière étape, pour le bandeau, sans
@@ -3679,10 +3681,8 @@ class Hub(Gtk.ApplicationWindow):
         def done(res):
             self.agents_polling = False
             s["agents"] = res.get("agents") or []
-            self.show_agents(s)
-            want = s.pop("agents_want", None)
-            if want and s is self.current and self.agents_panel.get_visible():
-                self.agents_panel.open_agent(want)
+            self.show_agents(s)  # ouvre l'agent demandé s'il est maintenant dans la liste
+            s.pop("agents_want", None)  # sinon, on n'insiste pas
 
         def fail(_e):
             self.agents_polling = False
@@ -3862,30 +3862,98 @@ class Hub(Gtk.ApplicationWindow):
         self.close_side("file")
 
     # -- volet de droite --
-    def show_side(self, page):
-        """Ouvre la page « plan », « file » ou « agents » du volet (à mi-largeur s'il était fermé)."""
+    def set_side_page(self, page, visible):
+        """Montre ou cache une page du volet et son onglet : GTK garde l'onglet d'une page
+        dont seul le widget est caché."""
         child = self.side_stack.get_child_by_name(page)
-        child.set_visible(True)
-        self.side_stack.set_visible_child(child)
+        child.set_visible(visible)
+        self.side_stack.get_page(child).set_visible(visible)
+        return child
+
+    def show_side(self, page):
+        """Ouvre une page du volet (SIDE_PAGES), à mi-largeur s'il était fermé."""
+        self.side_stack.set_visible_child(self.set_side_page(page, True))
         self.update_side()
 
     def close_side(self, page):
         """Ferme une page du volet ; le volet se cache quand toutes le sont."""
-        self.side_stack.get_child_by_name(page).set_visible(False)
+        self.set_side_page(page, False)
         if page == "plan":
             self.sync_plan_cards()
         elif page == "notes":
             self.notes_panel.forget()  # enregistrée ; relue à la prochaine ouverture
         self.update_side()
 
-    def update_side(self):
+    def update_side(self, position=None):
+        """Volet montré s'il a une page ouverte ; s'il était fermé, le séparateur va à position
+        (en pixels, celle qu'avait la conversation), ou au milieu."""
         pages = [c for c in (self.plan_panel, self.viewer, self.agents_panel, self.changes_panel,
                              self.notes_panel) if c.get_visible()]
         self.side_switch.set_visible(len(pages) > 1)
         if pages and not self.side.get_visible():
             self.side.set_visible(True)
-            self.chat_paned.set_position(int(self.chat_paned.get_width() * 0.5))
+            self.chat_paned.set_position(position or int(self.chat_paned.get_width() * 0.5))
         self.side.set_visible(bool(pages))
+
+    def side_state(self):
+        """Volet de la conversation affichée : pages ouvertes, page montrée, contenu et
+        largeur, pour le retrouver en y revenant (None : fermé)."""
+        pages = [p for p in SIDE_PAGES if self.side_stack.get_child_by_name(p).get_visible()]
+        if not pages:
+            return None
+        v, p = self.viewer, self.plan_panel
+        return {"pages": pages, "shown": self.side_stack.get_visible_child_name(),
+                "position": self.chat_paned.get_position(),
+                "file": (v.host, v.path, v.line, v.end),
+                "plan": (p.plan, p.path, p.request_id, p.decision),
+                "agent": self.agents_panel.selected}
+
+    def stash_side(self):
+        """On quitte la conversation affichée : son volet est retenu pour son retour."""
+        if not self.current:
+            return
+        state = self.side_state()
+        if state:
+            self.sides[self.current["id"]] = state
+        else:
+            self.sides.pop(self.current["id"], None)
+
+    def restore_side(self, s):
+        """Rouvre le volet tel que s l'a laissé (fermé si elle n'en avait pas). Ce que le
+        volet montre déjà n'est pas relu : après un passage par une conversation sans
+        volet, on retrouve le fichier ou le plan tel quel. Renvoie l'agent à rouvrir."""
+        st = self.sides.get(s["id"]) or {}
+        pages = set(st.get("pages", ()))
+        if not self.has_agents_files(s):
+            pages.discard("agents")
+        if not self.can_note(s):
+            pages.discard("notes")
+        for page in SIDE_PAGES:
+            if page not in pages and self.side_stack.get_child_by_name(page).get_visible():
+                self.close_side(page)
+        if "plan" in pages:
+            plan, path, rid, decision = st["plan"]
+            if rid not in self.pending.get(s["id"], {}):
+                rid = None  # demande close entre-temps : plus d'actions
+            p = self.plan_panel
+            if (p.sid, p.plan, p.request_id) != (s["id"], plan, rid):
+                p.show(s["id"], plan, path, rid)
+                if decision and rid is None:
+                    p.done(*decision)
+        v = self.viewer
+        if "file" in pages and st["file"] != (v.host, v.path, v.line, v.end):
+            v.load(*st["file"])
+        if "notes" in pages:
+            self.notes_panel.show(s["host"], s["id"])
+        if "changes" in pages:  # liste remplie à la lecture des modifications (load_edits)
+            self.changes_panel.show(s["id"], [], loading=bool(self.edits_source(s)))
+        for page in pages:
+            self.set_side_page(page, True)
+        if pages:
+            shown = st["shown"] if st["shown"] in pages else next(p for p in SIDE_PAGES if p in pages)
+            self.side_stack.set_visible_child_name(shown)
+        self.update_side(st.get("position"))
+        return st.get("agent") if "agents" in pages else None
 
     # -- plan dans le volet --
     def open_plan(self, plan, path=None, request_id=None):
