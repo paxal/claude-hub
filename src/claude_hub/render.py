@@ -646,6 +646,10 @@ textview.md, textview.md > text { background: none; }
 .plan-decision.refused { color: #d6453d; background: rgba(229, 83, 75, 0.14); }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
+.card-hint { font-size: 0.92em; opacity: 0.8; }
+/* Terminal sans Remote Control (remotecontrol.py) : pastille de l'en-tête, carte du fil */
+menubutton.rc-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; color: #d4860b; }
+.wait-icon { color: #d4860b; }
 .questions { margin-bottom: 4px; }
 .question-option { margin-left: 8px; }
 .subagent { margin: 0 8px; }
@@ -889,6 +893,7 @@ DARK_CSS = """
 .home-card { background: #26292d; border-color: #3a3f45; }
 menubutton.chip > button { border-color: #3a3f45; color: #dfe3e7; }
 menubutton.chip.plan > button { color: #8fd0f4; }
+menubutton.rc-chip > button, .wait-icon { color: #f0b85a; }
 .count.busy { color: #f0b85a; }
 levelbar.context block.ok { background: #3daee9; }
 levelbar.context block.warn { background: #e3a23b; }

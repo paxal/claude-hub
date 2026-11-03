@@ -328,6 +328,49 @@ les lit quand la conversation affichée passe en attente (`load_requests`), et
 les range dans `Hub.pending` avec `remote` (l'id Remote Control) pour que les
 cartes, le volet du plan et l'accueil fonctionnent comme pour `claude -p`.
 
+## Terminal sans Remote Control (vérifié, claude 2.1.317)
+
+**La question en attente n'est souvent pas dans la transcription.** Claude Code
+n'écrit le message qui contient l'appel (texte qui le précède compris) qu'une
+fois la question répondue, avec son heure d'origine. Essais avec un vrai
+`claude --model haiku` dans un pseudo-terminal, question `AskUserQuestion` :
+
+| Cas | Appel écrit pendant l'attente ? |
+|---|---|
+| mode `default`, tour lancé par l'utilisateur | oui |
+| mode `auto` | non |
+| tour relancé par la fin d'une tâche de fond (`<task-notification>`) | non |
+
+Même constat sur une vraie session (mode auto, relancée par la fin d'un
+`gh run watch`) : question posée à 10:22:10, écrite à 10:40:07, au moment de la
+réponse. Si le processus est tué avant, elle n'est jamais écrite. Déplier la
+question dans le fil (`open_question`) ne marche donc que dans le premier cas ;
+sinon, la fenêtre ajoute à la fin du fil une carte qui dit d'aller répondre dans
+le terminal (`WaitCard`, `remotecontrol.py`).
+
+**Ce que dit `~/.claude/sessions/<pid>.json`** (aussi vu sur cerberus, 2.1.316) :
+
+- `bridgeSessionId` (`session_…`) : présent tant que ce processus est relié à
+  Remote Control, absent sinon. La transcription, elle, garde les entrées
+  `bridge-session` (`cse_…`, réécrites à chaque tour) des lancements précédents :
+  la commande `stat` des scripts distants prend donc le fichier de session pour
+  un `claude` en cours, et la transcription seulement pour une session arrêtée.
+- `waitingFor` (avec `status: "waiting"`) : `"input needed"` pour une question
+  (et sans doute un plan), `"permission prompt"` pour une autorisation. `stat` le
+  renvoie dans `waiting_for`.
+
+**Relier une session en cours** : `/remote-control` tapé dans le terminal écrit
+l'entrée `bridge-session` et le `bridgeSessionId`, et une question posée ensuite
+est lue par l'API (`pending_actions`). Mais pas pendant qu'une question est
+affichée : sa boîte de dialogue prend la saisie (« /remote-control » puis
+Entrée choisit la première réponse). Il faut d'abord y répondre.
+
+Dans claude-hub : la pastille « Sans Remote Control » de l'en-tête
+(`RcChip`) s'affiche pour un `claude` en cours sans `bridgeSessionId`
+(`Hub.without_remote_control`, d'après le dernier `stat`) ; un clic ouvre
+l'explication. Les sessions de test reliées à Remote Control sont archivées sur
+claude.ai à la fermeture de leur `claude`.
+
 ## Ce que fait l'extension VS Code (doc officielle)
 
 Pour s'en inspirer (voir aussi la conversation « regarde l'extension claude
