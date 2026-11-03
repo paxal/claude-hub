@@ -7,6 +7,7 @@ from urllib.parse import quote, unquote
 from .gtk import GLib, Gdk, GdkPixbuf, Gio, Gtk, Pango
 from .hosts import MODE_LABELS
 from .todos import TODO_TOOLS, todo_detail
+from .widgets import weak_handler
 
 
 try:
@@ -452,6 +453,16 @@ def images_row(images):
     return row
 
 
+LOST_REQUEST = "Tool permission request failed"  # début du résultat quand la demande n'a pas pu partir
+
+
+def request_lost(decision):
+    """Vrai si le plan n'a pas été tranché mais perdu : claude n'a pas pu poser la demande,
+    par exemple parce que claude-hub a été fermé ou relancé pendant sa réponse (« Stream
+    closed » : son entrée était fermée)."""
+    return not decision.get("ok") and str(decision.get("text") or "").startswith(LOST_REQUEST)
+
+
 def plan_decision_text(decision):
     """Texte de la pastille d'un plan tranché : decision = {"ok", "mode", "text",
     "interrupted", "label"} (mode : celui choisi pour l'exécution, connu seulement quand la
@@ -460,43 +471,109 @@ def plan_decision_text(decision):
         return decision["label"]
     if decision.get("interrupted"):
         return "⏹ Interrompu"
+    if request_lost(decision):
+        return "⚠ Demande perdue"
     if not decision.get("ok"):
         return "✗ Refusé"
     mode = MODE_LABELS.get(decision.get("mode"))
     return f"✓ Validé · {mode.lower()}" if mode else "✓ Validé"
 
 
+def lost_tip(decision):
+    text = str(decision.get("text") or "")
+    why = ("claude-hub a été fermé ou relancé pendant sa réponse" if "Stream closed" in text
+           else text)
+    return f"Claude n'a pas pu demander la validation du plan : {why}."
+
+
 def show_plan_decision(box, decision):
     """Ajoute à un plan (plan_widget) la décision prise : pastille dans l'en-tête et, pour
     un refus, la remarque transmise à Claude. Visibles même plan replié."""
+    box.plan_decided = True
+    lost = request_lost(decision)
+    kind = "lost" if lost else "ok" if decision.get("ok") else "refused"
     badge = Gtk.Label(label=plan_decision_text(decision), ellipsize=Pango.EllipsizeMode.END,
-                      css_classes=["plan-decision", "ok" if decision.get("ok") else "refused"])
-    if decision.get("tip"):
-        badge.set_tooltip_text(decision["tip"])
+                      css_classes=["plan-decision", kind])
+    if decision.get("tip") or lost:
+        badge.set_tooltip_text(decision.get("tip") or lost_tip(decision))
     box.plan_head.insert_child_after(badge, box.plan_head.get_first_child())
     text = " ".join(str(decision.get("text") or "").split())
-    if text and not decision.get("ok"):
+    if text and not decision.get("ok") and not lost:
         remark = Gtk.Label(label=f"Remarque : {text}", xalign=0, wrap=True, lines=2,
                            ellipsize=Pango.EllipsizeMode.END, css_classes=["sid"],
                            tooltip_text=str(decision["text"]))
         box.insert_child_after(remark, box.plan_head)
 
 
-def plan_widget(plan, path=None, box=None, decision=None):
+def plan_roles(plans):
+    """Affichage des plans du fil, dans l'ordre : plans = [(texte, id de l'appel, carte,
+    tranché)]. Renvoie un (masqué, identique) par plan.
+
+    Masqué : plan de l'historique qu'une carte montre déjà (même appel ; à défaut d'id,
+    même texte et pas encore tranché), comme après la réouverture d'une conversation dont
+    le plan attend. Identique : un plan visible proposé ensuite a le même texte (plan
+    reproposé tel quel) ; il est alors réduit à son en-tête."""
+    card_ids = {pid for _t, pid, card, _d in plans if card and pid}
+    card_texts = {text for text, _p, card, _d in plans if card}
+    roles, later = [], set()
+    for text, pid, card, decided in reversed(plans):
+        if not card and ((pid and pid in card_ids) or (not decided and text in card_texts)):
+            roles.append((True, False))
+            continue
+        roles.append((False, text in later))
+        later.add(text)
+    return roles[::-1]
+
+
+def fold_plan(box, panel=False, same=False):
+    """Repli d'un plan (plan_widget) : son texte est masqué quand le volet le montre
+    (panel), ou quand un plan identique le suit (same, sauf s'il a été déplié)."""
+    box.plan_same.set_visible(same)
+    box.plan_fold.set_visible(same and not panel)
+    if not same:
+        box.plan_open = False  # redevenu le dernier : déplié comme les autres
+    box.plan_body.set_visible(not panel and (not same or box.plan_open))
+    box.plan_side.set_tooltip_text("Remettre dans le fil" if panel else "Ouvrir dans le volet")
+    show_fold_button(box)
+
+
+def show_fold_button(box):
+    opened = box.plan_body.get_visible()
+    box.plan_fold.set_icon_name("pan-up-symbolic" if opened else "pan-down-symbolic")
+    box.plan_fold.set_tooltip_text("Replier ce plan" if opened else "Déplier ce plan")
+
+
+def toggle_plan(box, _button):
+    box.plan_open = not box.plan_body.get_visible()
+    box.plan_body.set_visible(box.plan_open)
+    show_fold_button(box)
+
+
+def plan_widget(plan, path=None, box=None, decision=None, plan_id=None):
     """Plan soumis par Claude (ExitPlanMode), rendu en Markdown dans un cadre (box, ou un nouveau).
 
     Le bouton « volet » appelle open_plan(plan, path) de la fenêtre ; tant que le
     volet montre ce plan, la fenêtre masque box.plan_body (repli de la carte).
     decision : la réponse donnée au plan, s'il a été tranché (show_plan_decision).
+    plan_id : id de l'appel ExitPlanMode, qui relie la carte d'un plan en attente à
+    l'élément de l'historique (plan_roles).
     """
     box = box or Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.add_css_class("card")
     box.add_css_class("plan")
     head = Gtk.Box(spacing=6)
-    # Le titre ne s'étire pas : la pastille de la décision le suit, les boutons vont à droite.
+    # Le titre ne s'étire pas : les pastilles (décision, plan identique) le suivent, les
+    # boutons vont à droite.
     head.append(Gtk.Label(label="📋 Plan proposé par Claude", xalign=0,
                           css_classes=["card-title"]))
+    box.plan_same = Gtk.Label(label="Identique au plan suivant", visible=False,
+                              ellipsize=Pango.EllipsizeMode.END, css_classes=["plan-decision", "same"],
+                              tooltip_text="Claude a reproposé ce plan tel quel, plus bas")
+    head.append(box.plan_same)
     head.append(Gtk.Box(hexpand=True))
+    box.plan_fold = Gtk.Button(icon_name="pan-down-symbolic", css_classes=["flat"], visible=False)
+    box.plan_fold.connect("clicked", weak_handler(box, toggle_plan))
+    head.append(box.plan_fold)
     side = Gtk.Button(icon_name="view-dual-symbolic", css_classes=["flat"],
                       tooltip_text="Ouvrir dans le volet")
 
@@ -509,6 +586,7 @@ def plan_widget(plan, path=None, box=None, decision=None):
     head.append(copy_button(plan, "Copier le plan (Markdown)"))
     box.append(head)
     box.plan_text, box.plan_side, box.plan_head = plan, side, head
+    box.plan_id, box.plan_decided, box.plan_open = plan_id, False, False
     box.plan_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     if isinstance(path, str) and path:
         box.plan_body.append(make_label(f'<a href="{esc(file_href(path))}">{esc(path)}</a>', "sid"))
@@ -578,7 +656,8 @@ def message_widget(item, on_fork=None):
         inp = item.get("input") if isinstance(item.get("input"), dict) else {}
         if item.get("name") == "ExitPlanMode" and isinstance(inp.get("plan"), str):
             decision = item.get("decision") if isinstance(item.get("decision"), dict) else None
-            return plan_widget(inp["plan"], inp.get("planFilePath"), decision=decision)
+            return plan_widget(inp["plan"], inp.get("planFilePath"), decision=decision,
+                               plan_id=item.get("id"))
         return tool_line(item)
     if role == "user" and (item.get("text") or "").startswith("[Request interrupted by user"):
         return make_label("⏹ Interrompu", "notice")  # noté par claude après une interruption
@@ -644,6 +723,8 @@ textview.md, textview.md > text { background: none; }
 .plan-decision { border-radius: 10px; padding: 0 8px; font-size: 0.9em; font-weight: bold; }
 .plan-decision.ok { color: #2f9e44; background: rgba(63, 185, 80, 0.14); }
 .plan-decision.refused { color: #d6453d; background: rgba(229, 83, 75, 0.14); }
+.plan-decision.lost { color: #c4701b; background: rgba(217, 130, 43, 0.16); }
+.plan-decision.same { color: #6b737c; background: rgba(128, 128, 128, 0.16); font-weight: normal; }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
 .questions { margin-bottom: 4px; }
@@ -898,6 +979,8 @@ levelbar.context block.full { background: #f0716a; }
 button.viewchip.active { color: #8fd0f4; }
 .plan-decision.ok { color: #56d364; }
 .plan-decision.refused { color: #f0716a; }
+.plan-decision.lost { color: #f0a35e; }
+.plan-decision.same { color: #a4adb6; }
 """
 
 # Breeze : curseur de défilement de 6px + bordures 2×5px + marges 2×-9px = -2px, d'où

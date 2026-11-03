@@ -137,6 +137,16 @@ Dans le `.jsonl` de la conversation (rechargement, hôtes distants) :
   `history` des scripts distants en tire `decision` sur l'élément du plan :
   `{"ok", "text"}` (la remarque d'un refus), ou `{"ok": false, "interrupted":
   true}` pour un résultat `[Request interrupted by user…]` ;
+- **demande perdue** (vu le 3 novembre 2026, claude 2.1.316) : si l'entrée de
+  claude se ferme pendant sa réponse (claude-hub fermé ou relancé, ssh coupé),
+  claude continue, mais sa demande échoue aussitôt. Le `tool_result` est en
+  erreur : « Tool permission request failed: AbortError: Stream closed ».
+  claude termine alors son tour sans validation. claude-hub l'affiche
+  « ⚠ Demande perdue », pas « ✗ Refusé » ;
+- **message reçu pendant une demande** (même session) : un message écrit sur
+  l'entrée pendant qu'une demande `can_use_tool` attend est mis en file
+  (`queue-operation` `enqueue` dans la transcription, sans son texte). Il n'est
+  lu, et écrit, qu'après la réponse à la demande ;
 - pièces jointes `attachment.type` = `plan_mode` (entrée) et
   `plan_mode_exit` (sortie) ;
 - chaque message `user` porte `permissionMode` (`"plan"`, …) ;

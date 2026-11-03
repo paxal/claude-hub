@@ -14,7 +14,8 @@ from .hosts import (
     CLOUD, DEFAULT_LABEL, EFFORTS, HISTORY_LIMIT, model_name, MODE_HELP, MODE_LABELS, MODELS, PERMISSION_MODES, SEARCH_HISTORY_LIMIT, SSH_OPTS,
     load_hosts, load_hosts_with, load_settings, remember_mode, run_helper, save_settings,
 )
-from .render import esc, image_widget, make_label, message_widget, texture_from, tool_detail
+from .render import (esc, fold_plan, image_widget, make_label, message_widget, plan_roles, texture_from,
+                     tool_detail)
 from .cursor import (
     check_dirs, cursor_agent, cursor_context, cursor_history, cursor_result, cursor_list, cursor_live, cursor_search,
     cursor_stat, highlight_words, norm_text,
@@ -34,7 +35,7 @@ from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
 from .agentsview import AGENT_ID, AgentsPanel, agent_state, running_agents, workflow_text
 from .toolcall import ToolCall, ToolRun
 from .feedtime import Timed, day_separator, last_day, unwrap
-from .feedsync import changed_from
+from .feedsync import changed_from, unread
 from .todos import TodoList, TodoPanel, created_id
 from .activity import (MAX_HEIGHT as ACTIVITY_MAX_HEIGHT, SIDE_WIDTH as ACTIVITY_WIDTH, ActivityPanel,
                        ActivitySplit, agent_specs, claude_spec, queued_spec, request_spec, shell_spec)
@@ -57,6 +58,7 @@ from .usage import UsageBox, context_tokens, cost_text, learn_windows, remember_
 
 HOME = ""  # clé du brouillon de la saisie de l'accueil (nouvelle conversation)
 CHAT_HINT = "Écrire à Claude…   « / » pour les commandes"
+PLAN_HINT = "Remarque sur le plan : Claude continue à planifier"  # quand un plan attend
 HOME_HINT = "Que doit faire Claude ?   « / » pour les commandes"
 
 
@@ -116,6 +118,9 @@ class Hub(Gtk.ApplicationWindow):
         self.streams = {}        # id de session -> (claude -p en cours, dict qui suit sa sortie)
         self.queues = {}         # id de session -> [(texte, images)] à envoyer après la réponse
         self.shells = {}         # id de session -> [ShellBlock] commandes « ! » pas encore envoyées
+        # id de session -> [(élément, bulle)] messages transmis pendant la réponse, pas encore
+        # lus par claude (absents de sa transcription : remis à la fin du fil relu)
+        self.injected = {}
         self.fork_at = None      # copie en préparation : {"sid", "at" (uuid), "widget", "before"}
         self.pending = {}        # id de session -> {request_id: demande can_use_tool sans réponse}
         # (celles d'un terminal ou de claude.ai portent « remote » : l'id Remote Control)
@@ -1776,9 +1781,7 @@ class Hub(Gtk.ApplicationWindow):
 
     def update_send_btn(self):
         busy = bool(self.proc)
-        self.send_btn.set_tooltip_text("Transmis à Claude, qui le lira après l'étape en cours"
-                                       if busy else None)
-        self.update_activity()  # « Arrêter » sur la ligne de Claude
+        self.update_activity()  # « Arrêter » sur la ligne de Claude ; aide de la saisie
         # /rename passe par un autre claude -p : pas pendant que celui du hub écrit
         self.rename_btn.set_sensitive(not busy)
         self.rename_btn.set_tooltip_text("Renommage possible une fois la réponse finie" if busy
@@ -1936,6 +1939,7 @@ class Hub(Gtk.ApplicationWindow):
             if "agents" in res:
                 s["agents"] = res["agents"]
                 self.show_agents(s)
+            self.forget_read(s["id"], res["items"])
             if full or not self.update_feed(s, res["items"], res["total"] - len(res["items"])):
                 self.rebuild_feed(s, res)
             s["items"] = res["items"]
@@ -1987,6 +1991,7 @@ class Hub(Gtk.ApplicationWindow):
         if target_run is not None:
             target_run.reveal()
         self.show_pending(s["id"])
+        self.show_injected(s)
         if target is not None:
             s["search"] = None  # seulement au premier chargement
             target.add_css_class("hit")
@@ -2037,6 +2042,7 @@ class Hub(Gtk.ApplicationWindow):
         self.end_feed(s)
         for card in cards:
             self.msgs.append(card)
+        self.show_injected(s)
         return True
 
     def add_entry(self, widget, item):
@@ -2181,10 +2187,24 @@ class Hub(Gtk.ApplicationWindow):
         if self.current and self.current["id"] == s["id"]:
             self.update_activity()
 
+    def show_hint(self):
+        """Aide de la saisie et infobulle d'« Envoyer », selon ce que deviendra le message :
+        remarque sur le plan qui attend, ou message que claude lira plus tard."""
+        s = self.current
+        plan = s is not None and self.pending_plan(s) is not None
+        if self.pages.get_visible_child_name() == "chat":
+            self.placeholder.set_text(PLAN_HINT if plan else CHAT_HINT)
+        self.send_btn.set_tooltip_text(
+            "Envoyé comme remarque sur le plan : Claude continue à planifier" if plan
+            else None if not self.proc
+            else "Transmis à Claude, qui le lira une fois la demande tranchée" if self.pending.get(s["id"])
+            else "Transmis à Claude, qui le lira après l'étape en cours")
+
     def update_activity(self):
         """Ce qui tourne et ce qui attend, à côté de la saisie (activity.py) : Claude au
         travail (ou la demande qui attend une réponse), ses sous-agents, ses shells et
         monitors en arrière-plan. Les tâches et la file ont leurs propres mises à jour."""
+        self.show_hint()
         s = self.current
         stream = self.streams.get(s["id"], (None, None))[1] if s else None
         rows, busy = [], False
@@ -2667,6 +2687,23 @@ class Hub(Gtk.ApplicationWindow):
             if (text or self.attachments or ready) and not self.proc:
                 self.launch_fork(s, text)
             return
+        # Un plan attend : claude ne lirait le message qu'une fois le plan tranché. « Envoyer »
+        # en fait donc la remarque de « Continuer à planifier », et Claude y répond aussitôt
+        # (« tout de suite » et « en file » gardent leur sens : interrompre, attendre).
+        rid = self.pending_plan(s)
+        if rid and mode == "auto" and text and not self.attachments:
+            mine = self.pending[s["id"]]
+            remote = mine[rid].get("remote")  # terminal relié à Remote Control : réponse par l'API
+            buf.set_text("")
+            self.answer(s["id"], rid, *plan_deny(text))
+            if remote:
+                return
+            if rid in mine:  # claude ne l'attend plus : le message n'est pas perdu
+                del mine[rid]
+                buf.set_text(text)
+                self.refresh_state(s["id"])
+                return self.status.set_text("Demande expirée : ton message est resté dans la saisie.")
+            return self.status.set_text("Remarque transmise : Claude continue à planifier.")
         queue = self.queues.get(s["id"])
         if self.proc or queue:
             # Claude répond déjà (ou la file a été interrompue). Entrée seule avec des
@@ -2699,6 +2736,11 @@ class Hub(Gtk.ApplicationWindow):
                                             "« ! » ne lui sont pas transmises.")
             return self.send_via_remote(s, text)
         self.launch(s, text, self.take_input())
+
+    def pending_plan(self, s):
+        """Demande de validation d'un plan qui attend une réponse dans s (id), sinon None."""
+        return next((rid for rid, req in (self.pending.get(s["id"]) or {}).items()
+                     if req.get("tool_name") == "ExitPlanMode"), None)
 
     def fork_handler(self, s):
         """Action « copie à partir d'ici » des messages de s : conversations Claude Code
@@ -2789,9 +2831,13 @@ class Hub(Gtk.ApplicationWindow):
             st["asked"] = True
         if text or images:
             item = {"role": "user", "text": text, "images": images, "queued": True, "ts": time.time()}
-            self.append_item(message_widget(item), item)
+            bubble = message_widget(item)
+            self.append_item(bubble, item)
+            self.injected.setdefault(s["id"], []).append((item, bubble))
         self.scroll_end()
-        self.status.set_text("Message transmis : Claude le lira après l'étape en cours.")
+        self.status.set_text("Message transmis : Claude le lira une fois la demande tranchée."
+                             if self.pending.get(s["id"]) else
+                             "Message transmis : Claude le lira après l'étape en cours.")
         return True
 
     @staticmethod
@@ -2917,6 +2963,26 @@ class Hub(Gtk.ApplicationWindow):
                 b.get_parent().remove(b)
             ts = getattr(b, "ts", None)
             self.msgs.append(Timed(b, ts) if ts else b)
+
+    def show_injected(self, s):
+        """Remet à la fin du fil (relu) les messages transmis à claude pendant sa réponse
+        qu'il n'a pas encore lus : ils ne sont pas encore dans sa transcription."""
+        for item, bubble in self.injected.get(s["id"], []):
+            if self.feed_child(bubble) is not None:
+                continue
+            if bubble.get_parent() is not None:  # l'ancien conteneur de son heure
+                bubble.get_parent().remove(bubble)
+            self.msgs.append(Timed(bubble, item["ts"]))
+
+    def forget_read(self, sid, items):
+        """Oublie les messages transmis que claude a lus : ils sont dans l'historique items."""
+        sent = self.injected.get(sid)
+        if not sent:
+            return
+        left = {id(item) for item in unread([item for item, _ in sent], items)}
+        self.injected[sid] = [(item, bubble) for item, bubble in sent if id(item) in left]
+        if not self.injected[sid]:
+            del self.injected[sid]
 
     def show_user(self, text, images):
         if text or images:  # pas de bulle vide pour des commandes « ! » envoyées seules
@@ -3257,6 +3323,7 @@ class Hub(Gtk.ApplicationWindow):
             return
         del self.streams[s["id"]]
         self.pending.pop(s["id"], None)
+        self.injected.pop(s["id"], None)  # lus, ou perdus avec claude : la relecture le dira
         s.pop("bg_shells", None)  # morts avec claude
         self.refresh_state(s["id"])
         self.hub_done[s["id"]] = time.monotonic()
@@ -3844,17 +3911,21 @@ class Hub(Gtk.ApplicationWindow):
         self.sync_plan_cards()
 
     def sync_plan_cards(self):
-        """Replie, dans le fil, les plans affichés dans le volet ; déplie les autres."""
+        """Plans du fil (render.plan_roles) : replie ceux que le volet affiche et ceux qu'un
+        plan identique suit, et masque l'élément de l'historique d'un plan que sa carte
+        montre déjà ; les autres restent dépliés."""
         shown = self.plan_panel.plan if self.plan_panel.get_visible() else None
-        child = self.msgs.get_first_child()
+        plans, child = [], self.msgs.get_first_child()
         while child:
             w = unwrap(child)  # plan de l'historique : avec son heure
             if hasattr(w, "plan_body"):
-                folded = w.plan_text == shown
-                w.plan_body.set_visible(not folded)
-                w.plan_side.set_tooltip_text("Remettre dans le fil" if folded
-                                             else "Ouvrir dans le volet")
+                plans.append((child, w))
             child = child.get_next_sibling()
+        roles = plan_roles([(w.plan_text, w.plan_id, isinstance(w, RequestCard), w.plan_decided)
+                            for _c, w in plans])
+        for (child, w), (hidden, same) in zip(plans, roles):
+            child.set_visible(not hidden)
+            fold_plan(w, panel=w.plan_text == shown, same=same)
 
     def plan_run(self, mode):
         p = self.plan_panel
