@@ -136,6 +136,8 @@ class Hub(Gtk.ApplicationWindow):
         self.notified = {}       # id de session -> conversation à ouvrir depuis sa notification
         self.kept_unread = None  # conversation affichée marquée non lue à la main : le reste jusqu'à la quitter
         self.hub_done = {}       # id de session -> fin du dernier claude -p lancé d'ici
+        self.held = set()        # sessions de terminal dont la fin attend leurs shells et monitors
+        self.asked = set()       # sessions de terminal à qui l'on a écrit pendant cette attente
         self.content_hits = {}   # id -> {"role", "snippet"} trouvés dans les transcriptions
         self.drafts = {}         # id -> (texte, pièces jointes) saisis mais pas envoyés (en mémoire)
         self.unsent = {}         # id -> nouvelle conversation encore jamais envoyée
@@ -1320,8 +1322,7 @@ class Hub(Gtk.ApplicationWindow):
                         self.touch(s["id"], updated)
                 elif "busy" in (was, s["live"]) and was != s["live"] and s["id"] not in self.streams:
                     self.touch(s["id"])  # message envoyé ou réponse finie dans un terminal ou Cursor
-                if s.get("was_busy") and s["live"] != "busy":  # fini dans un terminal ou Cursor
-                    self.reply_done(s, waiting=s["live"] in ACTION_STATES)
+                self.follow_turn(s)  # fini dans un terminal ou Cursor : notification
                 # les claude -p lancés d'ici sont notifiés par on_finished (relevé fait avant leur fin compris)
                 s["was_busy"] = (s["live"] == "busy" and s["id"] not in self.streams
                                  and time.monotonic() - self.hub_done.get(s["id"], -60) > 30)
@@ -1377,8 +1378,34 @@ class Hub(Gtk.ApplicationWindow):
             row.update_time()
             row.changed()  # le tri de la liste la replace
 
-    def reply_done(self, s, text=None, error=False, waiting=False):
-        """Claude a fini de répondre dans s : notifie, sauf si on la regarde déjà."""
+    def follow_turn(self, s):
+        """Fin d'un tour dans un terminal ou Cursor, d'après l'état relevé (s["live"]) et le
+        précédent (s["was_busy"]). Tant que des shells ou des monitors tournent (session
+        « shell »), Claude n'a pas fini : chaque événement d'un monitor relance un tour, qui
+        ne doit pas notifier. La notification attend le repos (« idle »), sauf si on a écrit
+        à la session d'ici pendant qu'elle attendait : sa réponse est notifiée."""
+        sid, live = s["id"], s["live"]
+        if s.get("was_busy") and live != "busy":
+            asked = sid in self.asked
+            self.asked.discard(sid)
+            if live == "shell":
+                self.held.add(sid)  # la fin des shells et monitors sera notifiée
+                if not asked:
+                    return
+            elif live not in ACTION_STATES:
+                self.held.discard(sid)
+            self.reply_done(s, waiting=live in ACTION_STATES, replied=live == "shell")
+        elif sid in self.held and live in ("idle", None):
+            # shells et monitors finis ; le dernier tour, court, a pu échapper au relevé
+            self.held.discard(sid)
+            if live:  # claude quitté depuis le terminal : rien à signaler
+                self.reply_done(s)
+        if live in ("idle", None):
+            self.asked.discard(sid)
+
+    def reply_done(self, s, text=None, error=False, waiting=False, replied=False):
+        """Claude a fini de répondre dans s : notifie, sauf si on la regarde déjà.
+        replied : il a répondu, mais des tâches de fond tournent encore."""
         sid = s["id"]
         if text and not error and not waiting:  # aperçu de la carte « Nouvelle réponse » de l'accueil
             self.excerpts[sid] = (time.time(), text)
@@ -1392,6 +1419,8 @@ class Hub(Gtk.ApplicationWindow):
             head = "Claude a échoué"
         elif waiting:
             head = "Claude attend une action"
+        elif replied:
+            head = "Claude a répondu"
         else:
             head = "Claude a terminé"
         n = Gio.Notification.new(f"{head} · {title[:80]}")
@@ -2844,6 +2873,8 @@ class Hub(Gtk.ApplicationWindow):
                 proc, self.user_message(text, images, shells)):
             return False
         self.shells_sent(s["id"], shells)
+        if st.get("tasks"):  # claude attend ses tâches de fond : sa réponse sera notifiée
+            st["asked"] = True
         if text or images:
             item = {"role": "user", "text": text, "images": images, "queued": True, "ts": time.time()}
             self.append_item(message_widget(item), item)
@@ -3011,6 +3042,8 @@ class Hub(Gtk.ApplicationWindow):
         images = self.take_input()
         self.show_user(text, images)
         self.touch(s["id"])
+        if s.get("live") == "shell" or self.background_shells(s):
+            self.asked.add(s["id"])  # elle attend ses shells ou monitors : sa réponse sera notifiée
         s["live"] = "busy"  # le Claude du terminal va répondre : la vue suivra son fichier
         self.update_activity()
         self.status.set_text("Envoi à la session du terminal (Remote Control)…")
@@ -3019,6 +3052,7 @@ class Hub(Gtk.ApplicationWindow):
             self.status.set_text("Message transmis au Claude du terminal : sa réponse s'affichera ici.")
 
         def fail(e):
+            self.asked.discard(s["id"])
             s["live"] = None
             self.update_activity()
             self.error(f"Envoi via Remote Control impossible : {e}")
@@ -3106,7 +3140,7 @@ class Hub(Gtk.ApplicationWindow):
         self.keep_mode(s["id"], s["mode"])
         self.unsent.pop(s["id"], None)  # envoyée : n'est plus un brouillon
         s["tasks"], s["idle"] = set(), False
-        for key in ("bg_shells", "monitors", "monitor_calls"):
+        for key in ("bg_shells", "monitors", "monitor_calls", "asked"):
             s.pop(key, None)
         s["step"] = ("Claude réfléchit", None, time.monotonic())
         s.pop("interrupted", None)
@@ -3199,6 +3233,10 @@ class Hub(Gtk.ApplicationWindow):
                 save_settings(self.settings)
             self.show_usage(s)
             s["idle"] = True
+            if s.pop("asked", False) and s.get("tasks"):
+                # réponse à un message écrit pendant l'attente des tâches de fond ; sans elles,
+                # claude se termine et on_finished notifie
+                self.reply_done(s, text=s["result"], error=s["result_error"], replied=True)
             self.end_if_done(s)
             if s.get("titling"):  # un claude qui ne répondrait jamais ne doit pas rester ouvert
                 rid = s["titling"]

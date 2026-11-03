@@ -321,5 +321,91 @@ class TestTextes(unittest.TestCase):
                          "Monitor : tail -f log")
 
 
+class TestNotifications(unittest.TestCase):
+    """Pas de notification « Claude a terminé » tant que des shells ou des monitors tournent :
+    chaque événement d'un monitor relance un tour. Fin notifiée au repos, ou réponse à un
+    message écrit d'ici pendant l'attente."""
+
+    def setUp(self):
+        self.sent = []
+        self.hub = fake_hub(held=set(), asked=set(),
+                            reply_done=lambda s, **kw: self.sent.append(kw))
+        self.s = {"id": "s1"}
+
+    def poll(self, *states):
+        """Relevés successifs de l'état de la session, comme poll_states."""
+        for live in states:
+            self.s["live"] = live
+            Hub.follow_turn(self.hub, self.s)
+            self.s["was_busy"] = live == "busy"
+
+    def test_monitor(self):
+        self.poll("idle", "busy", "shell")  # Claude lance un monitor et finit son tour
+        self.poll("busy", "shell", "busy", "shell")  # événements du monitor
+        self.assertEqual(self.sent, [])
+        self.poll("busy", "idle")  # monitor fini, Claude en rend compte
+        self.assertEqual(self.sent, [{"waiting": False, "replied": False}])
+        self.poll("idle")
+        self.assertEqual(len(self.sent), 1)
+
+    def test_sans_tache_de_fond(self):
+        self.poll("idle", "busy", "idle")
+        self.assertEqual(self.sent, [{"waiting": False, "replied": False}])
+
+    def test_dernier_tour_manque(self):
+        """Dernier tour plus court que l'intervalle des relevés : shell puis idle."""
+        self.poll("busy", "shell", "idle")
+        self.assertEqual(self.sent, [{}])
+        self.assertEqual(self.hub.held, set())
+
+    def test_claude_quitte(self):
+        self.poll("busy", "shell", None)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.hub.held, set())
+
+    def test_demande(self):
+        """Une question de Claude pendant l'attente est notifiée, la fin aussi."""
+        self.poll("busy", "shell", "busy", "requires_action")
+        self.assertEqual(self.sent, [{"waiting": True, "replied": False}])
+        self.poll("idle")  # répondu dans le terminal, tour trop court pour le relevé
+        self.assertEqual(self.sent[1:], [{}])
+
+    def test_message_pendant_l_attente(self):
+        self.poll("busy", "shell")
+        self.hub.asked.add("s1")  # message envoyé d'ici (Remote Control)
+        self.poll("busy", "shell")
+        self.assertEqual(self.sent, [{"waiting": False, "replied": True}])
+        self.poll("busy", "shell")  # événement suivant du monitor
+        self.assertEqual(len(self.sent), 1)
+        self.poll("busy", "idle")
+        self.assertEqual(self.sent[1:], [{"waiting": False, "replied": False}])
+        self.assertEqual((self.hub.held, self.hub.asked), (set(), set()))
+
+    def test_flux(self):
+        """claude -p : message transmis pendant qu'il attend ses tâches de fond, réponse
+        notifiée sans attendre la fin du processus."""
+        s = {"id": "s1", "tasks": {"bm1"}, "idle": True}
+        proc = types.SimpleNamespace(stdin=types.SimpleNamespace(closed=False))
+        status = types.SimpleNamespace(set_text=lambda t: None)
+        hub = fake_hub(ready_shells=lambda sid: [],
+                       write_input=lambda p, line: True, user_message=Hub.user_message,
+                       shells_sent=lambda sid, sh: None, scroll_end=lambda: None, status=status,
+                       settings={"context_windows": {}, "costs": {}}, show_usage=lambda s: None,
+                       end_if_done=lambda s: None, touch=lambda sid: None,
+                       track_todos=lambda ev, s: False,
+                       reply_done=lambda s, **kw: self.sent.append(kw))
+        hub.streams["s1"] = (proc, s)
+        result = {"type": "result", "result": "Réponse", "is_error": False}
+        Hub.on_event(hub, result, s)  # tour lancé par un événement du monitor
+        self.assertEqual(self.sent, [])
+        self.assertTrue(Hub.inject(hub, s, "", []))
+        Hub.on_event(hub, result, s)
+        self.assertEqual(self.sent, [{"text": "Réponse", "error": False, "replied": True}])
+        s["tasks"] = set()  # sans tâche de fond : claude se termine, on_finished notifie
+        Hub.inject(hub, s, "", [])
+        Hub.on_event(hub, result, s)
+        self.assertEqual(len(self.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
