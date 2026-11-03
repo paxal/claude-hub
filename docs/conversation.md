@@ -153,6 +153,13 @@ le diff entre les versions que Cursor garde. Cursor ne garde pas tout : ni le
 contenu lu par la plupart des Read, ni les résultats de Grep. La conversation
 d'un sous-agent est lue à l'ouverture de son bloc.
 
+## Liens
+
+Un clic sur un lien d'un message l'ouvre dans le navigateur (un fichier cité
+s'ouvre dans le volet, voir ci-dessous). Le clic droit ajoute « Ouvrir le lien »
+et « Copier l'adresse du lien » au menu ; pour un fichier, « Copier le chemin »
+copie le chemin tel qu'il est cité, ligne comprise (`src/app.py:42`).
+
 ## Fichiers cités
 
 Les chemins cités dans les messages (`/chemin/plan.md`, `~/.bashrc`,

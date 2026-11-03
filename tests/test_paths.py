@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from claude_hub.render import file_href, md_inline, parse_file_href, path_link  # noqa: E402
+from claude_hub.render import copied_link, file_href, md_inline, parse_file_href, path_link  # noqa: E402
 from claude_hub.viewer import resolve  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
@@ -67,6 +67,13 @@ class TestPathLinks(unittest.TestCase):
     def test_aller_retour(self):
         href = file_href("/a b/c.py", 3, 5)
         self.assertEqual(parse_file_href(href), ("/a b/c.py", 3, 5))
+
+    def test_lien_copie(self):
+        # « Copier l'adresse du lien » : l'adresse web telle quelle, un fichier comme il est cité
+        self.assertEqual(copied_link("https://x.y/p?a=1#b"), "https://x.y/p?a=1#b")
+        self.assertEqual(copied_link(file_href("/a b/c.py")), "/a b/c.py")
+        self.assertEqual(copied_link(file_href("src/a.py", 12)), "src/a.py:12")
+        self.assertEqual(copied_link(file_href("src/a.py", 3, 5)), "src/a.py:3-5")
 
     def test_lexer(self):
         from claude_hub.render import lang_for, lex
