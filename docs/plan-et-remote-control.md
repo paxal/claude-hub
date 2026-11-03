@@ -15,7 +15,10 @@ s'affichent dans le fil sous forme de cartes :
   fichier. « Lancer » le valide et Claude passe à l'exécution dans le mode
   choisi au-dessus (modifications acceptées par défaut), qui devient celui des
   messages suivants ; « Continuer à planifier » le refuse, avec le texte de la
-  saisie comme remarque. Un plan à valider s'ouvre de lui-même dans le volet de
+  saisie comme remarque. Tant qu'un plan attend, un message envoyé avec « Envoyer »
+  (Entrée, sans pièce jointe) devient cette remarque : claude ne lirait un message
+  ordinaire qu'une fois le plan tranché. La saisie l'annonce (« Remarque sur le
+  plan : Claude continue à planifier »). Un plan à valider s'ouvre de lui-même dans le volet de
   droite, avec les mêmes actions ; dans le fil, sa carte est alors repliée
   (titre et boutons). Le bouton « volet » de chaque plan, y compris ceux de
   l'historique, l'y ouvre ou l'y referme. Fermé à la main, un plan ne se rouvre
@@ -27,7 +30,14 @@ s'affichent dans le fil sous forme de cartes :
   boutons laissent la place à une pastille « ✓ Validé · modifications
   acceptées » (le mode choisi), « ✗ Refusé » avec la remarque transmise à
   Claude, ou « ⏹ Interrompu ». Dans l'historique, la pastille dit seulement
-  « ✓ Validé » : la conversation ne garde pas le mode choisi ;
+  « ✓ Validé » : la conversation ne garde pas le mode choisi. « ⚠ Demande
+  perdue » : claude n'a pas pu demander la validation, parce que claude-hub a
+  été fermé ou relancé pendant sa réponse (« Stream closed »). Un plan que
+  Claude repropose tel quel (même texte) est réduit à son en-tête, avec la
+  pastille « Identique au plan suivant » et une flèche pour le déplier ; un
+  plan révisé reste déplié. Une conversation rouverte pendant qu'un plan
+  attend ne le montre qu'une fois : sa carte remplace l'élément relu dans la
+  transcription ;
 - **question** : options à cocher, ou réponse libre ;
 - **autorisation** d'un outil (mode `default` surtout) : commande ou contenu
   du fichier, puis « Autoriser », « Pour la session » (la règle proposée par

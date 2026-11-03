@@ -35,3 +35,25 @@ def changed_from(shown, shown_start, items, start):
         if not same_item(shown[at - shown_start], items[at - start]):
             return at
     return min(end, total)
+
+
+READ_SLACK = 30  # s : décalage d'horloge toléré entre ce PC et l'hôte de la conversation
+
+
+def unread(sent, items):
+    """Messages transmis à claude pendant sa réponse (sent : éléments {"text", "ts"}) qu'il
+    n'a pas encore lus. claude ne les écrit dans sa transcription qu'au moment de les lire
+    (ils attendent dans sa file tant qu'une demande attend une réponse) : un message est lu
+    quand l'historique items contient un message de l'utilisateur de même texte, daté
+    d'après son envoi. Chaque message de l'historique ne vaut que pour un envoi."""
+    used, left = set(), []
+    for msg in sent:
+        text = (msg.get("text") or "").strip()
+        match = next((i for i, it in enumerate(items) if i not in used and it.get("role") == "user"
+                      and (it.get("text") or "").strip() == text
+                      and (it.get("ts") or msg["ts"]) >= msg["ts"] - READ_SLACK), None)
+        if match is None:
+            left.append(msg)
+        else:
+            used.add(match)
+    return left

@@ -204,7 +204,8 @@ class TestStat(unittest.TestCase):
 
 
 def fake_hub(**kw):
-    return types.SimpleNamespace(streams={}, current=None, update_activity=lambda: None, **kw)
+    return types.SimpleNamespace(streams={}, current=None, pending={}, injected={},
+                                 update_activity=lambda: None, **kw)
 
 
 class TestFlux(unittest.TestCase):

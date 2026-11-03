@@ -49,10 +49,10 @@ restent sur `master`. Marche à suivre pour les agents :
 |---|---|
 | `gtk.py` | initialisation de GTK 4, `in_thread`, modificateur des raccourcis (Ctrl, ou Cmd sous macOS) |
 | `hosts.py` | configuration, hôtes local/SSH, exécution des scripts distants |
-| `remote/helper.py`, `remote/helper.js` | scripts envoyés aux hôtes (`python3 -` ou `node -`) pour lire `~/.claude` et les notes ; bibliothèque standard uniquement |
+| `remote/helper.py`, `remote/helper.js` | scripts envoyés aux hôtes (`python3 -` ou `node -`) pour lire `~/.claude` (historique : la branche que claude reprendra) et les notes ; bibliothèque standard uniquement |
 | `cursor.py` | conversations Cursor (base `state.vscdb`, Linux ou macOS ; recherche) |
 | `cloud.py` | sessions claude.ai/code et agents cloud Cursor ; jeton lu dans `~/.claude` ou le trousseau macOS |
-| `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages, ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
+| `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages (et leurs boutons du survol : modifier, copie, Markdown), ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
 | `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie, gestionnaire de signal qui ne retient pas son widget (`weak_handler`) |
 | `listrow.py` | lignes de la liste (icône d'état, heure, boutons du survol), séparateurs de jour |
 | `feedtime.py` | heure des éléments du fil (colonne à droite) et séparateurs de jour du fil |
