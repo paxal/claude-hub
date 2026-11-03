@@ -925,6 +925,9 @@ levelbar.context block.full { background: #e5534b; }
 .composer { border: 1px solid alpha(currentColor, 0.25); border-radius: 10px; background: @theme_base_color; }
 textview.composer-input, textview.composer-input > text { background: none; }
 .placeholder { opacity: 0.5; padding: 10px 12px; }
+/* Touche à presser (Tab : reprendre le message prédit par Claude), dessinée comme sur un clavier */
+.keycap { font-size: 0.8em; font-weight: bold; padding: 0 5px; border-radius: 4px;
+          border: 1px solid alpha(currentColor, 0.6); box-shadow: 0 1px alpha(currentColor, 0.4); }
 .composer-bar { padding: 4px 8px 8px; }
 .composer-new { padding: 8px 10px 0 12px; font-size: 0.95em; }
 .composer-new > label { opacity: 0.7; }

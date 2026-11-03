@@ -74,7 +74,8 @@ GTK y repeint toute la fenêtre à chaque image).
   contexte, coût), notes en Markdown, modifier un message, copie à partir d'un
   message, commandes « / » et « ! »,
   sorties des outils, conversations Cursor, fichiers cités et modifiés, tâches
-  de Claude, écrire pendant une réponse, l'arrêter, fin des réponses.
+  de Claude, message suggéré (Tab), écrire pendant une réponse, l'arrêter, fin
+  des réponses.
 - [Mode plan, sous-agents et Remote Control](docs/plan-et-remote-control.md) :
   mode de permissions, plans, questions et autorisations, sous-agents, Remote
   Control.

@@ -70,6 +70,8 @@ lignes repliées comprises) ; les shells, monitors et tâches sont repliés au l
 `w.activity_panel.toggle.emit("clicked")` les déplie avant une capture, et
 `w.activity_panel.summary.get_text()` donne la ligne de résumé.
 `FAUX_CLAUDE_VITESSE=0` supprime les pauses, `2` les double.
+`FAUX_CLAUDE_SUGGESTION="texte"` : message suggéré (`prompt_suggestion`) envoyé
+après chaque réponse réussie, comme claude avec `--prompt-suggestions`.
 
 Ce que le hub lui a envoyé : `pilote.journal_claude()` (un `{"argv", "cwd"}` par
 lancement, un `{"recu": …}` par ligne reçue : messages, réponses aux demandes,

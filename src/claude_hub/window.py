@@ -150,6 +150,7 @@ class Hub(Gtk.ApplicationWindow):
         self.asked = set()       # sessions de terminal à qui l'on a écrit pendant cette attente
         self.content_hits = {}   # id -> {"role", "snippet"} trouvés dans les transcriptions
         self.drafts = {}         # id -> (texte, pièces jointes) saisis mais pas envoyés (en mémoire)
+        self.suggestions = {}    # id -> (prochain message prédit par claude, heure de réception)
         self.unsent = {}         # id -> nouvelle conversation encore jamais envoyée
         self.search_gen = 0
         self.polling_states = False
@@ -530,7 +531,11 @@ class Hub(Gtk.ApplicationWindow):
         input_scroll = Gtk.ScrolledWindow(child=self.input, hexpand=True, min_content_height=44,
                                           max_content_height=220, propagate_natural_height=True,
                                           hscrollbar_policy=Gtk.PolicyType.NEVER)
-        field, self.placeholder = with_placeholder(input_scroll, self.input, CHAT_HINT)
+        # Saisie vide après une réponse : le message que Claude prédit, Tab pour le reprendre.
+        self.suggest_key = Gtk.Label(label="Tab", css_classes=["keycap"], valign=Gtk.Align.CENTER,
+                                     visible=False)
+        field, self.placeholder = with_placeholder(input_scroll, self.input, CHAT_HINT,
+                                                   self.suggest_key)
         main.append(field)
         # Complétion des commandes « / » : liste par (hôte, dossier), demandée à claude.
         self.commands = {}  # (hôte, dossier) -> [commande] | "loading" | Exception
@@ -1719,7 +1724,7 @@ class Hub(Gtk.ApplicationWindow):
         self.new_line.set_visible(home)
         self.start_btn.set_visible(home)
         self.send_box.set_visible(not home)
-        self.placeholder.set_text(HOME_HINT if home else CHAT_HINT)
+        self.show_placeholder()
         (self.new_btn.add_css_class if home else self.new_btn.remove_css_class)("active")
 
     def go_home(self, host=None, cwd=None):
@@ -2101,6 +2106,7 @@ class Hub(Gtk.ApplicationWindow):
                 s["workflow_runs"] = res.get("workflow_runs") or []  # nom et résumé des workflows
                 self.show_agents(s)
             self.forget_read(s["id"], res["items"])
+            self.drop_stale_suggestion(s, res["items"])
             if full or not self.update_feed(s, res["items"], res["total"] - len(res["items"])):
                 self.rebuild_feed(s, res)
             s["items"] = res["items"]
@@ -2358,13 +2364,70 @@ class Hub(Gtk.ApplicationWindow):
         remarque sur le plan qui attend, ou message que claude lira plus tard."""
         s = self.current
         plan = s is not None and self.pending_plan(s) is not None
-        if self.pages.get_visible_child_name() == "chat":
-            self.placeholder.set_text(PLAN_HINT if plan else CHAT_HINT)
+        self.show_placeholder()
         self.send_btn.set_tooltip_text(
             "Envoyé comme remarque sur le plan : Claude continue à planifier" if plan
             else None if not self.proc
             else "Transmis à Claude, qui le lira une fois la demande tranchée" if self.pending.get(s["id"])
             else "Transmis à Claude, qui le lira après l'étape en cours")
+
+    def shown_suggestion(self):
+        """Message prédit par claude pour la conversation affichée, s'il tient lieu d'aide
+        dans la saisie vide : ni sur l'accueil, ni quand un plan attend, ni pendant que
+        Claude répond (la prédiction suit la fin de la réponse)."""
+        s = self.current
+        if s is None or self.pages.get_visible_child_name() != "chat" or self.pending_plan(s):
+            return None
+        stream = self.streams.get(s["id"], (None, {}))[1]
+        if stream and not stream.get("idle"):
+            return None
+        return (self.suggestions.get(s["id"]) or (None,))[0]
+
+    def show_placeholder(self):
+        """Aide de la saisie vide : accueil, remarque sur le plan qui attend, message
+        prédit par claude (avec la touche Tab qui le reprend) ou aide habituelle."""
+        tip = self.shown_suggestion()
+        if self.pages.get_visible_child_name() == "home":
+            text = HOME_HINT
+        elif self.current is not None and self.pending_plan(self.current):
+            text = PLAN_HINT
+        else:
+            text = " ".join(tip.split()) if tip else CHAT_HINT  # sur une ligne
+        self.placeholder.set_text(text)
+        self.suggest_key.set_visible(tip is not None)
+
+    def accept_suggestion(self):
+        """Tab dans la saisie vide : y met le message prédit par claude, à modifier ou à
+        envoyer. Faux s'il n'y en a pas (Tab garde alors son effet habituel)."""
+        tip = self.shown_suggestion()
+        buf = self.input.get_buffer()
+        if tip is None or buf.get_char_count() or self.attachments:
+            return False
+        buf.set_text(tip)
+        buf.place_cursor(buf.get_end_iter())
+        return True
+
+    def got_suggestion(self, s, text):
+        """Message prédit par claude après sa réponse (prompt_suggestion, --prompt-suggestions)."""
+        text = (text or "").strip()
+        if not text:
+            return
+        self.suggestions[s["id"]] = (text, time.time())
+        if self.current and self.current["id"] == s["id"]:
+            self.show_placeholder()
+
+    def drop_suggestion(self, sid):
+        """Prédiction dépassée : un message est parti, ou la conversation a continué ailleurs."""
+        if self.suggestions.pop(sid, None) and self.current and self.current["id"] == sid:
+            self.show_placeholder()
+
+    def drop_stale_suggestion(self, s, items):
+        """Historique relu : un message écrit après la prédiction (dans le terminal, par
+        exemple) la rend caduque."""
+        since = (self.suggestions.get(s["id"]) or (None, None))[1]
+        if since is not None and any(it.get("role") in ("user", "bash") and (it.get("ts") or 0) > since
+                                     for it in items):
+            self.drop_suggestion(s["id"])
 
     def update_activity(self):
         """Ce qui tourne et ce qui attend, au-dessus de la saisie (activity.py) : Claude au
@@ -2842,6 +2905,9 @@ class Hub(Gtk.ApplicationWindow):
         if keyval == Gdk.KEY_ISO_Left_Tab:
             self.toggle_plan()
             return True
+        if keyval == Gdk.KEY_Tab and not state & (PRIMARY_MASK | Gdk.ModifierType.ALT_MASK) \
+                and self.accept_suggestion():
+            return True
         if keyval == Gdk.KEY_Escape and self.proc:  # comme Échap dans claude
             self.stop()
             return True
@@ -3168,7 +3234,10 @@ class Hub(Gtk.ApplicationWindow):
         return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
     def take_input(self):
-        """Vide la saisie et les pièces jointes ; renvoie les images encodées."""
+        """Vide la saisie et les pièces jointes (message envoyé : la prédiction de claude
+        est dépassée) ; renvoie les images encodées."""
+        if self.current is not None:
+            self.drop_suggestion(self.current["id"])
         self.input.get_buffer().set_text("")
         images = [{"type": mime, "data": base64.b64encode(data).decode()}
                   for mime, data in self.attachments]
@@ -3404,7 +3473,9 @@ class Hub(Gtk.ApplicationWindow):
                 "--output-format", "stream-json", "--verbose",
                 "--permission-mode", PERMISSION_MODES[self.mode_dd.get_selected()],
                 # demandes de permission, plan et questions sur stdin/stdout (control_request)
-                "--permission-prompt-tool", "stdio"]
+                "--permission-prompt-tool", "stdio",
+                # message suivant prédit (prompt_suggestion), comme le terminal le propose
+                "--prompt-suggestions"]
         # Alias demandé (choisi ici ou réglé sur l'hôte) : claude dira au démarrage quelle version il désigne.
         s["alias"] = self.settings["model"] or (self.host_defaults.get(s["host"]) or {}).get("model")
         if self.settings["model"]:
@@ -3434,6 +3505,7 @@ class Hub(Gtk.ApplicationWindow):
         self.streams[s["id"]] = (proc, s)
         if not fork:  # une copie a son propre id, connu à son démarrage (on_event)
             self.mark_launched(s["id"], s["host"])
+        self.drop_suggestion(s["id"])  # nouvelle réponse : claude en prédira une autre
         s["mode"] = argv[argv.index("--permission-mode") + 1]
         self.keep_mode(s["id"], s["mode"])
         self.unsent.pop(s["id"], None)  # envoyée : n'est plus un brouillon
@@ -3504,6 +3576,8 @@ class Hub(Gtk.ApplicationWindow):
             return
         if t == "control_request":
             return self.on_request(ev, s)
+        if t == "prompt_suggestion":  # après le résultat, avant que claude se termine
+            return self.got_suggestion(s, ev.get("suggestion"))
         if t == "control_response":  # réponse à generate_session_title ou set_permission_mode
             resp = ev.get("response") or {}
             if s.get("titling") and resp.get("request_id") == s["titling"]:

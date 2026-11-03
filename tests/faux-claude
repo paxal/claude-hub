@@ -10,6 +10,8 @@ Mis dans le PATH par tests/piloter.sh (sous le nom `claude`). Variables :
   FAUX_CLAUDE_JOURNAL   fichier où noter chaque appel (argv) et chaque ligne reçue sur
                         l'entrée, pour vérifier ce que le hub a envoyé.
   FAUX_CLAUDE_TITRE     titre renvoyé à generate_session_title.
+  FAUX_CLAUDE_SUGGESTION  avec --prompt-suggestions : prochain message prédit, envoyé
+                        (prompt_suggestion) un peu après chaque fin de réponse réussie.
 
 Ce qu'il fait :
 - lit son entrée ligne à ligne, sans attendre qu'elle soit fermée (le hub la garde
@@ -507,4 +509,9 @@ while True:
         modelUsage={model: {"contextWindow": 200000}})
     meta({"type": "system", "subtype": "turn_duration", "durationMs": duration,
           "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())})
+    # Comme claude : la suggestion arrive après le résultat, même si l'entrée est déjà fermée.
+    if os.environ.get("FAUX_CLAUDE_SUGGESTION") and "--prompt-suggestions" in args and not error:
+        pause(0.5)
+        out(type="prompt_suggestion", suggestion=os.environ["FAUX_CLAUDE_SUGGESTION"],
+            uuid=str(uuid.uuid4()), session_id=sid)
 sys.exit(1 if stopped else 0)
