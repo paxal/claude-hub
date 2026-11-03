@@ -34,6 +34,14 @@ séparée sur l'écran virtuel, avec une config temporaire et un faux `claude`
 question, sous-agent, erreur). Le script s'écrit avec `tests/pilote.py`. Mode
 d'emploi dans `.claude/skills/piloter-claude-hub/SKILL.md`.
 
+## Branches et pull requests
+
+Les changements de code se font sur une branche, dans un worktree rangé dans
+`.claude/worktrees/` (ignoré par git), puis passent par une pull request : la CI
+y lance les tests, et le merge se fait en squash (un commit par changement sur
+`master`). Les retouches de doc seules restent sur `master`. Marche à suivre pour
+les agents : `.claude/skills/branche-et-pr/SKILL.md`.
+
 ## Organisation du code
 
 | Module | Rôle |

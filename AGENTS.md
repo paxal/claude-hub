@@ -172,8 +172,13 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   Une demande directe (« ajoute… », « corrige… ») s'exécute sans détour.
 - Quand on peut le vérifier soi-même, le faire plutôt que de demander à
   l'utilisateur de tester (« vas-y teste toi-même »).
-- **Pas de commit** sans demande explicite. Rappeler à la fin qu'il faut
-  relancer claude-hub pour voir les changements (l'instance ouverte garde
-  l'ancien code).
+- **Tout changement de code passe par une branche** : skill `branche-et-pr`
+  (`.claude/skills/branche-et-pr/SKILL.md`). Worktree dans
+  `.claude/worktrees/`, commits et push sur la branche, pull request, CI, puis
+  proposition de merge (squash) avec le lien de la PR. Le merge n'a lieu
+  qu'après l'accord de l'utilisateur.
+- **Sur master, pas de commit** sans demande explicite (retouches de doc
+  seules). Rappeler à la fin qu'il faut relancer claude-hub pour voir les
+  changements (l'instance ouverte garde l'ancien code).
 - Si `python3` est refusé par les permissions, le dire immédiatement plutôt que
   de livrer du code non vérifié sans le signaler.
