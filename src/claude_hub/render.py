@@ -1,5 +1,6 @@
 """Rendu des messages : Markdown (via mdview.py), coloration, images, CSS."""
 import base64
+import html
 import re
 from urllib.parse import quote, unquote
 
@@ -66,6 +67,34 @@ def copied_link(uri):
         return uri
     path, line, end = parse_file_href(uri)
     return path + (f":{line}" if line else "") + (f"-{end}" if line and end else "")
+
+
+def label_target(uri):
+    """Lien d'un Gtk.Label (voir label_links) -> (chemin, ligne, fin) s'il désigne un
+    fichier, None pour une adresse (https:, mailto:…) ou une ancre."""
+    if uri.startswith(FILE_SCHEME):
+        return parse_file_href(uri)
+    if uri.startswith("#") or re.match(r"[A-Za-z][\w+.-]*:(?!\d)", uri):
+        return None
+    m = re.fullmatch(r"(.+?):(\d+)(?:-(\d+))?", uri)
+    if not m:
+        return uri, None, None
+    return m.group(1), int(m.group(2)), int(m.group(3)) if m.group(3) else None
+
+
+RE_FILE_A = re.compile(r'<a href="(hub-file:[^"]*)">')
+
+
+def label_links(markup):
+    """Balisage d'un Gtk.Label : l'adresse d'un lien de fichier devient le chemin cité
+    (src/a.py:42). Le menu du label (« Copier l'adresse du lien ») copie l'adresse telle
+    quelle, sans qu'on puisse le changer ; on_link la relit. Un chemin qui se relirait
+    autrement (« a:b », « #x ») garde son adresse hub-file:."""
+    def plain(m):
+        uri = html.unescape(m.group(1))
+        text = copied_link(uri)
+        return f'<a href="{esc(text)}">' if label_target(text) == parse_file_href(uri) else m.group(0)
+    return RE_FILE_A.sub(plain, markup)
 
 
 def path_link(text, code=False):
@@ -146,7 +175,7 @@ def make_label(markup, css, plain=None):
     try:
         # Pango ignore <a> (géré par Gtk.Label) : on l'enlève pour valider.
         Pango.parse_markup(re.sub(r"</?a\b[^>]*>", "", markup), -1, "\0")
-        lbl.set_markup(markup)
+        lbl.set_markup(label_links(markup))
     except GLib.Error:
         lbl.set_text(plain if plain is not None else markup)
     lbl.add_css_class(css)
@@ -155,12 +184,13 @@ def make_label(markup, css, plain=None):
 
 
 def on_link(lbl, uri):
-    """Les liens hub-file: vont à la fenêtre (open_file_link), les autres au navigateur."""
-    if not uri.startswith(FILE_SCHEME):
+    """Les liens de fichier vont à la fenêtre (open_file_link), les autres au navigateur."""
+    target = label_target(uri)
+    if target is None:
         return False
     opener = getattr(lbl.get_root(), "open_file_link", None)
     if opener:
-        opener(lbl, *parse_file_href(uri))
+        opener(lbl, *target)
     return True
 
 
@@ -350,7 +380,7 @@ def tool_line(item):
                     tooltip_text=detail or None)
     try:
         Pango.parse_markup(re.sub(r"</?a\b[^>]*>", "", markup), -1, "\0")
-        lbl.set_markup(markup)
+        lbl.set_markup(label_links(markup))
     except GLib.Error:
         lbl.set_text(detail)
     lbl.connect("activate-link", on_link)
