@@ -297,6 +297,16 @@ function allFiles() {
       if (f.endsWith(".jsonl")) res.push(path.join(P, d, f));
   return res;
 }
+// [[date du fichier en ms, id, chemin]] des transcriptions, la dernière écrite en tête.
+// Des ms entières (tirées des ns) : python et node doivent trouver les mêmes dates.
+function listFiles() {
+  const out = [];
+  for (const p of allFiles()) {
+    try { out.push([Number(fs.statSync(p, {bigint: true}).mtimeNs / 1000000n), path.basename(p, ".jsonl"), p]); }
+    catch (e) { /* disparue entre-temps */ }
+  }
+  return out.sort((x, y) => y[0] - x[0] || (y[1] > x[1]) - (y[1] < x[1]));
+}
 const isDir = d => { try { return fs.statSync(d).isDirectory(); } catch (e) { return false; } };
 const find = id => allFiles().find(p => path.basename(p) === id + ".jsonl");
 
@@ -888,11 +898,24 @@ function note(id) {
 const a = process.argv.slice(2);
 let out;
 if (a[0] === "list") {
-  const live = liveIds();
-  const sessions = allFiles().map(summary).filter(s => s.msgs && !s.next)
-    .map(s => Object.assign(s, {live: live[s.id] || null, cwd_exists: s.cwd ? isDir(s.cwd) : null}))
-    .sort((x, y) => y.mtime - x.mtime);
-  out = {home: os.homedir(), sessions, notes: notesIndex()};
+  // Par pages, dans l'ordre des fichiers : voir cmd_list de helper.py.
+  const opts = a[1] ? JSON.parse(a[1]) : {}, live = liveIds(), files = listFiles();
+  const after = opts.after || null, count = typeof opts.count === "number" ? opts.count : null;
+  const rest = files.filter(f => !after || f[0] < after[0] || (f[0] === after[0] && f[1] < after[1]));
+  let page = count === null ? rest : rest.slice(0, count);
+  const more = page.length && count !== null && rest.length > count
+    ? [page[page.length - 1][0], page[page.length - 1][1]] : null;
+  const wanted = new Set([...(opts.ids || []), ...(after || count === 0 ? [] : Object.keys(live))]);
+  const seen = new Set(page.map(f => f[1]));
+  page = page.concat(files.filter(f => wanted.has(f[1]) && !seen.has(f[1])));
+  const sessions = [];
+  for (const [ms, id, p] of page) {
+    const s = summary(p);
+    if (s.msgs && !s.next) sessions.push(Object.assign(s, {file_ms: ms, live: live[id] || null,
+                                                           cwd_exists: s.cwd ? isDir(s.cwd) : null}));
+  }
+  sessions.sort((x, y) => y.mtime - x.mtime);
+  out = {home: os.homedir(), sessions, notes: notesIndex(), more};
 } else if (a[0] === "note") {
   out = note(a[1]);
 } else if (a[0] === "notes") {

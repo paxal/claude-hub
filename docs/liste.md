@@ -59,6 +59,17 @@ demandes) et en cours. La conversation affichée reste visible quel que soit le
 filtre. Au survol d'une ligne, l'heure laisse la place aux boutons tags, épingle
 et archive. Le pied de liste donne le nombre de conversations et d'archivées.
 
+Les conversations Claude Code se lisent par pages de 30 par hôte, les dernières
+écrites d'abord : lire toutes les transcriptions d'un hôte prend du temps
+(10 s pour 350 conversations sur un serveur). La suite se lit en arrivant en
+bas de la liste (« Chargement des conversations plus anciennes… »), ou d'elle-même
+tant que la liste tient dans la fenêtre. Sans filtre, la liste s'arrête là où elle
+cesse d'être complète : les conversations Cursor ou cloud plus anciennes viennent
+avec la page suivante, et le pied de liste dit « 30 conversations chargées ». Les
+épinglées et les conversations ouvertes dans un `claude` sont lues dès la première
+page ; la recherche dans le contenu trouve aussi celles pas encore chargées. Le
+sélecteur Ctrl+K ne propose que les conversations chargées.
+
 Le nombre de conversations à traiter (réponses non lues, plans, questions et
 autorisations en attente, sur les hôtes cochés, hors archives) s'affiche aussi
 sur l'icône de Claude Hub dans la barre des tâches. KDE le lit dans le signal D-Bus

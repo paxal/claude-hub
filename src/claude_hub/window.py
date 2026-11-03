@@ -62,6 +62,10 @@ CHAT_HINT = "Écrire à Claude…   « / » pour les commandes"
 PLAN_HINT = "Remarque sur le plan : Claude continue à planifier"  # quand un plan attend
 HOME_HINT = "Que doit faire Claude ?   « / » pour les commandes"
 SIDE_PAGES = ("plan", "file", "agents", "changes", "notes")  # pages du volet de droite
+# Conversations Claude lues par hôte à la fois (les dernières écrites d'abord) ; la suite se
+# lit en faisant défiler la liste. Sur cerberus, lire les 351 transcriptions prenait 10 s.
+LIST_PAGE = 30
+NOT_READ = object()  # list_more d'un hôte dont la liste n'a pas encore été lue
 
 
 def title_of(s):
@@ -79,6 +83,20 @@ def last_reply(items):
     """Texte de la dernière réponse de Claude dans un historique."""
     return next((it["text"] for it in reversed(items or [])
                  if it.get("role") == "assistant" and (it.get("text") or "").strip()), None)
+
+
+def first_page_merge(old, page, more, prev):
+    """(conversations Claude d'un hôte, suite de sa liste) après relecture de la première page
+    (page, et sa suite more : [ms, id] du fichier d'où reprendre, None si tout y tient). Ce
+    qui a été écrit depuis est dans la page ; celles des pages suivantes déjà lues (old)
+    restent. prev : suite d'avant, None si tout était lu, NOT_READ si rien ne l'était."""
+    if more is None:
+        return page, None
+    ids = {s["id"] for s in page}
+    kept = [s for s in old if "file_ms" in s and s["id"] not in ids and [s["file_ms"], s["id"]] < more]
+    if prev is NOT_READ:
+        return page + kept, more
+    return page + kept, None if prev is None else min(prev, more)
 
 
 def run_parallel(jobs):
@@ -110,6 +128,12 @@ class Hub(Gtk.ApplicationWindow):
         self.list_gens = {}      # hôte -> numéro du dernier chargement demandé
         self.loading = set()     # hôtes en cours de chargement
         self.list_errors = {}    # hôte -> erreurs du dernier chargement
+        # hôte -> suite de sa liste Claude ([ms, id] d'où lire la page suivante), None si
+        # tout est lu ; absent tant qu'elle n'a pas été lue
+        self.list_more = {}
+        self.more_loading = set()  # hôtes dont la page suivante est en cours de lecture
+        self.more_failed = set()   # hôtes dont la page suivante n'a pas pu être lue (jusqu'au rafraîchissement)
+        self.more_check = 0        # schedule_more_check en attente
         self.current = None      # dict de la session affichée
         self.size = 0            # taille du fichier à la dernière lecture
         # Éléments de l'historique affichés dans le fil : [(élément, enfant du fil qui le
@@ -316,8 +340,20 @@ class Hub(Gtk.ApplicationWindow):
         menu_click = Gtk.GestureClick(button=3)
         menu_click.connect("pressed", self.on_row_menu)
         self.listbox.add_controller(menu_click)
-        self.list_scroll = Gtk.ScrolledWindow(child=self.listbox, vexpand=True,
+        # sous la liste, pendant la lecture de la page suivante (load_more)
+        self.more_row = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER, visible=False, css_classes=["list-more"])
+        self.more_row.append(Gtk.Image(icon_name="claude-hub-busy-symbolic"))
+        self.more_row.append(Gtk.Label(label="Chargement des conversations plus anciennes…"))
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        list_box.append(self.listbox)
+        list_box.append(self.more_row)
+        self.list_scroll = Gtk.ScrolledWindow(child=list_box, vexpand=True,
                                               hscrollbar_policy=Gtk.PolicyType.NEVER)
+        adj = self.list_scroll.get_vadjustment()
+        self.listbox.set_adjustment(adj)  # Page préc./suiv. : la liste n'est plus l'enfant direct du défilement
+        # bas de la liste en vue (défilement, liste plus courte, fenêtre agrandie) : page suivante
+        for signal in ("changed", "value-changed"):
+            adj.connect(signal, lambda _a: self.maybe_load_more())
         side.append(self.list_scroll)
         footer = Gtk.Box(css_classes=["list-footer"])
         self.list_status = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
@@ -713,6 +749,8 @@ class Hub(Gtk.ApplicationWindow):
             if h not in hosts:
                 del self.host_sessions[h]
                 self.list_errors.pop(h, None)
+                self.list_more.pop(h, None)
+                self.more_failed.discard(h)
                 self.loading.discard(h)
         if added is None and self.new_host not in hosts:  # au démarrage
             first = next((h for h in hosts if h in self.new_hosts), "local")
@@ -757,23 +795,40 @@ class Hub(Gtk.ApplicationWindow):
             return self.list_status.set_text("")
         self.list_status.set_text("Recherche dans les conversations…")
         with_cursor, with_claude = self.show_cursor.get_active(), self.show_claude.get_active()
+        loaded = {s["id"] for s in self.sessions}
+
+        def search_host(h):
+            """Résultats de la recherche sur h, et les conversations trouvées pas encore lues
+            (plus bas que les pages chargées)."""
+            hits = run_helper(h, "search", q, 200)
+            missing = [sid for sid in hits if sid not in loaded]
+            found = (run_helper(h, "list", json.dumps({"count": 0, "ids": missing}))["sessions"]
+                     if missing else [])
+            return hits, found
 
         def fetch():
-            jobs = {h: (lambda h=h: run_helper(h, "search", q, 200)) for h in hosts if with_claude}
+            jobs = {h: (lambda h=h: search_host(h)) for h in hosts if with_claude}
             if with_cursor:
-                jobs["Cursor"] = lambda: cursor_search(q)
-            hits, errors = {}, []
+                jobs["Cursor"] = lambda: (cursor_search(q), [])
+            hits, errors, found = {}, [], {}
             for name, (res, err) in run_parallel(jobs).items():
                 if err:
                     errors.append(f"{name} : {err}")
                 else:
-                    hits.update(res)
-            return hits, errors
+                    hits.update(res[0])
+                    found[name] = res[1]
+            return hits, errors, found
 
         def done(out):
-            hits, errors = out
+            hits, errors, found = out
             if gen != self.search_gen:
                 return  # requête dépassée
+            shown = self.shown_hosts()
+            for h, sessions in found.items():
+                if sessions and h in shown:
+                    self.add_sessions(h, sessions)
+            if any(found.values()):
+                self.merge_sessions()
             show_archived = self.show_archived.get_active()
             known = {s["id"] for s in self.sessions if show_archived or not self.is_archived(s)}
             self.content_hits = {k: v for k, v in hits.items() if k in known}
@@ -789,6 +844,8 @@ class Hub(Gtk.ApplicationWindow):
         hosts = [h for h in self.shown_hosts() if hosts is None or h in hosts]
         all_hosts = list(self.hosts)
         with_claude, with_cursor = self.show_claude.get_active(), self.show_cursor.get_active()
+        # première page ; les épinglées en plus, où qu'elles soient (en tête de liste)
+        first_page = json.dumps({"count": LIST_PAGE, "ids": sorted(self.settings["pinned"])})
 
         def notes(host, listed):
             """Index des notes de l'hôte : donné par `list`, sinon demandé à part (pas
@@ -817,7 +874,7 @@ class Hub(Gtk.ApplicationWindow):
             listed = None
             if with_claude:
                 try:
-                    res = listed = run_helper(host, "list")
+                    res = listed = run_helper(host, "list", first_page)
                 except Exception as e:  # noqa: BLE001 — Cursor reste lisible hors ligne
                     errors.append(f"{host} : {e}")
             if with_cursor:
@@ -840,7 +897,14 @@ class Hub(Gtk.ApplicationWindow):
             self.list_errors[host] = errors
             if res["home"]:
                 self.remote_home[host] = res["home"]
-            listed = res["sessions"] + cursor
+            page = res["sessions"]
+            if "more" in res:  # liste Claude de l'hôte : les pages suivantes déjà lues restent
+                page, self.list_more[host] = first_page_merge(
+                    self.host_sessions.get(host, []), page, res["more"], self.list_more.get(host, NOT_READ))
+                self.more_failed.discard(host)
+            else:  # cloud, Claude décoché, ou hôte injoignable
+                self.list_more.pop(host, None)
+            listed = page + cursor
             for s in listed:
                 s["host"] = host
             self.host_sessions[host] = listed
@@ -869,6 +933,95 @@ class Hub(Gtk.ApplicationWindow):
         for s in self.sessions:  # pour repérer la fin d'une réponse au prochain relevé
             s["was_busy"] = s["id"] in busy
 
+    def add_sessions(self, host, sessions):
+        """Ajoute à la liste de l'hôte des conversations lues à part (page suivante, trouvées
+        par une recherche) ; remplace celles qui y étaient déjà."""
+        ids = {s["id"] for s in sessions}
+        for s in sessions:
+            s["host"] = host
+        self.host_sessions[host] = [s for s in self.host_sessions.get(host, []) if s["id"] not in ids] + sessions
+        self.tag_store.refresh(host, sessions)
+
+    def more_hosts(self):
+        """Hôtes cochés dont la liste Claude a encore des pages à lire (hors échec de lecture)."""
+        return [h for h in self.shown_hosts() if self.list_more.get(h) is not None and h not in self.more_failed]
+
+    def list_edge(self):
+        """Date (s) au-dessus de laquelle la liste est complète : la plus récente des suites
+        à lire ; None si tout est lu."""
+        hosts = self.more_hosts()
+        return max(self.list_more[h][0] for h in hosts) / 1000 if hosts else None
+
+    def below_edge(self, s, edge):
+        """s attend sa page : sans filtre, la liste s'arrête à edge (list_edge), là où elle cesse
+        d'être complète ; plus bas manquent des conversations Claude pas encore lues, et le reste
+        (Cursor, cloud) viendra avec elles. Les épinglées, celles qui tournent et celle affichée
+        restent."""
+        sid = s["id"]
+        return (edge is not None and s.get("mtime", 0) < edge and not s.get("live")
+                and sid not in self.settings["pinned"] and sid not in self.unsent and sid not in self.streams
+                and not (self.current and self.current["id"] == sid))
+
+    def maybe_load_more(self):
+        """Moins d'un écran sous le bas de la liste : lit la page suivante de l'hôte qui arrête
+        la liste (list_edge). Pas dans « À traiter » ni « En cours » (des conversations
+        récentes), ni dans la vue par tag (elle montre déjà toutes les conversations taguées)."""
+        adj = self.list_scroll.get_vadjustment()
+        hosts = self.more_hosts()
+        if (not hosts or self.segment != "all" or parse_query(self.search.get_text())[0]
+                or not adj.get_page_size()
+                or adj.get_upper() - adj.get_value() - adj.get_page_size() > adj.get_page_size()):
+            return
+        host = max(hosts, key=lambda h: self.list_more[h])
+        if host not in self.loading and host not in self.more_loading:
+            self.load_more(host)
+
+    def load_more(self, host):
+        """Lit la page suivante de la liste Claude de l'hôte."""
+        after = self.list_more[host]
+        self.more_loading.add(host)
+        self.update_more_row()
+
+        def done(res):
+            self.more_loading.discard(host)
+            self.update_more_row()
+            if host not in self.shown_hosts() or self.list_more.get(host) != after:
+                self.maybe_load_more()  # liste relue ou décochée entre-temps : reprendre d'où elle en est
+                return
+            self.add_sessions(host, res["sessions"])
+            self.list_more[host] = res["more"]
+            self.merge_sessions()
+            self.fill_list()
+            self.show_list_status()
+
+        def fail(e):
+            self.more_loading.discard(host)
+            self.more_failed.add(host)  # pas de nouvel essai avant le prochain rafraîchissement
+            self.list_errors.setdefault(host, []).append(f"{host} : {e}")
+            self.update_more_row()
+            self.fill_list()  # l'hôte n'arrête plus la liste (list_edge) : la suite des autres s'affiche
+            self.show_list_status()
+
+        in_thread(lambda: run_helper(host, "list", json.dumps({"count": LIST_PAGE, "after": after})),
+                  done, fail)
+
+    def schedule_more_check(self):
+        """maybe_load_more une fois la liste remise en page (liste remplie, filtre changé) : le
+        signal « changed » du défilement ne vient pas si elle tient dans la fenêtre avant comme
+        après (beaucoup d'archivées, filtre)."""
+        if not self.more_check:
+            self.more_check = GLib.timeout_add(200, self.run_more_check)
+
+    def run_more_check(self):
+        self.more_check = 0
+        self.maybe_load_more()
+        return False
+
+    def update_more_row(self):
+        """« Chargement des conversations plus anciennes… » sous la liste, le temps de lire la
+        page suivante."""
+        self.more_row.set_visible(any(h in self.more_loading for h in self.shown_hosts()))
+
     def show_list_status(self):
         """Hôtes encore en chargement, sinon erreurs, sinon le décompte."""
         errors = [e for h in self.shown_hosts() for e in self.list_errors.get(h, [])]
@@ -896,12 +1049,15 @@ class Hub(Gtk.ApplicationWindow):
             entries += [(h, s) for h, s in self.tag_store.tagged()
                         if s["id"] not in seen and h in self.hosts]
             entries.sort(key=lambda e: -e[1].get("mtime", 0))
+        edge = None if tags_f or dirs_f or q else self.list_edge()
         self.shown = 0
         for host, s in entries:
             if not self.source_shown(s):
                 continue
             archived = self.is_archived(s)
             if archived and not show_archived:
+                continue
+            if self.below_edge(s, edge):
                 continue
             tags = self.tag_store.tags(s["id"])
             if not all(tag_matches(tags, f) for f in tags_f):
@@ -947,6 +1103,7 @@ class Hub(Gtk.ApplicationWindow):
             if s["id"] == current:
                 self.listbox.select_row(row)
         self.schedule_states()
+        self.schedule_more_check()
 
     def day_header(self, row, before):
         """Séparateur « Épinglées » en tête, puis « Aujourd'hui », « Hier », « Samedi 31 octobre »
@@ -975,6 +1132,7 @@ class Hub(Gtk.ApplicationWindow):
         if btn.get_active() and self.segment != key:
             self.segment = key
             self.listbox.invalidate_filter()
+            self.schedule_more_check()
 
     def paint_row(self, row, status):
         if row.status != status:
@@ -1226,14 +1384,19 @@ class Hub(Gtk.ApplicationWindow):
         self.schedule_states()
 
     def update_list_status(self):
-        """« 408 conversations · 79 archivées » ; le nombre d'archivées aussi dans le menu des hôtes."""
-        shown = [s for s in self.sessions if self.source_shown(s) and s["id"] not in self.unsent]
+        """« 408 conversations · 79 archivées » (« 30 conversations chargées » tant que la suite
+        reste à lire) ; le nombre d'archivées aussi dans le menu des hôtes."""
+        edge = self.list_edge()  # comme la liste : sans celles qui attendent leur page
+        shown = [s for s in self.sessions if self.source_shown(s) and s["id"] not in self.unsent
+                 and not self.below_edge(s, edge)]
         n_archived = sum(1 for s in shown if self.is_archived(s))
         n = len(shown) - (0 if self.show_archived.get_active() else n_archived)
         self.archived_count.set_text(str(n_archived) if n_archived else "")
         if not (self.show_claude.get_active() or self.show_cursor.get_active()):
             return self.list_status.set_text("Aucune source cochée : Claude Code ou Cursor, dans le menu des hôtes.")
         text = f"{n} conversation{'s' * (n > 1)}"
+        if edge is not None:
+            text += f" chargée{'s' * (n > 1)}"
         if n_archived:
             text += f" · {n_archived} archivée{'s' * (n_archived > 1)}"
         self.list_status.set_text(text)
@@ -1293,10 +1456,14 @@ class Hub(Gtk.ApplicationWindow):
                     return "cursor" in polled
                 return s.get("host") in polled
 
+            edge, entered = self.list_edge(), False
             for s in list(self.sessions):  # touch() retrie la liste
                 if not fresh(s):
                     continue
+                held = edge is not None and s["id"] not in self.rows and self.below_edge(s, edge)
                 was, s["live"] = s.get("live"), live.get(s["id"])
+                # sous le bas de la liste (list_edge), elle attendait sa page : un claude la reprend
+                entered = entered or (held and not self.below_edge(s, edge))
                 self.set_live_since(s, live.get(s["id"] + ":since"))
                 if s["live"] not in ACTION_STATES and s["id"] not in self.streams:
                     self.drop_remote_requests(s)
@@ -1313,6 +1480,8 @@ class Hub(Gtk.ApplicationWindow):
                 if s["id"] in self.state_rows:
                     # un claude -p lancé d'ici tourne aussi en arrière-plan
                     self.paint_row(self.state_rows[s["id"]], self.list_state(s["id"], s["live"]))
+            if entered:
+                self.fill_list()
             self.follow_orphans(live, polled)
             today = local_date(time.time())
             if today != self.list_day:  # minuit : « Aujourd'hui » devient « Hier »
@@ -1356,12 +1525,16 @@ class Hub(Gtk.ApplicationWindow):
             sessions.append(row.session)  # conversation d'un autre hôte (vue par tag)
         if not any(s.get("mtime", 0) < when for s in sessions):
             return
+        edge = self.list_edge() if row is None else None
+        waiting = edge is not None and any(self.below_edge(s, edge) for s in sessions)
         for s in sessions:
             s["mtime"] = max(s.get("mtime", 0), when)
         self.sessions.sort(key=lambda s: -s["mtime"])
         if row:
             row.update_time()
             row.changed()  # le tri de la liste la replace
+        elif waiting:
+            self.fill_list()  # elle attendait sa page sous le bas de la liste : elle y entre
 
     # -- claude -p lancés d'ici avant un redémarrage (orphelins) --
     def mark_launched(self, sid, host):

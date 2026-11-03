@@ -235,17 +235,44 @@ def find(sid):
         return p
     return None
 
-def cmd_list():
-    live = live_ids()
-    res = []
+def list_files():
+    """[(date du fichier en ms, id, chemin)] des transcriptions, la dernière écrite en tête.
+    Des ms entières : python et node doivent trouver les mêmes dates."""
+    out = []
     for p in (C / "projects").glob("*/*.jsonl"):
+        try:
+            out.append((p.stat().st_mtime_ns // 1000000, p.stem, p))
+        except OSError:
+            continue  # disparue entre-temps
+    out.sort(key=lambda f: (f[0], f[1]), reverse=True)
+    return out
+
+def cmd_list(opts):
+    """Conversations de l'hôte, par pages, dans l'ordre des fichiers (dernier écrit en tête) :
+    lire une transcription entière coûte, un stat presque rien. "count" : taille de la page
+    (toutes sans lui) ; "after" : la page commence après ce fichier ([ms, id], le "more" de
+    la page précédente, null après la dernière) ; "ids" : à joindre où qu'elles soient
+    (épinglées, trouvées par une recherche), comme les conversations ouvertes dans un claude
+    sur la première page ("count" à 0 : seulement "ids")."""
+    live = live_ids()
+    files = list_files()
+    after, count = opts.get("after"), opts.get("count")
+    rest = [f for f in files if after is None or [f[0], f[1]] < after]
+    page = rest if count is None else rest[:count]
+    more = [page[-1][0], page[-1][1]] if page and count is not None and len(rest) > count else None
+    wanted = set(opts.get("ids") or []) | (set(live) if after is None and count != 0 else set())
+    seen = {f[1] for f in page}
+    page = page + [f for f in files if f[1] in wanted and f[1] not in seen]
+    res = []
+    for ms, sid, p in page:
         s = summary(p)
         if s["msgs"] and not s["next"]:
-            s["live"] = live.get(s["id"])
+            s["file_ms"] = ms
+            s["live"] = live.get(sid)
             s["cwd_exists"] = os.path.isdir(s["cwd"]) if s["cwd"] else None
             res.append(s)
     res.sort(key=lambda s: -s["mtime"])
-    print(json.dumps({"home": str(Path.home()), "sessions": res, "notes": notes_index()}))
+    print(json.dumps({"home": str(Path.home()), "sessions": res, "notes": notes_index(), "more": more}))
 
 # Notes de claude-hub : ~/.config/claude-hub/notes/<id>.md (pas dans ~/.claude).
 NOTE_EXCERPT = 1000
@@ -1177,7 +1204,7 @@ def cmd_read(path):
     print(json.dumps(res))
 
 a = sys.argv[1:]
-{"list": lambda: cmd_list(), "stat": lambda: cmd_stat(a[1]),
+{"list": lambda: cmd_list(json.loads(a[1]) if len(a) > 1 else {}),"stat": lambda: cmd_stat(a[1]),
  "exists": lambda: print(json.dumps({d: os.path.isdir(d) for d in json.loads(a[1])})),
  "search": lambda: cmd_search(a[1], int(a[2])),
  "live": lambda: cmd_live(),
