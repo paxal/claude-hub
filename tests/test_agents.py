@@ -29,7 +29,21 @@ class TestAgents(unittest.TestCase):
         proj = Path(cls.home, ".claude/projects/-tmp-x")
         sub = proj / SID / "subagents"
         sub.mkdir(parents=True)
-        (proj / f"{SID}.jsonl").write_text(msg("user", 0, "bonjour"))
+        # lancement du workflow wf_1 (résultat de l'outil Workflow), puis celui d'un workflow
+        # sans agents, et une ligne qui cite « local_workflow » sans en être un
+        launched = {"status": "async_launched", "taskId": "t1", "taskType": "local_workflow",
+                    "workflowName": "review-changes", "runId": "wf_1", "summary": "Relit puis vérifie"}
+        (proj / f"{SID}.jsonl").write_text(
+            msg("user", 0, "bonjour")
+            + line(type="user", isSidechain=False, timestamp="2026-10-07T09:00:10.000Z",
+                   toolUseResult=launched,
+                   message={"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_wf",
+                                                         "content": "Workflow launched"}]})
+            + line(type="user", isSidechain=False, toolUseResult=dict(launched, runId="wf_2", summary=""),
+                   message={"role": "user", "content": "x"})
+            + line(type="user", isSidechain=False, toolUseResult=dict(launched, runId="wf_1", workflowName="bis"),
+                   message={"role": "user", "content": "doublon"})
+            + line(type="assistant", message={"role": "assistant", "content": "local_workflow"}))
         # parent : a lancé un sous-agent puis a rendu la main
         (sub / "agent-a1.jsonl").write_text(
             msg("user", 1, "consigne")
@@ -99,6 +113,26 @@ class TestAgents(unittest.TestCase):
         self.assertEqual((a2["parent"], a2["depth"], a2["done"]), ("a1", 2, False))
         self.assertEqual(a2["last"], {"role": "tool", "name": "Bash", "input": {"command": "grep -r x"}})
         self.assertAlmostEqual(a2["end"] - a2["start"], 2.0)
+        # agent de workflow : son run (dossier) et sa phase ; les autres n'en ont pas
+        self.assertEqual((a4["workflow"], a4["phase"], a4["tool"]), ("wf_1", "▸ review #1", None))
+        self.assertEqual((a1["workflow"], a1["phase"]), (None, None))
+
+    def test_workflows(self):
+        """Nom, résumé et appel de lancement de chaque workflow, dans l'ordre, une fois chacun."""
+        res = self.run_helper("python3", "helper.py", "agents", SID)
+        self.assertEqual(res["workflow_runs"], [
+            {"id": "wf_1", "name": "review-changes", "summary": "Relit puis vérifie", "tool": "toolu_wf",
+             "start": 1791363610.0},
+            {"id": "wf_2", "name": "review-changes", "summary": None, "tool": None, "start": None}])
+
+    def test_agent_de_workflow(self):
+        """Transcription d'un agent sans appel d'outil (agent de workflow) : par son id."""
+        for interp, script in (("python3", "helper.py"), ("node", "helper.js")):
+            res = self.run_helper(interp, script, "agent", SID, "a4", "50")
+            self.assertTrue(res["found"], interp)
+            self.assertEqual(res["meta"]["workflowPhase"], "▸ review #1")
+            self.assertTrue(self.run_helper(interp, script, "agent", SID, "toolu_p", "50")["found"])
+            self.assertFalse(self.run_helper(interp, script, "agent", SID, "a9", "50")["found"])
 
     def test_python_et_node(self):
         for cmd in (("agents", SID), ("history", SID, "50")):
@@ -108,11 +142,12 @@ class TestAgents(unittest.TestCase):
     def test_historique(self):
         res = self.run_helper("python3", "helper.py", "history", SID, "50")
         self.assertEqual([a["id"] for a in res["agents"]], ["a1", "a2", "a3", "a4"])
+        self.assertEqual([w["id"] for w in res["workflow_runs"]], ["wf_1", "wf_2"])
 
     def test_inconnue(self):
         for interp, script in (("python3", "helper.py"), ("node", "helper.js")):
             self.assertEqual(self.run_helper(interp, script, "agents", "nope"),
-                             {"live": None, "agents": []})
+                             {"live": None, "agents": [], "workflow_runs": []})
 
 
 class TestVolet(unittest.TestCase):
@@ -121,6 +156,41 @@ class TestVolet(unittest.TestCase):
         agents = [{"id": "a", "parent": None}, {"id": "b", "parent": None},
                   {"id": "c", "parent": "a"}, {"id": "d", "parent": "c"}, {"id": "e", "parent": "x"}]
         self.assertEqual([a["id"] for a in tree(agents)], ["a", "c", "d", "b", "e"])
+
+    def test_workflows(self):
+        """Un groupe par workflow à la place de son premier agent, ses agents par phase."""
+        from claude_hub.agentsview import layout
+        agents = [
+            {"id": "a", "start": 1},
+            {"id": "w1", "start": 2, "workflow": "wf_1", "phase": "▸ Review"},
+            {"id": "b", "start": 3},
+            {"id": "w2", "start": 4, "workflow": "wf_1", "phase": "Verify"},
+            {"id": "c", "start": 5, "parent": "a"},
+            {"id": "w3", "start": 6, "workflow": "wf_1", "phase": "▸ Review"},
+            {"id": "n", "start": 7, "parent": "w1"},  # lancé par un agent du workflow, sans phase
+            {"id": "x1", "start": 8, "workflow": "wf_2", "phase": None},
+        ]
+        runs = [{"id": "wf_1", "name": "review-changes", "summary": "Relit puis vérifie"}]
+        out = layout(agents, runs)
+        self.assertEqual([(k, x["id"]) for k, x in out],
+                         [("agent", "a"), ("agent", "c"), ("workflow", "wf_1"), ("agent", "b"),
+                          ("workflow", "wf_2")])
+        w = out[2][1]
+        self.assertEqual((w["name"], w["summary"]), ("review-changes", "Relit puis vérifie"))
+        self.assertEqual([(p, [a["id"] for a in m]) for p, m in w["phases"]],
+                         [("Review", ["w1", "n", "w3"]), ("Verify", ["w2"])])
+        x = out[4][1]
+        self.assertEqual((x["name"], x["summary"], [p for p, _ in x["phases"]]), ("wf_2", None, [""]))
+        self.assertEqual(layout([], runs), [])
+
+    def test_etat_workflow(self):
+        from claude_hub.agentsview import phase_label, workflow_state
+        self.assertEqual(workflow_state(["done", "running"]), "running")
+        self.assertEqual(workflow_state(["done", "waiting"]), "running")
+        self.assertEqual(workflow_state(["done", "done"]), "done")
+        self.assertEqual(workflow_state(["done", "stopped", "idle"]), "stopped")
+        self.assertEqual(workflow_state(["done", "idle"]), "idle")
+        self.assertEqual((phase_label("▸ review_style  #2"), phase_label(None)), ("review_style #2", ""))
 
     def test_etat(self):
         from claude_hub.agentsview import agent_state, duration

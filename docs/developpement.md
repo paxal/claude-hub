@@ -70,7 +70,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `remotecontrol.py` | conversation ouverte dans un terminal sans Remote Control : pastille de l'en-tête et son explication, carte du fil quand Claude attend une réponse dans le terminal |
 | `planview.py` | plan de Claude dans le volet latéral, avec ses actions |
 | `subagents.py` | blocs des sous-agents (suivi en direct, transcription à la demande) |
-| `agentsview.py` | volet « Sous-agents » : arbre des sous-agents, état et transcription suivie |
+| `agentsview.py` | volet « Sous-agents » : arbre des sous-agents, agents des workflows groupés par workflow et par phase, état et transcription suivie |
 | `toolcall.py` | appels d'outils dépliables sur leur sortie (en direct, ou lue à la demande), suites repliées en « N étapes » |
 | `todos.py` | liste de tâches de Claude (TodoWrite, TaskCreate, TaskUpdate) et son volet repliable, dans la liste d'activité |
 | `activity.py` | ce qui tourne et ce qui attend, au-dessus de la saisie : Claude (étape, durée, « Arrêter ») ou la demande en attente, sous-agents, shells et monitors, tâches, messages en file ; lignes mises à jour sur place d'après leur clé |
