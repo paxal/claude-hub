@@ -480,8 +480,10 @@ def plan_decision_text(decision):
 
 
 def lost_tip(decision):
+    """Info-bulle d'une demande perdue. Entrée fermée : « AbortError: Stream closed », ou
+    « …Tool permission stream closed before response received » (claude 2.1.316)."""
     text = str(decision.get("text") or "")
-    why = ("claude-hub a été fermé ou relancé pendant sa réponse" if "Stream closed" in text
+    why = ("claude-hub a été fermé ou relancé pendant sa réponse" if "stream closed" in text.lower()
            else text)
     return f"Claude n'a pas pu demander la validation du plan : {why}."
 

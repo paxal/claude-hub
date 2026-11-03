@@ -139,8 +139,10 @@ Dans le `.jsonl` de la conversation (rechargement, hôtes distants) :
   true}` pour un résultat `[Request interrupted by user…]` ;
 - **demande perdue** (vu le 3 novembre 2026, claude 2.1.316) : si l'entrée de
   claude se ferme pendant sa réponse (claude-hub fermé ou relancé, ssh coupé),
-  claude continue, mais sa demande échoue aussitôt. Le `tool_result` est en
-  erreur : « Tool permission request failed: AbortError: Stream closed ».
+  claude continue, mais sa demande échoue. Le `tool_result` est en erreur :
+  « Tool permission request failed: AbortError: Stream closed » (entrée déjà
+  fermée quand la demande part), ou « …AbortError: Tool permission stream
+  closed before response received » (fermée pendant qu'elle attend).
   claude termine alors son tour sans validation. claude-hub l'affiche
   « ⚠ Demande perdue », pas « ✗ Refusé » ;
 - **message reçu pendant une demande** (même session) : un message écrit sur

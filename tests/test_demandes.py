@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from claude_hub.permissions import (  # noqa: E402
     allow, control_response, decision_of, deny, plan_allow, plan_deny, session_only)
-from claude_hub.render import plan_decision_text, plan_roles, request_lost  # noqa: E402
+from claude_hub.render import lost_tip, plan_decision_text, plan_roles, request_lost  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
 SID = "11111111-2222-3333-4444-555555555555"
@@ -131,6 +131,13 @@ class TestReponses(unittest.TestCase):
         self.assertTrue(request_lost(d))
         self.assertEqual(plan_decision_text(d), "⚠ Demande perdue")
         self.assertFalse(request_lost({"ok": False, "text": "Ajoute des tests"}))
+        # autre formulation, quand claude-hub se ferme pendant que la demande attend
+        d = {"ok": False, "text": "Tool permission request failed: AbortError: Tool permission "
+                                  "stream closed before response received"}
+        self.assertEqual(plan_decision_text(d), "⚠ Demande perdue")
+        self.assertIn("claude-hub a été fermé ou relancé", lost_tip(d))
+        self.assertIn("claude-hub a été fermé ou relancé", lost_tip(
+            {"ok": False, "text": "Tool permission request failed: AbortError: Stream closed"}))
         self.assertFalse(request_lost({"ok": True, "text": ""}))
 
 
