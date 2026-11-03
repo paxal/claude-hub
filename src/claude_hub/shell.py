@@ -7,7 +7,7 @@ la commande et sa sortie partent avec le message suivant, dans les balises que
 Claude Code enregistre pour elles (<bash-input>, <bash-stdout>, <bash-stderr>).
 
 Aussi : textes des shells et des monitors (outil Monitor) qui tournent en arrière-plan,
-pour la liste d'activité à côté de la saisie (activity.py).
+pour la liste d'activité au-dessus de la saisie (activity.py).
 """
 import os
 import re
@@ -67,7 +67,7 @@ def background_counts(shells, one="1"):
 
 
 def waiting_text(shells):
-    """Ligne de Claude, à côté de la saisie, quand il a fini son tour et attend ses tâches
+    """Ligne de Claude, au-dessus de la saisie, quand il a fini son tour et attend ses tâches
     de fond."""
     return f"Claude attend {background_counts(shells, 'un')}"
 

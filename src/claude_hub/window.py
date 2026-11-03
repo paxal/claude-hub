@@ -37,8 +37,8 @@ from .toolcall import ToolCall, ToolRun
 from .feedtime import Timed, day_separator, last_day, unwrap
 from .feedsync import changed_from
 from .todos import TodoList, TodoPanel, created_id
-from .activity import (MAX_HEIGHT as ACTIVITY_MAX_HEIGHT, SIDE_WIDTH as ACTIVITY_WIDTH, ActivityPanel,
-                       ActivitySplit, agent_specs, claude_spec, queued_spec, request_spec, shell_spec)
+from .activity import (MAX_HEIGHT as ACTIVITY_MAX_HEIGHT, ActivityPanel,
+                       agent_specs, claude_spec, queued_spec, request_spec, shell_spec)
 from .rename import RenamePopover, can_rename, rename_session
 from .shell import ShellBlock, mark_monitor, monitor_started, shell_argv, shell_command, waiting_text
 from .commands import CommandPopover, fetch_commands, match_commands, typed_command
@@ -372,7 +372,7 @@ class Hub(Gtk.ApplicationWindow):
         top = Gtk.Box(spacing=10)
         self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["chat-title"])
         top.append(self.title)
-        # (ce qui tourne et ce qui attend : à côté de la saisie, voir activity.py)
+        # (ce qui tourne et ce qui attend : au-dessus de la saisie, voir activity.py)
         top.append(Gtk.Box(hexpand=True))
         buttons = Gtk.Box(spacing=2, valign=Gtk.Align.CENTER)
         self.agents_btn = Gtk.Button(visible=False, css_classes=["flat"])
@@ -448,11 +448,10 @@ class Hub(Gtk.ApplicationWindow):
         vadj.connect("changed", self.on_scroll_resized)
         vadj.connect("value-changed", self.on_scroll_moved)
 
-        # Sous le fil, dans la même colonne : copie en préparation, puis la saisie, avec à
-        # côté (au-dessus quand la place manque) ce qui tourne et ce qui attend.
+        # Sous le fil, dans la même colonne : copie en préparation, puis la saisie, avec
+        # au-dessus du texte ce qui tourne et ce qui attend.
         bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        chat.append(Clamp(bottom, 780, extra=self.activity_extra, hexpand=True, margin_start=20, margin_end=20,
-                          margin_bottom=14))
+        chat.append(Clamp(bottom, 780, hexpand=True, margin_start=20, margin_end=20, margin_bottom=14))
 
         # Copie de la conversation à partir d'un message (bouton au survol des messages).
         self.fork_bar = Gtk.Box(spacing=6, css_classes=["fork-bar"], visible=False)
@@ -465,8 +464,8 @@ class Hub(Gtk.ApplicationWindow):
         self.fork_bar.append(cancel)
         bottom.append(self.fork_bar)
 
-        # Un seul cadre : la saisie (main), et la liste de ce qui tourne et de ce qui
-        # attend (Claude, sous-agents, shells et monitors, tâches, messages en file).
+        # Un seul cadre : la liste de ce qui tourne et de ce qui attend (Claude,
+        # sous-agents, shells et monitors, tâches, messages en file), puis la saisie (main).
         self.composer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["composer"],
                                 overflow=Gtk.Overflow.HIDDEN)
         bottom.append(self.composer)
@@ -477,7 +476,8 @@ class Hub(Gtk.ApplicationWindow):
             child=self.activity_panel, visible=False, css_classes=["activity-side"],
             hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
             max_content_height=ACTIVITY_MAX_HEIGHT)
-        self.composer.append(ActivitySplit(main, self.activity_side))
+        self.composer.append(self.activity_side)
+        self.composer.append(main)
 
         # Accueil : hôte et dossier de la nouvelle conversation.
         self.new_line = Gtk.Box(spacing=6, css_classes=["composer-new"], visible=False)
@@ -515,7 +515,6 @@ class Hub(Gtk.ApplicationWindow):
                                           max_content_height=220, propagate_natural_height=True,
                                           hscrollbar_policy=Gtk.PolicyType.NEVER)
         field, self.placeholder = with_placeholder(input_scroll, self.input, CHAT_HINT)
-        field.set_vexpand(True)  # côte à côte avec une liste plus haute : le champ s'étire
         main.append(field)
         # Complétion des commandes « / » : liste par (hôte, dossier), demandée à claude.
         self.commands = {}  # (hôte, dossier) -> [commande] | "loading" | Exception
@@ -1801,14 +1800,8 @@ class Hub(Gtk.ApplicationWindow):
         self.todo_panel.show(todos)
         self.show_activity_side()
 
-    def activity_extra(self):
-        """Largeur ajoutée à droite de la saisie pour la liste d'activité, quand elle est
-        affichée : la saisie garde sa largeur si la fenêtre a la place (Clamp)."""
-        side = getattr(self, "activity_side", None)
-        return ACTIVITY_WIDTH if side is not None and side.get_visible() else 0
-
     def show_activity_side(self):
-        """La liste d'activité n'apparaît à côté de la saisie que si elle a des lignes."""
+        """La liste d'activité n'apparaît au-dessus de la saisie que si elle a des lignes."""
         shown = self.activity_panel.has_content()
         if self.activity_side.get_visible() != shown:
             self.activity_side.set_visible(shown)
@@ -2232,14 +2225,14 @@ class Hub(Gtk.ApplicationWindow):
 
     def step(self, s, text, detail=None):
         """Étape en cours de la réponse de s (claude -p lancé d'ici), avec son heure de début,
-        affichée à côté de la saisie si s est la conversation affichée."""
+        affichée au-dessus de la saisie si s est la conversation affichée."""
         if (s.get("step") or (None, None))[:2] != (text, detail):
             s["step"] = (text, detail, time.monotonic())
         if self.current and self.current["id"] == s["id"]:
             self.update_activity()
 
     def update_activity(self):
-        """Ce qui tourne et ce qui attend, à côté de la saisie (activity.py) : Claude au
+        """Ce qui tourne et ce qui attend, au-dessus de la saisie (activity.py) : Claude au
         travail (ou la demande qui attend une réponse), ses sous-agents, ses shells et
         monitors en arrière-plan. Les tâches et la file ont leurs propres mises à jour."""
         s = self.current
@@ -3613,11 +3606,11 @@ class Hub(Gtk.ApplicationWindow):
         alive = self.agents_alive(s)
         running = sum(agent_state(a, alive) == "running" for a in agents)
         self.agents_btn.set_visible(bool(agents))
-        # ceux qui travaillent sont listés à côté de la saisie : ici, le total
+        # ceux qui travaillent sont listés au-dessus de la saisie : ici, le total
         self.agents_count.set_text(f"{len(agents)}")
         self.agents_btn.set_tooltip_text(f"Sous-agents de cette conversation ({len(agents)}"
                                          + (f", dont {running} au travail)" if running else ")"))
-        self.update_activity()  # lignes des sous-agents à côté de la saisie
+        self.update_activity()  # lignes des sous-agents au-dessus de la saisie
         if self.has_agents_files(s):
             host, sid = s["host"], s["id"]
             self.agents_panel.set_session(

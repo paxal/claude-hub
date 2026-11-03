@@ -53,7 +53,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `cursor.py` | conversations Cursor (base `state.vscdb`, Linux ou macOS ; recherche) |
 | `cloud.py` | sessions claude.ai/code et agents cloud Cursor ; jeton lu dans `~/.claude` ou le trousseau macOS |
 | `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages, ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
-| `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`, qui peut s'élargir à droite pour la liste d'activité), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie, gestionnaire de signal qui ne retient pas son widget (`weak_handler`) |
+| `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie, gestionnaire de signal qui ne retient pas son widget (`weak_handler`) |
 | `listrow.py` | lignes de la liste (icône d'état, heure, boutons du survol), séparateurs de jour |
 | `feedtime.py` | heure des éléments du fil (colonne à droite) et séparateurs de jour du fil |
 | `feedsync.py` | relecture de l'historique : premier élément du fil à refaire, pour n'ajouter que le nouveau au lieu de tout reconstruire |
@@ -73,7 +73,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `agentsview.py` | volet « Sous-agents » : arbre des sous-agents, état et transcription suivie |
 | `toolcall.py` | appels d'outils dépliables sur leur sortie (en direct, ou lue à la demande), suites repliées en « N étapes » |
 | `todos.py` | liste de tâches de Claude (TodoWrite, TaskCreate, TaskUpdate) et son volet repliable, dans la liste d'activité |
-| `activity.py` | ce qui tourne et ce qui attend, à côté de la saisie : Claude (étape, durée, « Arrêter ») ou la demande en attente, sous-agents, shells et monitors, tâches, messages en file ; lignes mises à jour sur place d'après leur clé ; disposition à droite de la saisie ou au-dessus (`ActivitySplit`) |
+| `activity.py` | ce qui tourne et ce qui attend, au-dessus de la saisie : Claude (étape, durée, « Arrêter ») ou la demande en attente, sous-agents, shells et monitors, tâches, messages en file ; lignes mises à jour sur place d'après leur clé |
 | `dirpicker.py` | sélecteur de dossier sur un hôte SSH |
 | `tags.py` | stockage des tags, analyse de la recherche (`#tag`, `dir:`) |
 | `notes.py` | notes Markdown : lecture et écriture sur l'hôte de la conversation (ce PC pour le cloud), index, file d'enregistrement, extraits pour la recherche |

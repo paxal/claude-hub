@@ -814,11 +814,9 @@ textview.composer-input, textview.composer-input > text { background: none; }
 .composer-new { padding: 8px 10px 0 12px; font-size: 0.95em; }
 .composer-new > label { opacity: 0.7; }
 .hint { font-size: 0.9em; opacity: 0.7; }
-/* Ce qui tourne et ce qui attend (activity.py) : à droite de la saisie, ou au-dessus.
-   Le trait de séparation est une ombre de 1px des deux côtés : le cadre de la saisie
-   (overflow caché) masque celle qui tombe sur son bord. */
-.activity-side { background: rgba(128, 128, 128, 0.07);
-                 box-shadow: -1px 0 alpha(currentColor, 0.15), 0 1px alpha(currentColor, 0.15); }
+/* Ce qui tourne et ce qui attend (activity.py) : au-dessus du texte, dans le cadre de la
+   saisie, séparé de lui par un trait (ombre de 1px sous la liste). */
+.activity-side { background: rgba(128, 128, 128, 0.07); box-shadow: 0 1px alpha(currentColor, 0.15); }
 .activity { padding: 4px 0; }
 .act-row { padding: 5px 6px 5px 12px; }
 .act-row.sub { padding-left: 32px; }

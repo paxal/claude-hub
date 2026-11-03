@@ -35,7 +35,7 @@ suivant. Le **coût** est celui de la dernière réponse lancée depuis Claude H
 (`total_cost_usd` de `claude -p`), gardé d'un lancement à l'autre ; les
 transcriptions n'enregistrent pas le coût de chaque réponse, il manque donc pour
 celles faites dans un terminal. Ni l'un ni l'autre pour Cursor et le cloud. Ce qui
-tourne et ce qui attend s'affiche à côté de la saisie (voir
+tourne et ce qui attend s'affiche au-dessus de la saisie (voir
 [Ce qui tourne, ce qui attend](#ce-qui-tourne-ce-qui-attend)). Le menu ⋮ de l'en-tête reprend les
 actions du clic droit sur la liste (lue ou non lue, filtrer sur le dossier,
 archiver), plus « Copier l'identifiant » et, pour le cloud, « Ouvrir sur
@@ -248,7 +248,7 @@ pas les notes.
 
 Quand Claude découpe son travail en tâches (outils `TaskCreate` et `TaskUpdate`,
 ou `TodoWrite` des versions plus anciennes), la liste s'affiche dans la liste
-d'activité, à côté de la saisie : « Tâches 1/3 », et la tâche en cours en
+d'activité, au-dessus de la saisie : « Tâches 1/3 », et la tâche en cours en
 dessous ; un clic déplie chaque tâche (✓ terminée, ▸ en cours, ○ à faire). Elle
 disparaît quand toutes les tâches sont terminées. Dans le fil, ces appels sont résumés
 (« #2 → terminée »).
@@ -287,15 +287,15 @@ que Claude répond :
   envoie le message dès que claude s'est arrêté.
 - **Mettre en file d'attente** (**Alt+Entrée**) : le message attend la fin de
   la réponse et part dans un nouveau `claude -p --resume`. La file s'affiche
-  dans la liste d'activité, à côté de la saisie (« En file ») ; chaque message
+  dans la liste d'activité, au-dessus de la saisie (« En file ») ; chaque message
   peut y être remis dans la saisie pour le modifier, ou retiré.
 
 Sans réponse en cours, les trois envoient simplement le message.
 
 ## Ce qui tourne, ce qui attend
 
-À côté de la saisie, une liste montre ce qui tourne et ce qui attend dans la
-conversation affichée, une ligne par élément :
+Au-dessus du texte, dans le cadre de la saisie, une liste montre ce qui tourne et
+ce qui attend dans la conversation affichée, une ligne par élément :
 
 - **Claude** : l'étape en cours (« Claude utilise Bash » et sa commande, « Claude
   réfléchit »), sa durée, et le bouton « Arrêter » (carré rouge) pour une réponse
@@ -310,10 +310,9 @@ conversation affichée, une ligne par élément :
 - **les tâches de Claude** (voir [Tâches de Claude](#tâches-de-claude)) ;
 - **les messages en file** (voir [Écrire pendant une réponse](#écrire-pendant-une-réponse)).
 
-La liste n'apparaît que si elle a quelque chose à montrer. Quand la fenêtre a la
-place, elle s'ajoute à droite de la saisie, qui garde sa largeur ; sinon la saisie
-rétrécit, et quand elle deviendrait trop étroite (volet ouvert, petite fenêtre),
-la liste passe au-dessus d'elle. Au-delà de 300 pixels de haut, elle défile.
+La liste n'apparaît que si elle a quelque chose à montrer. Elle prend toute la
+largeur de la saisie, séparée du texte par un trait. Au-delà de 300 pixels de
+haut, elle défile.
 L'info-bulle de chaque ligne donne le détail (commande complète, dernier
 événement d'un monitor, étape du sous-agent).
 
@@ -339,7 +338,7 @@ agents finis sur les agents lancés, et celui qui tourne avec sa phase
 Quand Claude laisse tourner une commande en arrière-plan (Bash avec
 `run_in_background`, commande passée en arrière-plan après son délai ou par
 Ctrl+B, commande « ! » renvoyée en arrière-plan dans le terminal), une ligne
-« Shell » s'ajoute à la liste d'activité, à côté de la saisie, comme le « 1 shell »
+« Shell » s'ajoute à la liste d'activité, au-dessus de la saisie, comme le « 1 shell »
 du terminal, même quand Claude a fini son tour : sa description (sinon sa
 commande) et depuis quand il tourne. De même pour un monitor (outil Monitor, qui
 surveille une commande et prévient Claude à chaque ligne qu'elle écrit) : ligne

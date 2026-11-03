@@ -1,4 +1,4 @@
-"""Lignes de la liste d'activité à côté de la saisie (activity.py) : ce qui tourne et ce
+"""Lignes de la liste d'activité au-dessus de la saisie (activity.py) : ce qui tourne et ce
 qui attend."""
 import sys
 import unittest
