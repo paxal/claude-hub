@@ -88,15 +88,26 @@ gh pr create --base master --head <nom> --title "<titre>" --body-file <fichier>
 GitHub Actions lance `make test` sur chaque PR (`.github/workflows/tests.yml`,
 quelques minutes : installation des paquets).
 
+Suivre le run du dernier commit poussé, en commandes simples et séparées (le
+garde-fou du worktree refuse un `$(git …)` imbriqué) :
+
 ```sh
-gh pr checks <N> --watch
+git rev-parse HEAD
+gh run list --branch <nom> --commit <sha> --limit 1 --json databaseId,status --jq '.[0]'
+gh run watch <id> --exit-status --interval 15 >/dev/null 2>&1; echo "exit $?"
+gh run view <id> --json conclusion --jq .conclusion
 ```
 
-À lancer en arrière-plan (`run_in_background`) : la CI peut dépasser le délai
-d'une commande. Si gh répond qu'il n'y a pas encore de vérifications, relancer
-un peu plus tard : elles mettent quelques secondes à apparaître. En cas d'échec :
-lire le journal (`gh run view <id> --log-failed`), corriger sur la branche,
-commiter, pousser, attendre de nouveau.
+- `gh run watch` en arrière-plan (`run_in_background`) : la CI peut dépasser le
+  délai d'une commande.
+- Pas `gh pr checks --watch` : tant que le run est en file d'attente, il répond
+  « no checks reported » avec un code de sortie 0, et l'on croirait la CI finie.
+- Si `gh run list` ne renvoie rien, le run n'est pas encore créé : relancer un
+  peu plus tard.
+- Un nouveau push annule le run en cours (`cancel-in-progress`) : suivre celui
+  du nouveau commit.
+- En cas d'échec : lire le journal (`gh run view <id> --log-failed`), corriger sur
+  la branche, commiter, pousser, attendre de nouveau.
 
 ## 5. Proposer le merge
 
