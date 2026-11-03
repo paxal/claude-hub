@@ -9,6 +9,11 @@ claude -p : les lignes sont mises à jour sur place, d'après leur clé, plutôt
 La liste se place au-dessus du texte, dans le cadre de la saisie (window.py), qui garde
 ainsi toute la largeur de la colonne. Seul Claude au travail a une roue animée (voir
 AGENTS.md, « Animations ») ; les autres lignes ont une icône fixe.
+
+Les shells, les monitors et les tâches de Claude, qui restent là longtemps, sont repliés
+derrière une ligne de résumé (« 1 monitor · 1 shell · tâches 3/7 ») : repliés au lancement,
+un clic les déplie pour toutes les conversations, jusqu'au clic suivant. Claude, la demande,
+les sous-agents et la file restent toujours visibles.
 """
 import time
 
@@ -19,6 +24,7 @@ from .shell import background_tooltip, is_monitor
 
 MAX_HEIGHT = 300    # au-delà, la liste défile
 MAX_AGENTS = 3      # sous-agents listés un par un ; les suivants en une ligne
+GROUPED = ("monitor", "shell")  # genres repliés avec les tâches derrière la ligne de résumé
 
 AGENT_ICON = ("claude-hub-agents-symbolic",)
 TERMINAL_ICON = ("utilities-terminal-symbolic", "terminal-symbolic")
@@ -120,6 +126,27 @@ def queued_spec(i, text, images, edit=None, remove=None):
             "tooltip": (text or summary) + "\n\nEnvoyé à la fin de la réponse en cours",
             "actions": {"edit": ("Remettre dans la saisie pour le modifier", edit),
                         "remove": ("Retirer de la file", remove)}}
+
+
+def grouped_summary(kinds, todos=""):
+    """Ligne de résumé de la partie repliable : « 1 monitor · 2 shells · tâches 3/7 »
+    (kinds : genres des lignes repliées ; todos : résumé des tâches)."""
+    parts = []
+    for kind in GROUPED:
+        n = sum(k == kind for k in kinds)
+        if n:
+            parts.append(f"{n} {kind}{'s' if n > 1 else ''}")
+    if todos:
+        parts.append(todos)
+    text = " · ".join(parts)
+    return text[:1].upper() + text[1:]
+
+
+def on_toggle(button):
+    """Clic sur la ligne de résumé : déplie ou replie les shells, monitors et tâches."""
+    panel = button.get_ancestor(ActivityPanel)
+    if panel is not None:
+        panel.set_expanded(not panel.expanded)
 
 
 def on_button(button, name):
@@ -246,23 +273,58 @@ def sync_rows(box, specs):
 
 
 class ActivityPanel(Gtk.Box):
-    """La liste : Claude, demande, sous-agents, tâches de fond, puis les tâches de Claude
-    (todos, volet repliable de todos.py) et les messages en file."""
+    """La liste : Claude, demande, sous-agents, puis la ligne de résumé qui replie les shells
+    et monitors (grouped) et les tâches de Claude (todos, volet de todos.py), et enfin les
+    messages en file."""
 
     def __init__(self, todos):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["activity"],
                          valign=Gtk.Align.START)
         self.rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.grouped = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.queued = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.todos = todos
-        for w in (self.rows, todos, self.queued):
+        self.expanded = False  # replié au lancement (choix de l'utilisateur)
+        self.kinds = []        # genres des lignes repliées, pour le résumé
+        self.toggle = Gtk.Button(visible=False, hexpand=True)
+        for css in ("flat", "act-toggle"):
+            self.toggle.add_css_class(css)
+        inner = Gtk.Box(spacing=8)
+        icon = Gtk.Box(css_classes=["act-icon"], valign=Gtk.Align.CENTER)
+        self.chevron = Gtk.Image()
+        icon.append(self.chevron)
+        inner.append(icon)
+        self.summary = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
+                                 css_classes=["act-summary"])
+        inner.append(self.summary)
+        self.toggle.set_child(inner)
+        self.toggle.connect("clicked", on_toggle)
+        group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        group.append(self.grouped)
+        group.append(todos)
+        self.group = Gtk.Revealer(child=group, transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
+                                  transition_duration=150)
+        for w in (self.rows, self.toggle, self.group, self.queued):
             self.append(w)
         self.timer = 0
+        self.set_expanded(False)
+
+    def set_expanded(self, expanded):
+        self.expanded = expanded
+        self.group.set_reveal_child(expanded)
+        self.chevron.set_from_icon_name("pan-down-symbolic" if expanded else "pan-end-symbolic")
+        self.toggle.set_tooltip_text("Replier les shells, monitors et tâches" if expanded
+                                     else "Déplier les shells, monitors et tâches")
 
     def show(self, specs=None, queued=None):
-        """Remplace les lignes d'activité (specs) et/ou celles des messages en file."""
+        """Remplace les lignes d'activité (specs : les shells et monitors vont dans la partie
+        repliable) et/ou celles des messages en file."""
         if specs is not None:
-            sync_rows(self.rows, specs)
+            grouped = [s for s in specs if s["kind"] in GROUPED]
+            sync_rows(self.rows, [s for s in specs if s["kind"] not in GROUPED])
+            sync_rows(self.grouped, grouped)
+            self.kinds = [s["kind"] for s in grouped]
+            self.update_summary()
         if queued is not None:
             sync_rows(self.queued, queued)
         timed = self.tick()
@@ -272,11 +334,24 @@ class ActivityPanel(Gtk.Box):
             GLib.source_remove(self.timer)
             self.timer = 0
 
+    def show_todos(self, todos):
+        """Tâches de Claude (TodoList, ou None) : volet de todos.py et ligne de résumé."""
+        self.todos.show(todos)
+        self.update_summary()
+
+    def update_summary(self):
+        """La ligne de résumé n'apparaît que s'il y a quelque chose à replier."""
+        text = grouped_summary(self.kinds, self.todos.summary())
+        set_text(self.summary, text)
+        self.toggle.set_visible(bool(text))
+
     def tick(self):
-        timed, child = False, self.rows.get_first_child()
-        while child is not None:
-            timed |= child.tick()
-            child = child.get_next_sibling()
+        timed = False
+        for box in (self.rows, self.grouped):
+            child = box.get_first_child()
+            while child is not None:
+                timed |= child.tick()
+                child = child.get_next_sibling()
         return timed
 
     def on_timer(self):
@@ -287,12 +362,12 @@ class ActivityPanel(Gtk.Box):
 
     def has_content(self):
         return (self.rows.get_first_child() is not None or self.queued.get_first_child() is not None
-                or self.todos.get_reveal_child())
+                or self.toggle.get_visible())
 
     def labels(self):
-        """Textes des lignes (libellé · détail), pour les tests."""
+        """Textes des lignes (libellé · détail), repliées comprises, pour les tests."""
         out = []
-        for box in (self.rows, self.queued):
+        for box in (self.rows, self.grouped, self.queued):
             child = box.get_first_child()
             while child is not None:
                 out.append(" · ".join(t for t in (child.label.get_text(), child.detail.get_text()) if t))

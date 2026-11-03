@@ -951,6 +951,14 @@ button.act-btn { min-width: 24px; min-height: 24px; padding: 0; margin-top: -3px
 button.stop.act-stop { min-width: 26px; min-height: 22px; padding: 0; margin-top: -2px; }
 .todos { padding: 5px 6px 5px 6px; }
 .todos expander-widget > box > title { padding: 0; }
+/* Ligne de résumé qui replie les shells, monitors et tâches (repliés au lancement) : chevron
+   dans la colonne des icônes, texte discret, toute la ligne cliquable. */
+button.act-toggle { padding: 4px 6px 4px 12px; min-height: 0; border-radius: 0; font-weight: normal;
+                    background: none; box-shadow: none; }
+button.act-toggle:hover { background: alpha(currentColor, 0.06); }
+.act-toggle .act-icon { min-height: 0; }
+.act-toggle .act-icon image { -gtk-icon-size: 12px; opacity: 0.7; }
+.act-summary { font-size: 0.92em; opacity: 0.8; }
 button.stop { color: #e5534b; border: 1px solid rgba(229, 83, 75, 0.55); background: none;
               box-shadow: none; min-height: 24px; padding: 0 10px; font-weight: bold; }
 button.stop:hover { background: rgba(229, 83, 75, 0.12); }

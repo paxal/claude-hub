@@ -132,8 +132,8 @@ class TodoList:
 
 
 class TodoPanel(Gtk.Revealer):
-    """Volet repliable « Tâches 3/7 », avec la tâche en cours en dessous, dans la liste
-    d'activité au-dessus de la saisie (activity.py)."""
+    """Volet repliable « Tâches 3/7 », avec la tâche en cours en dessous, dans la partie
+    repliable de la liste d'activité au-dessus de la saisie (activity.py)."""
 
     def __init__(self):
         super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
@@ -178,3 +178,10 @@ class TodoPanel(Gtk.Revealer):
                                      ellipsize=Pango.EllipsizeMode.END, tooltip_text=t["subject"]))
                 self.rows.append(row)
         self.set_reveal_child(True)
+
+    def summary(self):
+        """« tâches 3/7 » pour la ligne de résumé de la liste d'activité, ou "" sans liste."""
+        if not self.shown:
+            return ""
+        done = sum(t["status"] == "completed" for t in self.shown)
+        return f"tâches {done}/{len(self.shown)}"

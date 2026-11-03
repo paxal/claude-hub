@@ -65,7 +65,10 @@ Bash, réponse finale), `autorisation`, `question`, `sous-agent`, `erreur`, `len
 (10 étapes d'une seconde : ligne de Claude, « Arrêter », file d'attente), `shell` (Bash
 laissé en arrière-plan 6 s : ligne « Shell » au-dessus de la saisie), ou le chemin d'un
 JSON avec ses propres étapes (format en tête de `tests/faux-claude`, monitor compris).
-La liste d'activité se lit avec `w.activity_panel.labels()` (« libellé · détail »).
+La liste d'activité se lit avec `w.activity_panel.labels()` (« libellé · détail »,
+lignes repliées comprises) ; les shells, monitors et tâches sont repliés au lancement :
+`w.activity_panel.toggle.emit("clicked")` les déplie avant une capture, et
+`w.activity_panel.summary.get_text()` donne la ligne de résumé.
 `FAUX_CLAUDE_VITESSE=0` supprime les pauses, `2` les double.
 
 Ce que le hub lui a envoyé : `pilote.journal_claude()` (un `{"argv", "cwd"}` par
