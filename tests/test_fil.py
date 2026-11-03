@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from claude_hub.feedsync import changed_from, same_item  # noqa: E402
+from claude_hub.feedsync import changed_from, same_item, unread  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
 SID = "11111111-2222-3333-4444-555555555555"
@@ -61,6 +61,35 @@ class TestChangedFrom(unittest.TestCase):
         self.assertTrue(same_item(a, b))
         self.assertFalse(same_item(a, dict(a, images=[])))
         self.assertFalse(same_item(a, dict(a, ts=1)))
+
+
+class TestNonLus(unittest.TestCase):
+    """Messages transmis pendant la réponse : claude ne les écrit qu'en les lisant."""
+
+    def user(self, text, ts):
+        return {"role": "user", "text": text, "images": [], "ts": ts}
+
+    def test_pas_encore_lu(self):
+        sent = [{"text": "Pourquoi ?", "ts": 1000.5}]
+        self.assertEqual(unread(sent, [self.user("Fais un plan", 900)]), sent)
+
+    def test_lu(self):
+        sent = [{"text": "Pourquoi ?", "ts": 1000.5}]
+        lu = dict(self.user("Pourquoi ?", 1200), queued=True)
+        self.assertEqual(unread(sent, [self.user("Fais un plan", 900), lu]), [])
+
+    def test_meme_texte_envoye_avant(self):
+        """Un « ok » plus ancien ne vaut pas lecture du nouveau."""
+        sent = [{"text": "ok", "ts": 1000}]
+        self.assertEqual(unread(sent, [self.user("ok", 500)]), sent)
+
+    def test_horloges_decalees(self):
+        """Hôte un peu en retard sur ce PC : toléré."""
+        self.assertEqual(unread([{"text": "ok", "ts": 1000}], [self.user("ok", 990)]), [])
+
+    def test_un_message_par_envoi(self):
+        sent = [{"text": "ok", "ts": 1000}, {"text": "ok", "ts": 1001}]
+        self.assertEqual(unread(sent, [self.user("ok", 1100)]), sent[1:])
 
 
 def line(**r):

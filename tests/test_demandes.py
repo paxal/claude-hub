@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from claude_hub.permissions import (  # noqa: E402
     allow, control_response, decision_of, deny, plan_allow, plan_deny, session_only)
-from claude_hub.render import plan_decision_text  # noqa: E402
+from claude_hub.render import plan_decision_text, plan_roles, request_lost  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
 SID = "11111111-2222-3333-4444-555555555555"
@@ -124,6 +124,47 @@ class TestReponses(unittest.TestCase):
         self.assertEqual(plan_decision_text(d), "✗ Refusé")
         self.assertEqual(plan_decision_text({"ok": False, "interrupted": True}), "⏹ Interrompu")
         self.assertEqual(plan_decision_text({"ok": False, "label": "Demande expirée"}), "Demande expirée")
+
+    def test_demande_perdue(self):
+        """claude-hub fermé pendant la réponse : la demande n'a pas pu partir, ce n'est pas un refus."""
+        d = {"ok": False, "text": "Tool permission request failed: AbortError: Stream closed"}
+        self.assertTrue(request_lost(d))
+        self.assertEqual(plan_decision_text(d), "⚠ Demande perdue")
+        self.assertFalse(request_lost({"ok": False, "text": "Ajoute des tests"}))
+        self.assertFalse(request_lost({"ok": True, "text": ""}))
+
+
+class TestPlansDuFil(unittest.TestCase):
+    """Plans du fil : (texte, id de l'appel, carte, tranché) -> (masqué, identique)."""
+
+    def test_plan_repropose_tel_quel(self):
+        """Demande perdue, puis le même plan, en attente dans sa carte (vue suivie en direct)."""
+        self.assertEqual(plan_roles([("A", "t1", False, True), ("A", "t2", True, False)]),
+                         [(False, True), (False, False)])
+
+    def test_conversation_rouverte(self):
+        """Relu depuis la transcription, le plan en attente y est aussi : sa carte suffit."""
+        self.assertEqual(plan_roles([("A", "t1", False, True), ("A", "t2", False, False),
+                                     ("A", "t2", True, False)]),
+                         [(False, True), (True, False), (False, False)])
+
+    def test_carte_sans_id(self):
+        """Demande lue dans l'API Remote Control, sans id d'appel : reconnue à son texte."""
+        self.assertEqual(plan_roles([("A", "t2", False, False), ("A", None, True, False)]),
+                         [(True, False), (False, False)])
+
+    def test_carte_tranchee(self):
+        """Plan validé ou refusé d'ici : sa carte reste, l'élément relu reste masqué."""
+        self.assertEqual(plan_roles([("A", "t2", False, True), ("A", "t2", True, True)]),
+                         [(True, False), (False, False)])
+
+    def test_plan_revise(self):
+        """Plan revu après une remarque : texte différent, les deux restent dépliés."""
+        self.assertEqual(plan_roles([("A", "t1", False, True), ("B", "t2", False, False)]),
+                         [(False, False), (False, False)])
+        self.assertEqual(plan_roles([("A", "t1", False, True), ("B", "t2", False, True),
+                                     ("A", "t3", False, False)]),
+                         [(False, True), (False, False), (False, False)])
 
 
 class TestDecisionPlan(unittest.TestCase):

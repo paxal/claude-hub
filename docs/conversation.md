@@ -282,7 +282,14 @@ que Claude répond :
   réponse » ; claude l'enregistre comme une pièce jointe `queued_command`, que
   les helpers relisent (les notifications internes `task-notification` sont
   ignorées). Si claude n'écoute plus (réponse en train de finir ou
-  interrompue), le message passe en file.
+  interrompue), le message passe en file. Quand une autorisation ou une
+  question attend, claude garde le message dans sa file jusqu'à la réponse :
+  le statut le dit (« Claude le lira une fois la demande tranchée »). Quand
+  c'est un plan qui attend, le message part comme remarque de « Continuer à
+  planifier » (voir [plan-et-remote-control.md](plan-et-remote-control.md)).
+  claude n'écrit un message transmis dans sa transcription qu'en le lisant :
+  d'ici là, claude-hub le garde à la fin du fil, même si la conversation est
+  rouverte.
 - **Envoyer tout de suite** (**Ctrl+Entrée**) : interrompt la réponse, puis
   envoie le message dès que claude s'est arrêté.
 - **Mettre en file d'attente** (**Alt+Entrée**) : le message attend la fin de
