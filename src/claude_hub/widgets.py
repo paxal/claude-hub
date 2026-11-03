@@ -260,14 +260,19 @@ class ChoiceButton(Gtk.MenuButton):
         self.fill()
 
 
-def with_placeholder(scroll, view, text):
+def with_placeholder(scroll, view, text, extra=None):
     """Overlay de scroll (qui contient la saisie view) affichant text tant que la saisie
-    est vide : renvoie (overlay, étiquette)."""
-    hint = Gtk.Label(label=text, xalign=0, yalign=0, css_classes=["placeholder"],
-                     halign=Gtk.Align.FILL, valign=Gtk.Align.START, can_target=False,
+    est vide, suivi du widget extra s'il est donné : renvoie (overlay, étiquette)."""
+    hint = Gtk.Label(label=text, xalign=0, yalign=0, can_target=False,
                      ellipsize=Pango.EllipsizeMode.END)
+    box = Gtk.Box(spacing=8, css_classes=["placeholder"], halign=Gtk.Align.FILL,
+                  valign=Gtk.Align.START, can_target=False)
+    box.append(hint)
+    if extra is not None:
+        extra.set_can_target(False)
+        box.append(extra)
     overlay = Gtk.Overlay(child=scroll)
-    overlay.add_overlay(hint)
+    overlay.add_overlay(box)
     buf = view.get_buffer()
-    buf.connect("changed", lambda b: hint.set_visible(b.get_char_count() == 0))
+    buf.connect("changed", lambda b: box.set_visible(b.get_char_count() == 0))
     return overlay, hint

@@ -146,6 +146,12 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   couleurs GTK nommées. Détecter clair/sombre d'après la couleur réelle du
   texte, pas le nom du thème. Les icônes maison sont des SVG `-symbolic` dans
   `icons/` (à déclarer dans `pyproject.toml`).
+- **Message suggéré** (`--prompt-suggestions`, `docs/conversation.md`) : le
+  `prompt_suggestion` arrive une ou deux secondes après le `result`, et claude
+  l'attend même une fois son entrée fermée : ne pas le tuer au résultat. Avec un
+  vrai claude, rien avant sa 2ᵉ réponse ni quand le cache est froid (sa 2ᵉ réponse
+  en écrit souvent encore beaucoup) : compter trois tours pour en voir une. Le faux
+  claude en envoie une avec `FAUX_CLAUDE_SUGGESTION`.
 - **Mode plan, permissions, sous-agents** : le protocole de contrôle de
   `claude -p` (`--permission-prompt-tool stdio`, `can_use_tool`,
   `parent_tool_use_id`, `subagents/`) est décrit, essais à l'appui, dans

@@ -303,6 +303,24 @@ d'une réponse lancée d'ici, ce qui a été reçu en direct est remplacé par l
 entier qu'à l'ouverture de la conversation (avec ses 300 derniers éléments, une
 conversation longue y passe une à deux secondes).
 
+## Message suggéré
+
+Comme le terminal, Claude Hub propose le message suivant quand Claude a fini de
+répondre : il remplace « Écrire à Claude… » dans la saisie vide, suivi de la touche
+**Tab**, qui le met dans la saisie pour le modifier ou l'envoyer. Il disparaît dès
+qu'un message part (d'ici ou du terminal) ; un plan qui attend garde son propre
+texte d'aide.
+
+C'est claude qui le prédit, après chaque réponse lancée d'ici (`--prompt-suggestions` :
+message `prompt_suggestion` une ou deux secondes après le résultat, même une fois son
+entrée fermée), par une petite requête de plus. Il n'en propose pas toujours : jamais
+avant sa deuxième réponse dans la conversation, ni quand le cache du prompt est froid
+(reprise après une longue pause), et il écarte parfois ce qu'il a prédit. Le réglage
+`promptSuggestionEnabled: false` de Claude Code (`~/.claude/settings.json`) le coupe.
+Pour une conversation qui tourne dans un terminal, rien : la suggestion y reste dans
+la saisie du terminal, sans être écrite ailleurs (ni transcription, ni Remote
+Control).
+
 ## Écrire pendant une réponse
 
 Le bouton « Envoyer » a un menu avec trois façons d'envoyer un message pendant
