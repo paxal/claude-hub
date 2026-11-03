@@ -544,11 +544,12 @@ function history(id, limit) {
   const todos = [], usage = {context: null};
   const [items, model, effort] = p ? transcriptItems(p, false, todos, usage) : [[], null, null];
   return {size: p ? fs.statSync(p).size : 0, model, effort, total: items.length, items: applyBudget(items.slice(-limit)), todos,
-    agents: p ? agentsList(p) : [], context: usage.context};
+    agents: p ? agentsList(p) : [], workflow_runs: workflowRuns(p), context: usage.context};
 }
 
-// Transcription du sous-agent lancé par l'appel d'outil toolId (subagents/agent-*.jsonl).
-function agent(id, toolId, limit) {
+// Transcription du sous-agent lancé par l'appel d'outil key (subagents/agent-*.jsonl), ou
+// dont l'id est key : les agents d'un workflow n'ont pas d'appel d'outil (pas de toolUseId).
+function agent(id, key, limit) {
   const p = find(id);
   const walk = d => {
     for (const n of ls(d).sort()) {
@@ -558,7 +559,8 @@ function agent(id, toolId, limit) {
       let meta;
       try { meta = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { continue; }
       const jsonl = path.join(d, n.slice(0, -".meta.json".length) + ".jsonl");
-      if (!meta || typeof meta !== "object" || Array.isArray(meta) || meta.toolUseId !== toolId) continue;
+      if (!meta || typeof meta !== "object" || Array.isArray(meta)
+          || (meta.toolUseId !== key && n !== "agent-" + key + ".meta.json")) continue;
       try { if (!fs.statSync(jsonl).isFile()) continue; } catch (e) { continue; }
       const [items, model] = transcriptItems(jsonl, true);
       return {found: true, meta, model, total: items.length, items: applyBudget(items.slice(-limit))};
@@ -582,10 +584,13 @@ const shortInput = inp => inp && typeof inp === "object" && !Array.isArray(inp)
 // outil ou la suite du modèle.
 function agentSummary(p, meta) {
   const name = path.basename(p).slice(0, -".jsonl".length);
+  const d = path.dirname(p);  // agent d'un workflow : subagents/workflows/<run>/
   const a = {id: name.startsWith("agent-") ? name.slice("agent-".length) : name,
     type: meta.agentType ?? null, description: meta.description ?? null,
     tool: meta.toolUseId ?? null, parent: meta.parentAgentId ?? null,
     depth: meta.spawnDepth || 1, background: meta.requestShape === "background",
+    workflow: path.basename(path.dirname(d)) === "workflows" ? path.basename(d) : null,
+    phase: typeof meta.workflowPhase === "string" ? meta.workflowPhase : null,
     size: fs.statSync(p).size, start: null, end: null, steps: 0, done: false, interrupted: false, last: null};
   let ended = false;  // un outil a terminé l'agent (le résultat d'un appel parallèle peut suivre)
   for (const line of lines(p)) {
@@ -634,6 +639,28 @@ function agentsList(p) {
   };
   if (p) walk(p.slice(0, -".jsonl".length) + "/subagents");
   return res.sort((x, y) => (x.start || 0) - (y.start || 0) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+}
+
+// Workflows lancés par la conversation p, dans l'ordre : run (dossier de ses agents sous
+// subagents/workflows/), nom, résumé, appel d'outil qui l'a lancé et date. Lus dans le
+// résultat de l'outil Workflow ; la transcription n'est relue que si un workflow a laissé
+// des agents.
+function workflowRuns(p) {
+  if (!p || !isDir(p.slice(0, -".jsonl".length) + "/subagents/workflows")) return [];
+  const runs = new Map();
+  for (const line of lines(p)) {
+    if (!line.includes('"local_workflow"')) continue;
+    const r = parse(line);
+    const res = r && typeof r === "object" && !Array.isArray(r) ? r.toolUseResult : null;
+    if (!res || typeof res !== "object" || Array.isArray(res) || r.type !== "user" || r.isSidechain
+        || res.taskType !== "local_workflow" || !textOrNull(res.runId) || runs.has(res.runId)) continue;
+    const content = (r.message || {}).content;
+    const tools = Array.isArray(content)
+      ? content.filter(b => b && typeof b === "object" && b.type === "tool_result").map(b => b.tool_use_id) : [];
+    runs.set(res.runId, {id: res.runId, name: textOrNull(res.workflowName), summary: textOrNull(res.summary),
+      tool: tools.length ? textOrNull(tools[0]) : null, start: recordTime(r)});
+  }
+  return [...runs.values()];
 }
 
 const RESULT_LIMIT = 100000;  // caractères de sortie renvoyés au plus
@@ -876,7 +903,7 @@ if (a[0] === "list") {
   out = agent(a[1], a[2], Number(a[3]));
 } else if (a[0] === "agents") {
   const p = find(a[1]);
-  out = {live: liveIds()[a[1]] || null, agents: p ? agentsList(p) : []};
+  out = {live: liveIds()[a[1]] || null, agents: p ? agentsList(p) : [], workflow_runs: workflowRuns(p)};
 } else if (a[0] === "result") {
   out = result(a[1], a[2]);
 } else if (a[0] === "edits") {

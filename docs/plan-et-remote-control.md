@@ -82,9 +82,15 @@ Claude Code, locales ou SSH)
 ouvre le volet **Sous-agents** : l'arbre de tous les sous-agents de la
 conversation, y compris ceux lancés par un sous-agent, avec leur état (en
 cours, terminé, interrompu, en attente de ses propres sous-agents), leur
-dernière étape et leur durée. Un clic affiche la transcription de l'agent, qui
-se complète tant qu'il travaille ; la liste est relue toutes les 4 s tant qu'un
-agent tourne, même si la conversation est ouverte dans un terminal. Le bouton
+dernière étape et leur durée. Les agents d'un workflow forment un groupe, à la
+place de son premier agent : un en-tête avec le nom et le résumé du workflow, ses
+agents finis sur le total et sa durée, puis ses agents rangés par phase
+(« REVIEW · 3 », « VERIFY · 1/3 » tant qu'une phase tourne), sans leur type
+(« workflow-subagent »). Un workflow en cours est déplié, un workflow fini replié ;
+un clic sur l'en-tête le replie ou le déplie. Un clic sur un agent affiche sa
+transcription, qui se complète tant qu'il travaille ; la liste est relue toutes
+les 4 s tant qu'un agent tourne, même si la conversation est ouverte dans un
+terminal. Le bouton
 › d'un bloc de sous-agent, d'un `SendMessage` qui relance un agent ou d'un
 rapport d'agent ouvre directement l'agent concerné. Non fait pour le cloud et
 Cursor.

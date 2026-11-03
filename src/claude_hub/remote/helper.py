@@ -741,10 +741,12 @@ def cmd_history(sid, limit):
     items, model, effort = transcript_items(p, todos=todos, usage=usage) if p else ([], None, None)
     print(json.dumps({"size": p.stat().st_size if p else 0, "model": model, "effort": effort,
                       "total": len(items), "items": apply_budget(items[-limit:]), "todos": todos,
-                      "agents": agents_list(p) if p else [], "context": usage["context"]}))
+                      "agents": agents_list(p) if p else [], "workflow_runs": workflow_runs(p),
+                      "context": usage["context"]}))
 
-def cmd_agent(sid, tool_id, limit):
-    """Transcription du sous-agent lancé par l'appel d'outil tool_id (subagents/agent-*.jsonl)."""
+def cmd_agent(sid, key, limit):
+    """Transcription du sous-agent lancé par l'appel d'outil key (subagents/agent-*.jsonl), ou
+    dont l'id est key : les agents d'un workflow n'ont pas d'appel d'outil (pas de toolUseId)."""
     p = find(sid)
     res = {"found": False, "meta": None, "total": 0, "items": []}
     base = str(p)[:-len(".jsonl")] + "/subagents" if p else None
@@ -758,7 +760,8 @@ def cmd_agent(sid, tool_id, limit):
             except (OSError, ValueError):
                 continue
             path = os.path.join(root, n[:-len(".meta.json")] + ".jsonl")
-            if not isinstance(meta, dict) or meta.get("toolUseId") != tool_id or not os.path.isfile(path):
+            if (not isinstance(meta, dict) or not os.path.isfile(path)
+                    or meta.get("toolUseId") != key and n != "agent-" + key + ".meta.json"):
                 continue
             items, model, _effort = transcript_items(path, sidechain=True)
             res = {"found": True, "meta": meta, "model": model, "total": len(items),
@@ -779,10 +782,14 @@ def agent_summary(path, meta):
     d'interruption de claude ; sinon il attend un outil ou la suite du modèle.
     """
     name = os.path.basename(path)[:-len(".jsonl")]
+    d = os.path.dirname(path)  # agent d'un workflow : subagents/workflows/<run>/
+    run = os.path.basename(d) if os.path.basename(os.path.dirname(d)) == "workflows" else None
+    phase = meta.get("workflowPhase")
     a = {"id": name[len("agent-"):] if name.startswith("agent-") else name,
          "type": meta.get("agentType"), "description": meta.get("description"),
          "tool": meta.get("toolUseId"), "parent": meta.get("parentAgentId"),
          "depth": meta.get("spawnDepth") or 1, "background": meta.get("requestShape") == "background",
+         "workflow": run, "phase": phase if isinstance(phase, str) else None,
          "size": os.path.getsize(path), "start": None, "end": None, "steps": 0,
          "done": False, "interrupted": False, "last": None}
     ended = False  # un outil a terminé l'agent (le résultat d'un appel parallèle peut suivre)
@@ -837,9 +844,40 @@ def agents_list(p):
     res.sort(key=lambda a: (a["start"] or 0, a["id"]))
     return res
 
+def workflow_runs(p):
+    """Workflows lancés par la conversation p, dans l'ordre : run (dossier de ses agents sous
+    subagents/workflows/), nom, résumé, appel d'outil qui l'a lancé et date. Lus dans le
+    résultat de l'outil Workflow ; la transcription n'est relue que si un workflow a laissé
+    des agents."""
+    if not p or not os.path.isdir(str(p)[:-len(".jsonl")] + "/subagents/workflows"):
+        return []
+    runs = {}
+    with open(str(p), encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"local_workflow"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            res = r.get("toolUseResult") if isinstance(r, dict) else None
+            if (not isinstance(res, dict) or r.get("type") != "user" or r.get("isSidechain")
+                    or res.get("taskType") != "local_workflow" or not text_or_none(res.get("runId"))
+                    or res["runId"] in runs):
+                continue
+            content = r["message"].get("content") if isinstance(r.get("message"), dict) else None
+            tools = [b.get("tool_use_id") for b in content if isinstance(b, dict)
+                     and b.get("type") == "tool_result"] if isinstance(content, list) else []
+            runs[res["runId"]] = {"id": res["runId"], "name": text_or_none(res.get("workflowName")),
+                                  "summary": text_or_none(res.get("summary")),
+                                  "tool": text_or_none(tools[0]) if tools else None,
+                                  "start": record_time(r)}
+    return list(runs.values())
+
 def cmd_agents(sid):
     p = find(sid)
-    print(json.dumps({"live": live_ids().get(sid), "agents": agents_list(p) if p else []}))
+    print(json.dumps({"live": live_ids().get(sid), "agents": agents_list(p) if p else [],
+                      "workflow_runs": workflow_runs(p)}))
 
 RESULT_LIMIT = 100000  # caractères de sortie renvoyés au plus
 

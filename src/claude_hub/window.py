@@ -1995,6 +1995,7 @@ class Hub(Gtk.ApplicationWindow):
             self.show_subtitle(s)
             if "agents" in res:
                 s["agents"] = res["agents"]
+                s["workflow_runs"] = res.get("workflow_runs") or []  # nom et résumé des workflows
                 self.show_agents(s)
             self.forget_read(s["id"], res["items"])
             if full or not self.update_feed(s, res["items"], res["total"] - len(res["items"])):
@@ -3813,10 +3814,11 @@ class Hub(Gtk.ApplicationWindow):
         if self.has_agents_files(s):
             host, sid = s["host"], s["id"]
             self.agents_panel.set_session(
-                sid, lambda a: run_helper(host, "agent", sid, a["tool"], HISTORY_LIMIT),
+                # un agent de workflow n'a pas d'appel d'outil : son id le désigne
+                sid, lambda a: run_helper(host, "agent", sid, a.get("tool") or a["id"], HISTORY_LIMIT),
                 lambda it: self.item_widget(it, s))
             if self.agents_panel.get_visible():
-                self.agents_panel.update(agents, alive)
+                self.agents_panel.update(agents, alive, s.get("workflow_runs") or [])
                 if s.get("agents_want") and self.agents_panel.open_agent(s["agents_want"]):
                     del s["agents_want"]
 
@@ -3845,7 +3847,9 @@ class Hub(Gtk.ApplicationWindow):
         self.show_agents_panel()
 
     def show_agents_panel(self):
-        self.agents_panel.update((self.current or {}).get("agents"), self.agents_alive(self.current))
+        s = self.current or {}
+        self.agents_panel.update(s.get("agents"), self.agents_alive(self.current),
+                                 s.get("workflow_runs") or [])
         self.show_side("agents")
 
     def open_agent(self, key):
@@ -3853,7 +3857,7 @@ class Hub(Gtk.ApplicationWindow):
         s = self.current
         if not s:
             return
-        self.agents_panel.update(s.get("agents"), self.agents_alive(s))
+        self.agents_panel.update(s.get("agents"), self.agents_alive(s), s.get("workflow_runs") or [])
         self.show_side("agents")
         if not self.agents_panel.open_agent(key):
             s["agents_stale"] = True  # pas encore dans la liste (lancé depuis la dernière lecture)
@@ -3873,6 +3877,7 @@ class Hub(Gtk.ApplicationWindow):
         def done(res):
             self.agents_polling = False
             s["agents"] = res.get("agents") or []
+            s["workflow_runs"] = res.get("workflow_runs") or []
             self.show_agents(s)  # ouvre l'agent demandé s'il est maintenant dans la liste
             s.pop("agents_want", None)  # sinon, on n'insiste pas
 

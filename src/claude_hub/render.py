@@ -759,6 +759,10 @@ menubutton.rc-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; col
 .agent-mark { font-weight: bold; opacity: 0.75; }
 .agent-mark.idle { opacity: 0.5; }
 .agent-open { min-height: 0; min-width: 0; padding: 2px; }
+/* Volet des sous-agents : en-tête repliable d'un workflow, au-dessus de ses agents par phase */
+.wf-head { margin: 4px 6px; padding: 6px 8px; border-radius: 6px; background: rgba(128, 128, 128, 0.08); }
+.wf-arrow { opacity: 0.7; }
+.wf-count.busy { font-size: 0.85em; font-weight: bold; color: #d4860b; }
 .subagent-body { border-left: 2px solid rgba(128, 128, 128, 0.3); padding-left: 8px; margin: 4px 0 4px 6px; }
 /* Appels d'outils : icône, nom, détail ; suites de 3 appels ou plus repliées en « N étapes ». */
 .toolline { padding: 1px 0; font-size: 0.92em; }
@@ -1000,7 +1004,7 @@ DARK_CSS = """
 menubutton.chip > button { border-color: #3a3f45; color: #dfe3e7; }
 menubutton.chip.plan > button { color: #8fd0f4; }
 menubutton.rc-chip > button, .wait-icon { color: #f0b85a; }
-.count.busy, .fork-bar.warn .fork-warn { color: #f0b85a; }
+.count.busy, .fork-bar.warn .fork-warn, .wf-count.busy { color: #f0b85a; }
 levelbar.context block.ok { background: #3daee9; }
 levelbar.context block.warn { background: #e3a23b; }
 .usage label.context-text.warn { color: #f0b85a; }

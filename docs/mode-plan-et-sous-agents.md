@@ -214,7 +214,11 @@ workflow ; `statusUpdatedAt` (ms) garde l'heure du passage à `busy`.
 - **Journal** : `<session>/subagents/workflows/<runId>/journal.jsonl`, une ligne
   `{"type":"launched"}`, puis par agent `{"type":"started","key":…,"agentId":…,"label":"r5 · pass1 · General Rust 1/2","phase":"▸ review_style #5"}`
   et `{"type":"result","key":…,"agentId":…,"result":…}`. Les agents eux-mêmes
-  sont à côté (`agent-<agentId>.jsonl` et `.meta.json`, avec `workflowPhase`).
+  sont à côté (`agent-<agentId>.jsonl` et `.meta.json`), avec un `.meta.json`
+  propre : `{"agentType":"workflow-subagent","description":"verify:reader:1","workflowPhase":"Verify","spawnDepth":1,…}`,
+  la description étant le libellé donné par le script, et **pas de `toolUseId`**
+  (aucun appel Agent ne les a lancés). Le nom et le résumé du workflow ne sont que
+  dans le résultat de lancement (`workflowName`, `summary`).
   Un agent à schéma finit par un appel `StructuredOutput` : pas de réponse texte
   finale, mais le résultat de cet outil porte `"toolEndsTurn":true` (le résultat
   d'un appel parallèle peut s'écrire après lui). La commande `agents` le compte
@@ -228,7 +232,12 @@ Dans claude-hub, la commande `stat` des scripts distants renvoie les workflows
 lancés depuis le démarrage du processus claude (`startedAt` ; les plus anciens
 sont morts avec leur processus) et pas encore notifiés, leur avancement, et
 `waiting` (Claude a fini son tour : aucune ligne `assistant`, résultat d'outil ou
-message qui lance un tour depuis le dernier `turn_duration`).
+message qui lance un tour depuis le dernier `turn_duration`). Les commandes
+`agents` et `history` donnent à chaque agent son `workflow` (le `runId`, nom de
+son dossier) et sa `phase`, et renvoient `workflow_runs` : nom, résumé et appel de
+lancement de chaque workflow (la transcription n'est relue pour cela que si
+`subagents/workflows/` existe). La commande `agent` trouve un agent par son
+`toolUseId` ou, pour un agent de workflow, par son id.
 
 ## Shells en arrière-plan (observé, claude 2.1.304 à 2.1.316)
 
