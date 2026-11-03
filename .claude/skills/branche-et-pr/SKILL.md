@@ -58,18 +58,26 @@ continue dedans.
 
 ## 3. Envoyer et ouvrir la PR
 
-```sh
-git push -u origin <nom>
-gh pr create --base master --head <nom> --title "<titre>" --body-file - <<'EOF'
+Écrire d'abord le corps de la PR dans un fichier du scratchpad (outil Write) :
+
+```markdown
 <résumé : quoi et pourquoi>
 
 ## Tests
 <ce qui a été testé, et ce qui ne l'a pas été>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
 ```
 
+puis :
+
+```sh
+git push -u origin <nom>
+gh pr create --base master --head <nom> --title "<titre>" --body-file <fichier>
+```
+
+- Pas de heredoc (`--body-file -`) : dans une session isolée dans un worktree,
+  Claude Code peut refuser une commande gh dont le texte cite des commandes git.
 - Titre et corps en français ; le titre servira de titre au commit sur master.
 - Le dépôt est **public** : ni jeton, ni chemin ou contenu de conversation
   privé, ni données de l'utilisateur dans la PR.
@@ -102,14 +110,12 @@ testée, le dire dans la question.
 
 ## 6. Si l'utilisateur accepte
 
-Merge en squash : un commit par changement, master reste linéaire.
+Merge en squash : un commit par changement, master reste linéaire. Le message du
+commit (détaillé, comme un commit du dépôt, terminé par la ligne
+`Co-Authored-By`) s'écrit lui aussi dans un fichier du scratchpad.
 
 ```sh
-gh pr merge <N> --squash --subject "<titre> (#N)" --body-file - <<'EOF'
-<message détaillé, comme un commit du dépôt>
-
-Co-Authored-By: …
-EOF
+gh pr merge <N> --squash --subject "<titre> (#N)" --body-file <fichier>
 gh pr view <N> --json state --jq .state     # doit afficher MERGED
 git push origin --delete <nom>
 ```
