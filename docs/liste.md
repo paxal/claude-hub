@@ -49,7 +49,7 @@ gauche donne l'état : pastille bleue (réponse non lue : titre en gras, heure e
 bleu), roue orange (Claude travaille : « en cours »), triangle rouge (plan,
 question ou autorisation à valider : « à valider »), coche verte (terminé, la
 session reste ouverte dans un terminal), crayon (brouillon). La roue est fixe :
-une animation par ligne coûtait ~20 % de CPU avec le rendu cairo. Une petite
+une animation par ligne ferait redessiner la fenêtre en continu. Une petite
 feuille bleue, devant le dossier, signale une
 [note](conversation.md#notes) ; son début s'affiche en info-bulle.
 

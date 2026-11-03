@@ -98,8 +98,10 @@ requêtes de contrôle).
   sans option. `envoyer` refuse d'écrire à une vraie conversation : ouverte dans un
   terminal, le hub transmettrait le texte au vrai Claude par Remote Control.
 - **CPU au repos** : `yield 4` après la dernière action (la remise en page compte
-  sinon), puis `yield from pilote.cpu(5)`. Repère : ~10–15 % avec une conversation
-  ouverte et le rendu cairo.
+  sinon), puis `yield from pilote.cpu(5)`. Repère : 1–2 % au repos avec une
+  conversation ouverte. Sur l'écran virtuel, le moteur gl est logiciel
+  (llvmpipe) : comparer deux versions entre elles plutôt que de lire un chiffre
+  absolu ; `GSK_RENDERER=cairo tests/piloter.sh …` pour l'autre moteur.
 - **Fuite de widgets** (après un changement du fil, de la liste, d'une carte ou
   d'un popover) : `len(pilote.orphelins())` avant et après avoir refait plusieurs
   fois l'affichage (`ouvrir` d'autres conversations, `w.load_history(full=True)` qui reconstruit le fil,

@@ -97,18 +97,31 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `do_activate` est rappelé à chaque clic sur une notification et à chaque
   relance de `claude-hub` ; chaque feuille ajoutée fait recalculer le style de
   tous les widgets.
-- **Rendu** : `GSK_RENDERER=cairo` par défaut (`gtk.py`). Les moteurs `gl` et
-  `vulkan` de GTK 4.20 laissent des restes quand un texte change (pixels blancs
-  ou orange dans le bandeau d'activité). Ne pas revenir dessus sans le vérifier
-  avec de vraies captures du compositeur.
+- **Rendu** : `GSK_RENDERER=gl` par défaut (`gtk.py`). Avec cairo, GTK 4.22
+  sous Wayland repeint toute la fenêtre à chaque image : KWin garde le tampon
+  affiché, GTK dessine dans deux tampons à tour de rôle et reporte sur l'autre
+  toute sa zone à repeindre, arriéré compris (`gdkcairocontext-wayland.c`), si
+  bien que la zone ne fait que grandir. Mesuré sur l'écran de l'utilisateur
+  (1280×820 à l'échelle 1,45, longue conversation), cairo puis gl : roue de la
+  liste d'activité 81 % / 13 %, réponse qui arrive 92 % / 19 %, défilement
+  59 % / 16 %, saisie 19 % / 2 %. Avec GTK 4.20, gl et vulkan laissaient des
+  restes quand un texte change (pixels blancs ou orange au-dessus d'une
+  étiquette, ticket GTK #8340, encore ouvert) ; pas revus avec GTK 4.22 sur de
+  vraies captures du compositeur. S'ils reviennent : `GSK_DEBUG=full-redraw`
+  (gl, 30 % pour la roue) plutôt que cairo. Pour voir ce qui est repeint :
+  `WAYLAND_DEBUG=client` et les `wl_surface.damage_buffer` (en gl, GTK annonce
+  toujours toute la fenêtre au compositeur, mais ne redessine que ce qui a
+  changé). Sur l'écran virtuel, gl passe en rendu logiciel (llvmpipe) : le CPU
+  y sert à comparer deux versions, pas à juger le rendu ; le mesurer sur le
+  vrai écran, avec l'accord de l'utilisateur.
 - **Classes CSS** : `css_classes=[…]` passé au constructeur remplace les classes
   par défaut du widget : un `Gtk.Popover` perd `background` (menu sans fond),
   `MenuButton` `popup`, `ListBoxRow` `activatable`, `TextView` `view`. Utiliser
   `add_css_class`, ou `widgets.menu_popover` pour un menu.
-- **Animations** : avec le rendu cairo, chaque `Gtk.Spinner` qui tourne redessine
-  en continu (~20 % de CPU pour une demi-douzaine dans la liste, 0 % figés). N'en
-  animer que dans la ligne de Claude de la liste d'activité (à côté de la
-  saisie) ; ailleurs, l'icône fixe `claude-hub-busy-symbolic` ou une icône propre
+- **Animations** : un `Gtk.Spinner` qui tourne fait redessiner la fenêtre en
+  continu (13 % de CPU en gl pour la seule roue de la liste d'activité, 80 à
+  90 % en cairo ; 0 % figé). N'en animer que dans la ligne de Claude de la
+  liste d'activité (à côté de la saisie) ; ailleurs, l'icône fixe `claude-hub-busy-symbolic` ou une icône propre
   à la ligne. Mesurer le CPU au repos après un
   changement d'affichage (`os.times()` dans le script de pilotage), quelques
   secondes après la dernière action : sinon la remise en page du fil (volet
