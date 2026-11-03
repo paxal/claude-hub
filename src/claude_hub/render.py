@@ -566,9 +566,11 @@ def folded_widget(head, text):
     return box
 
 
-def message_widget(item, on_fork=None):
+def message_widget(item, on_fork=None, on_edit=None):
     """Widget d'un message ; on_fork(item, before, widget) : action « copier la conversation
-    à partir d'ici », proposée si le message porte un point de copie (uuid, parent)."""
+    à partir d'ici », proposée si le message porte un point de copie (uuid, parent) ;
+    on_edit(item, widget) : action « modifier ce message » d'un message de l'utilisateur
+    (qui a un parent : le premier message de la conversation n'en a pas)."""
     role = item["role"]
     if item.get("via") == "agent":
         return agent_message_widget(item)
@@ -596,21 +598,38 @@ def message_widget(item, on_fork=None):
         render_md(item["text"], box)
     else:
         return box
-    # Boutons « copier le Markdown » (et « copie de la conversation ») en surimpression,
-    # visibles au survol.
-    ov = Gtk.Overlay(child=box, halign=box.get_halign(), css_classes=["msg", role])
+    # Boutons visibles au survol : « modifier » (messages de l'utilisateur), « copie de la
+    # conversation », « copier le Markdown ». Le message est retrouvé depuis le bouton
+    # (le capturer empêcherait sa libération, widgets.weak_handler).
     actions = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.START)
     point = item.get("parent") if role == "user" else item.get("uuid")
+    if on_edit and role == "user" and point and not item.get("via"):
+        edit = Gtk.Button(icon_name="document-edit-symbolic", css_classes=["flat", "copy", "copy-md"],
+                          tooltip_text="Modifier ce message : Claude reprend la conversation à partir "
+                                       "de lui, la suite est abandonnée")
+        edit.connect("clicked", lambda b: on_edit(item, b))
+        actions.append(edit)
     if on_fork and point and not item.get("via"):
         fork = Gtk.Button(icon_name="claude-hub-fork-symbolic", css_classes=["flat", "copy", "copy-md"],
                           tooltip_text="Reprendre ce message dans une copie de la conversation"
                           if role == "user" else "Continuer dans une copie de la conversation, arrêtée ici")
-        # ov retrouvé depuis le bouton : le capturer empêcherait sa libération (widgets.weak_handler)
-        fork.connect("clicked", lambda b: on_fork(item, role == "user", b.get_ancestor(Gtk.Overlay)))
+        fork.connect("clicked", lambda b: on_fork(item, role == "user", b))
         actions.append(fork)
     btn = copy_button(item["text"], "Copier le message (Markdown)")
     btn.add_css_class("copy-md")
     actions.append(btn)
+    if role == "user":
+        # À gauche de la bulle, dans une colonne de largeur fixe : ils ne cachent pas le
+        # texte d'un message court, et les longs messages gardent tous la même largeur.
+        side = Gtk.Box(css_classes=["msg-actions"])
+        actions.set_hexpand(True)
+        side.append(actions)
+        row = Gtk.Box(halign=Gtk.Align.END, css_classes=["msg", role])
+        row.append(side)
+        row.append(box)
+        return row
+    # Message de Claude : en surimpression, en haut à droite de la bulle.
+    ov = Gtk.Overlay(child=box, halign=box.get_halign(), css_classes=["msg", role])
     ov.add_overlay(actions)
     return ov
 
@@ -685,16 +704,19 @@ menubutton.rc-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; col
 .sid { font-size: 0.85em; opacity: 0.6; }
 .thumb { border-radius: 6px; }
 .snippet { font-size: 0.9em; opacity: 0.85; margin-top: 2px; }
-.hit { outline: 2px solid #e3a23b; outline-offset: 2px; }
+.hit, .msg.user.hit > .bubble { outline: 2px solid #e3a23b; outline-offset: 2px; }
+.msg.user.hit { outline: none; }  /* la bulle seule, pas la colonne de ses boutons */
 .archived { opacity: 0.55; }
 .badge { font-size: 0.75em; font-weight: bold; padding: 0 6px; border-radius: 6px;
          color: #a05c9c; background: rgba(160, 92, 156, 0.16); }
 .badge.cloud { color: #d97757; background: rgba(217, 119, 87, 0.18); }
 .msg { margin: 2px 8px; }
-.msg.user { margin-left: 80px; }
+/* Message de l'utilisateur : ses boutons dans une colonne à gauche de la bulle (3 × 28 px). */
+.msg.user { margin-left: 16px; }
 .msg.assistant { margin-right: 40px; }
 .msg > .bubble { margin: 0; }
-.msg.user > .bubble { padding-right: 40px; }
+.msg-actions { min-width: 84px; }
+.msg-actions .copy-md { margin: 4px 2px; }
 .copy-md { margin: 4px; opacity: 0; background: alpha(black, 0.25); border-radius: 6px; }
 .msg:hover .copy-md { opacity: 0.9; }
 /* Heure des éléments du fil (feedtime.py) : colonne à droite, alignée pour tous ; les
@@ -708,6 +730,9 @@ menubutton.rc-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; col
 .feed-day > label { font-size: 0.78em; font-weight: bold; letter-spacing: 1px; opacity: 0.7; }
 .after-fork { opacity: 0.35; }
 .fork-bar { border-radius: 6px; padding: 4px 8px; background: rgba(61, 174, 233, 0.15); }
+/* Message modifié pendant une réponse : l'envoi arrêtera Claude. */
+.fork-bar.warn { background: rgba(227, 162, 59, 0.16); }
+.fork-bar.warn .fork-warn { color: #d4860b; font-weight: bold; }
 .copy.flat { padding: 0 6px; }
 .todo-list { padding: 2px 0 4px 18px; }
 .todo-mark { min-width: 14px; }
@@ -894,7 +919,7 @@ DARK_CSS = """
 menubutton.chip > button { border-color: #3a3f45; color: #dfe3e7; }
 menubutton.chip.plan > button { color: #8fd0f4; }
 menubutton.rc-chip > button, .wait-icon { color: #f0b85a; }
-.count.busy { color: #f0b85a; }
+.count.busy, .fork-bar.warn .fork-warn { color: #f0b85a; }
 levelbar.context block.ok { background: #3daee9; }
 levelbar.context block.warn { background: #e3a23b; }
 .usage label.context-text.warn { color: #f0b85a; }

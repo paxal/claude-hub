@@ -599,14 +599,62 @@ def usage_tokens(u):
     return sum(u[k] for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
                               "output_tokens") if type(u.get(k)) is int)
 
+def is_prompt(r):
+    """Message tapé par l'utilisateur : ni résultat d'outil, ni texte ajouté par claude,
+    ni mention d'une interruption."""
+    if r.get("type") != "user" or r.get("isMeta") or r.get("isCompactSummary"):
+        return False
+    content = (r.get("message") or {}).get("content")
+    if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                         for b in content):
+        return False
+    return not text_of(content).startswith("[Request interrupted")
+
+def abandoned(p):
+    """uuid des enregistrements abandonnés de la transcription p.
+
+    Un message modifié (claude-hub lance `claude -p --resume <id> --resume-session-at
+    <uuid>`) ou un retour en arrière du terminal ajoute un message de l'utilisateur
+    rattaché (parentUuid) à un enregistrement qui a déjà une suite : claude ne garde que
+    la branche la plus récente, ce qui descendait déjà de ce point est abandonné. Les
+    appels d'outils en parallèle forment aussi des branches (l'appel suivant et le
+    résultat du premier ont le même parent) : seul un message tapé marque un retour.
+    """
+    kids, dropped = {}, set()
+    with open(str(p), encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"uuid"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            uid = r.get("uuid") if isinstance(r, dict) and not r.get("isSidechain") else None
+            # après /compact, la conversation repart du dernier message d'avant
+            up = (r.get("parentUuid") or r.get("logicalParentUuid")) if uid else None
+            if not up:
+                continue
+            if up in kids and is_prompt(r):
+                todo = list(kids[up])
+                while todo:
+                    u = todo.pop()
+                    if u not in dropped:
+                        dropped.add(u)
+                        todo.extend(kids.get(u, ()))
+            kids.setdefault(up, []).append(uid)
+    return dropped
+
 def transcript_items(p, sidechain=False, todos=None, usage=None):
     """Messages et appels d'outils d'une transcription ; renvoie (items, dernier modèle, son effort).
 
+    Pour la conversation principale, les branches abandonnées (message modifié) sont
+    ignorées : seule compte celle que claude reprendra.
     todos : liste complétée par les appels de TodoWrite, TaskCreate et TaskUpdate de
     toute la transcription, et par les numéros attribués aux tâches créées.
     usage : dict dont "context" reçoit la taille du contexte au dernier message de Claude
     ({"tokens", "model"}), None après une compaction.
     """
+    dropped = set() if sidechain else abandoned(p)
     items, model, effort, creating = [], None, None, set()
     plans = {}  # id de l'appel ExitPlanMode -> élément du plan, qui recevra la décision
     caveat = False  # message précédent : avertissement d'une commande locale (/rename…)
@@ -622,7 +670,7 @@ def transcript_items(p, sidechain=False, todos=None, usage=None):
                 continue
             stamp(items, mark, when)
             mark, when = len(items), record_time(r)
-            if r.get("isSidechain") and not sidechain:
+            if (r.get("isSidechain") and not sidechain) or (dropped and r.get("uuid") in dropped):
                 continue
             if r.get("type") == "attachment":
                 # Message envoyé pendant une réponse : claude l'a lu entre deux étapes.

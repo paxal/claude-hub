@@ -71,7 +71,8 @@ GTK y repeint toute la fenêtre à chaque image).
   accueil et nouvelle conversation, liste et états, épingles et vues
   enregistrées, tags et filtres, clavier.
 - [Dans une conversation](docs/conversation.md) : en-tête (renommage,
-  contexte, coût), notes en Markdown, copie à partir d'un message, commandes « / » et « ! »,
+  contexte, coût), notes en Markdown, modifier un message, copie à partir d'un
+  message, commandes « / » et « ! »,
   sorties des outils, conversations Cursor, fichiers cités et modifiés, tâches
   de Claude, écrire pendant une réponse, l'arrêter, fin des réponses.
 - [Mode plan, sous-agents et Remote Control](docs/plan-et-remote-control.md) :
