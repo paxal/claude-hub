@@ -67,8 +67,8 @@ STATE_ICONS = {"busy": BUSY_ICON, "action": "dialog-warning-symbolic", "idle": "
 
 class StateIcon(Gtk.Box):
     """Icône d'état d'une ligne : pastille bleue (non lue), roue, triangle, coche, crayon.
-    La roue est fixe : des Gtk.Spinner animés dans chaque ligne coûtaient ~20 % de CPU
-    (rendu cairo)."""
+    La roue est fixe : un Gtk.Spinner animé fait redessiner la fenêtre en continu
+    (voir AGENTS.md, Animations)."""
 
     def __init__(self):
         # homogène : l'icône visible occupe toute la colonne et y est centrée (un hexpand sur

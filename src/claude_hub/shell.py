@@ -317,7 +317,7 @@ class ShellBlock(Gtk.Box):
             ind.remove(child)
         running = not self.done
         self.stop_btn.set_visible(running)
-        if running:  # roue fixe : une animation dans le fil coûte du CPU (rendu cairo)
+        if running:  # roue fixe : une animation fait redessiner la fenêtre en continu
             ind.append(Gtk.Image(icon_name=BUSY_ICON, css_classes=["tool-running"], tooltip_text="En cours"))
         elif self.stopped:
             ind.append(Gtk.Label(label="arrêtée", css_classes=["tool-error", "sid"]))

@@ -59,6 +59,12 @@ de l'application : sous Wayland, c'est par ce nom que le compositeur retrouve
 l'icône de la fenêtre (`data/org.paxal.ClaudeHub.svg`, indiquée en chemin
 absolu). Sans installation, la fenêtre n'a pas d'icône.
 
+L'affichage passe par le moteur `gl` de GTK. S'il laisse des restes quand un
+texte change (points blancs au-dessus d'une étiquette), lancer
+`GSK_DEBUG=full-redraw claude-hub` (tout est redessiné à chaque image), ou
+`GSK_RENDERER=cairo claude-hub` : sans GPU, mais bien plus lent (sous Wayland,
+GTK y repeint toute la fenêtre à chaque image).
+
 ## Documentation
 
 - [Trouver et organiser ses conversations](docs/liste.md) : hôtes affichés,

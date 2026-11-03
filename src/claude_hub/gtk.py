@@ -3,9 +3,11 @@ import os
 import sys
 import threading
 
-# Les moteurs GPU de GTK 4.20 (gl, vulkan) laissent des restes de l'ancien texte
-# quand une étiquette change (accents, points) ; cairo redessine proprement.
-os.environ.setdefault("GSK_RENDERER", "cairo")
+# Moteur gl : avec cairo, GTK 4.22 sous Wayland (KWin) repeint toute la fenêtre à
+# chaque image, et une seule roue qui tourne coûte 80 à 90 % d'un cœur (13 % en gl).
+# GSK_RENDERER=cairo pour revenir à cairo si des restes de texte réapparaissent
+# (points blancs au-dessus d'une étiquette qui change, vus avec GTK 4.20).
+os.environ.setdefault("GSK_RENDERER", "gl")
 
 import gi  # noqa: E402
 
