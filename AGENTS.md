@@ -53,6 +53,14 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   d'état global « le processus en cours » : c'était la cause du bug où le
   bandeau « Claude utilise Read… » et l'historique restaient bloqués après un
   changement de conversation.
+- **Fil mis à jour, pas reconstruit** : reconstruire 300 éléments (Markdown,
+  coloration) fige la fenêtre une à deux secondes, et l'on perd les appels
+  dépliés et le défilement. Après l'ouverture, `load_history` ne fait entrer que
+  les éléments nouveaux ou changés (`update_feed`, `feedsync.py`). Tout élément de
+  l'historique passe par `add_entry`, qui le retient dans `Hub.feed` ; ce qui suit
+  le dernier d'entre eux (réponse en direct, avis, cartes) est remplacé à la
+  relecture suivante, sauf les cartes encore en attente et les commandes « ! »
+  pas envoyées.
 - **Widgets jamais libérés** : un gestionnaire branché sur un enfant ou un
   contrôleur d'un widget (`self.expander.connect(…, self.on_x)`, `GestureClick`
   avec `self.methode`, lambda qui capture le widget parent), ou un attribut d'un

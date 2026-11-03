@@ -100,11 +100,18 @@ requêtes de contrôle).
   ouverte et le rendu cairo.
 - **Fuite de widgets** (après un changement du fil, de la liste, d'une carte ou
   d'un popover) : `len(pilote.orphelins())` avant et après avoir refait plusieurs
-  fois l'affichage (`ouvrir` d'autres conversations, `w.size = -2; w.load_history()`,
+  fois l'affichage (`ouvrir` d'autres conversations, `w.load_history(full=True)` qui reconstruit le fil,
   `w.search.set_text(…)`). Le nombre doit rester stable ; sinon, chercher qui retient
   ces widgets avec `gc.get_referrers` (voir `widgets.weak_handler`).
 - **Défilement** : `pilote.defilement()["en_bas"]` ; mesurer plusieurs fois pendant
   la réponse avec le scénario `long`.
+- **Conversation suivie comme dans un terminal** (`--faux-home`) : après une
+  réponse, ajouter des lignes à la transcription
+  (`~/.claude/projects/*/<id>.jsonl`, enregistrements `user`/`assistant` avec
+  `uuid` et `timestamp`) ; le hub la relit dans les 4 s. Le fil est mis à jour sans
+  être reconstruit : garder `[t for _, t in w.feed]` avant et vérifier avec `is`
+  que ces widgets sont toujours là, puis comparer `pilote.textes(w.msgs)` avec
+  celui d'un `w.load_history(full=True)`. Relâcher ces listes avant `orphelins()`.
 - **Rendu sur de vraies conversations** (après un changement de `render.py` ou
   `mdview.py`) : boucler sur `w.sessions`, `ouvrir`, `yield 1`, et vérifier
   qu'aucune exception ni avertissement GTK n'apparaît dans la sortie.

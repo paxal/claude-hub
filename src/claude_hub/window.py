@@ -35,6 +35,7 @@ from .agentsview import (AGENT_ID, AgentsPanel, agent_line, agent_state, agents_
                          running_agents, workflow_text)
 from .toolcall import ToolCall, ToolRun
 from .feedtime import Timed, day_separator, last_day, unwrap
+from .feedsync import changed_from
 from .todos import TodoList, TodoPanel, created_id
 from .rename import RenamePopover, can_rename, rename_session
 from .shell import (ShellBlock, background_label, background_tooltip, mark_monitor, monitor_started,
@@ -108,6 +109,11 @@ class Hub(Gtk.ApplicationWindow):
         self.list_errors = {}    # hôte -> erreurs du dernier chargement
         self.current = None      # dict de la session affichée
         self.size = 0            # taille du fichier à la dernière lecture
+        # Éléments de l'historique affichés dans le fil : [(élément, enfant du fil qui le
+        # contient)], le premier à l'index feed_start de la transcription (feedsync.py).
+        self.feed, self.feed_start = [], 0
+        self.feed_of = None      # conversation (dict) dont le fil montre l'historique
+        self.history_gen = self.history_shown = 0  # lectures demandées, dernière affichée
         self.streams = {}        # id de session -> (claude -p en cours, dict qui suit sa sortie)
         self.queues = {}         # id de session -> [(texte, images)] à envoyer après la réponse
         self.shells = {}         # id de session -> [ShellBlock] commandes « ! » pas encore envoyées
@@ -1831,6 +1837,7 @@ class Hub(Gtk.ApplicationWindow):
             self.msgs.remove(child)
         self.agent_blocks = {}
         self.tool_calls = {}
+        self.feed, self.feed_start = [], 0
 
     def open_question(self, items):
         """Conversation qui attend une réponse dans son terminal, sans Remote Control : déplie
@@ -1913,57 +1920,41 @@ class Hub(Gtk.ApplicationWindow):
         if mine and any(req.get("remote") for req in mine.values()):
             self.show_remote_requests(s, [])
 
-    def load_history(self):
+    def load_history(self, full=False):
+        """Relit l'historique de la conversation affichée. Le fil n'est reconstruit qu'à
+        l'ouverture (ou si full) ; ensuite, seuls les éléments nouveaux ou changés y
+        entrent (update_feed), sans toucher au reste ni au défilement."""
         s = self.current
+        self.history_gen += 1
+        gen = self.history_gen
 
         def done(res):
-            if s is not self.current or self.is_streaming(s):
+            # une lecture partie avant la dernière affichée ne revient pas en arrière
+            if s is not self.current or self.is_streaming(s) or gen < self.history_shown:
                 return
+            self.history_shown = gen
             self.size = res["size"]
             if "context" in res:
                 s["context"] = res["context"]
             if res.get("model"):
                 s["model"], s["effort"] = res["model"], res.get("effort")
             self.show_subtitle(s)
-            self.clear()
             if "agents" in res:
                 s["agents"] = res["agents"]
                 self.show_agents(s)
-            if res["total"] > len(res["items"]):
-                self.notice(f"… {res['total'] - len(res['items'])} éléments plus anciens masqués")
-            target = target_run = None
-            words = norm_text(s.get("search") or "").split()
-            for item in res["items"]:
-                w = self.item_widget(item, s)
-                run = self.append_item(w, item)
-                inp = item.get("input") if isinstance(item.get("input"), dict) else {}
-                text = item.get("text") or " ".join(v for v in inp.values() if isinstance(v, str))
-                if words and target is None and any(x in norm_text(text) for x in words):
-                    target, target_run = w, run
-            last = self.msgs.get_last_child()
-            if isinstance(last, ToolRun) and s.get("live") != "busy":
-                last.close()  # étapes en cours (terminal) : laissées dépliées
-            self.show_shells(s)
-            if target_run is not None:
-                target_run.reveal()
+            if full or not self.update_feed(s, res["items"], res["total"] - len(res["items"])):
+                self.rebuild_feed(s, res)
             s["items"] = res["items"]
             self.refresh_edits(s, res["items"])
             # Le script distant rejoue toute la transcription ; Cursor et le cloud, l'historique lu.
             s["todos"] = (TodoList.from_events(res["todos"]) if "todos" in res
                           else TodoList.from_items(res["items"]))
             self.todo_panel.show(s["todos"])
-            self.show_pending(s["id"])
             if s.get("live") in ACTION_STATES:
                 self.load_requests(s, res["items"])
             else:
                 self.drop_remote_requests(s)
             self.sync_plan_cards()
-            if target is not None:
-                s["search"] = None  # seulement au premier chargement
-                target.add_css_class("hit")
-                self.scroll_to(target)
-            else:
-                self.scroll_end()
 
         def fail(e):
             self.error(f"Lecture impossible : {e}")
@@ -1980,6 +1971,93 @@ class Hub(Gtk.ApplicationWindow):
         if s.get("source") == "cursor":
             return cursor_history(s["id"], limit)
         return run_helper(s["host"], "history", s["id"], limit)
+
+    def rebuild_feed(self, s, res):
+        """Fil reconstruit d'après l'historique res (ouverture de la conversation), puis
+        défilé jusqu'au passage cherché, sinon jusqu'à la fin."""
+        self.clear()
+        items = res["items"]
+        if res["total"] > len(items):
+            self.notice(f"… {res['total'] - len(items)} éléments plus anciens masqués")
+        self.feed_of, self.feed_start = s, res["total"] - len(items)
+        target = target_run = None
+        words = norm_text(s.get("search") or "").split()
+        for item in items:
+            w = self.item_widget(item, s)
+            run = self.add_entry(w, item)
+            inp = item.get("input") if isinstance(item.get("input"), dict) else {}
+            text = item.get("text") or " ".join(v for v in inp.values() if isinstance(v, str))
+            if words and target is None and any(x in norm_text(text) for x in words):
+                target, target_run = w, run
+        self.end_feed(s)
+        if target_run is not None:
+            target_run.reveal()
+        self.show_pending(s["id"])
+        if target is not None:
+            s["search"] = None  # seulement au premier chargement
+            target.add_css_class("hit")
+            self.scroll_to(target)
+        else:
+            self.scroll_end()
+
+    def update_feed(self, s, items, start):
+        """Fil mis à jour d'après une nouvelle lecture de l'historique (items, le premier à
+        l'index start de la transcription), sans le reconstruire : les éléments inchangés
+        restent tels quels (dépliés, sélection, défilement) ; ce qui suit le dernier d'entre
+        eux (éléments changés, réponse reçue en direct, avis) laisse la place aux éléments
+        relus. Les cartes des demandes encore en attente et les commandes « ! » pas encore
+        envoyées restent à la fin. Faux s'il faut tout reconstruire."""
+        if self.feed_of is not s or not self.feed or self.feed[-1][1].get_parent() is not self.msgs:
+            return False  # fil d'une autre conversation (copie, suite d'une conversation Cursor)
+        at = changed_from([it for it, _ in self.feed], self.feed_start, items, start)
+        if at is None:
+            return False
+        k, new = at - self.feed_start, items[at - start:]
+        if k == len(self.feed) and not new:
+            self.end_feed(s)
+            return True
+        top = self.feed[min(k, len(self.feed) - 1)][1]
+        run = [i for i, (_, t) in enumerate(self.feed) if t is top]
+        # Suite d'étapes refaite entière : un de ses appels a changé, elle a reçu des étapes
+        # du flux de claude -p, ou d'autres étapes la prolongent alors qu'elle est fermée.
+        if isinstance(top, ToolRun) and (k < len(self.feed) or len(top.items) != len(run)
+                                         or (not top.open and is_step(new[0]))):
+            k = run[0]
+        first = top if k < len(self.feed) else top.get_next_sibling()
+        redo = [it for it, _ in self.feed[k:at - self.feed_start]] + new
+        pending, cards = self.pending.get(s["id"]) or {}, []
+        while first is not None:
+            nxt = first.get_next_sibling()
+            self.msgs.remove(first)
+            if isinstance(first, RequestCard) and first.request_id in pending:
+                cards.append(first)
+            first = nxt
+        while (last := self.msgs.get_last_child()) is not None and last.has_css_class("feed-day"):
+            self.msgs.remove(last)  # le jour des éléments retirés : remis s'il le faut
+        del self.feed[k:]
+        ids = {it.get("id") for it, _ in self.feed}  # appels retirés (et ceux du flux) oubliés
+        self.tool_calls = {t: c for t, c in self.tool_calls.items() if t in ids}
+        self.agent_blocks = {t: b for t, b in self.agent_blocks.items() if t in ids}
+        for item in redo:
+            self.add_entry(self.item_widget(item, s), item)
+        self.end_feed(s)
+        for card in cards:
+            self.msgs.append(card)
+        return True
+
+    def add_entry(self, widget, item):
+        """Élément de l'historique ajouté au fil (append_item), retenu dans self.feed."""
+        run = self.append_item(widget, item)
+        self.feed.append((item, self.msgs.get_last_child()))
+        return run
+
+    def end_feed(self, s):
+        """Fin du fil après une lecture de l'historique : dernière suite d'étapes repliée si
+        Claude ne travaille plus, commandes « ! » pas encore envoyées remises à la fin."""
+        last = self.msgs.get_last_child()
+        if isinstance(last, ToolRun) and s.get("live") != "busy":
+            last.close()  # étapes en cours (terminal) : laissées dépliées
+        self.show_shells(s)
 
     def append_item(self, widget, item=None):
         """Ajoute un élément au fil, avec son heure à droite (« ts » de item), précédé
