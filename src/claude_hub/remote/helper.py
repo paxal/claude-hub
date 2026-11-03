@@ -92,6 +92,10 @@ def ms_of(v):
     """Date en millisecondes du fichier de session (None si absente ou invalide)."""
     return v if type(v) in (int, float) else None
 
+def text_or_none(v):
+    """Texte non vide du fichier de session (None sinon)."""
+    return v if isinstance(v, str) and v else None
+
 def cmd_live():
     """État de chaque session en cours, et sous « <id>:since » la date (ms) où elle y est passée."""
     out = {}
@@ -535,8 +539,14 @@ def cmd_stat(sid):
     bridge, pending, tail, shells = (scan_main(p, ms_of((sess or {}).get("startedAt"))) if p
                                      else (None, [], None, []))
     workflows = [workflow_progress(w, p) for w in pending] if sess else []
+    if sess:
+        # claude en cours : sa session Remote Control est notée dans son fichier de session
+        # (la transcription garde celles des lancements précédents)
+        bridge = text_or_none(sess.get("bridgeSessionId"))
     print(json.dumps({"size": st.st_size if st else 0,
                       "live": (sess.get("status") or "idle") if sess else None, "bridge": bridge,
+                      # ce qu'attend claude : « input needed » (question, plan), « permission prompt »
+                      "waiting_for": text_or_none(sess.get("waitingFor")) if sess else None,
                       "since": ms_of(sess.get("statusUpdatedAt")) if sess else None,
                       "workflows": workflows,
                       # shells et monitors en arrière-plan (« 1 shell », « 1 monitor » du terminal)

@@ -1,5 +1,6 @@
 """Rendu des messages : Markdown (via mdview.py), coloration, images, CSS."""
 import base64
+import html
 import re
 from urllib.parse import quote, unquote
 
@@ -66,6 +67,34 @@ def copied_link(uri):
         return uri
     path, line, end = parse_file_href(uri)
     return path + (f":{line}" if line else "") + (f"-{end}" if line and end else "")
+
+
+def label_target(uri):
+    """Lien d'un Gtk.Label (voir label_links) -> (chemin, ligne, fin) s'il désigne un
+    fichier, None pour une adresse (https:, mailto:…) ou une ancre."""
+    if uri.startswith(FILE_SCHEME):
+        return parse_file_href(uri)
+    if uri.startswith("#") or re.match(r"[A-Za-z][\w+.-]*:(?!\d)", uri):
+        return None
+    m = re.fullmatch(r"(.+?):(\d+)(?:-(\d+))?", uri)
+    if not m:
+        return uri, None, None
+    return m.group(1), int(m.group(2)), int(m.group(3)) if m.group(3) else None
+
+
+RE_FILE_A = re.compile(r'<a href="(hub-file:[^"]*)">')
+
+
+def label_links(markup):
+    """Balisage d'un Gtk.Label : l'adresse d'un lien de fichier devient le chemin cité
+    (src/a.py:42). Le menu du label (« Copier l'adresse du lien ») copie l'adresse telle
+    quelle, sans qu'on puisse le changer ; on_link la relit. Un chemin qui se relirait
+    autrement (« a:b », « #x ») garde son adresse hub-file:."""
+    def plain(m):
+        uri = html.unescape(m.group(1))
+        text = copied_link(uri)
+        return f'<a href="{esc(text)}">' if label_target(text) == parse_file_href(uri) else m.group(0)
+    return RE_FILE_A.sub(plain, markup)
 
 
 def path_link(text, code=False):
@@ -146,7 +175,7 @@ def make_label(markup, css, plain=None):
     try:
         # Pango ignore <a> (géré par Gtk.Label) : on l'enlève pour valider.
         Pango.parse_markup(re.sub(r"</?a\b[^>]*>", "", markup), -1, "\0")
-        lbl.set_markup(markup)
+        lbl.set_markup(label_links(markup))
     except GLib.Error:
         lbl.set_text(plain if plain is not None else markup)
     lbl.add_css_class(css)
@@ -155,12 +184,13 @@ def make_label(markup, css, plain=None):
 
 
 def on_link(lbl, uri):
-    """Les liens hub-file: vont à la fenêtre (open_file_link), les autres au navigateur."""
-    if not uri.startswith(FILE_SCHEME):
+    """Les liens de fichier vont à la fenêtre (open_file_link), les autres au navigateur."""
+    target = label_target(uri)
+    if target is None:
         return False
     opener = getattr(lbl.get_root(), "open_file_link", None)
     if opener:
-        opener(lbl, *parse_file_href(uri))
+        opener(lbl, *target)
     return True
 
 
@@ -350,7 +380,7 @@ def tool_line(item):
                     tooltip_text=detail or None)
     try:
         Pango.parse_markup(re.sub(r"</?a\b[^>]*>", "", markup), -1, "\0")
-        lbl.set_markup(markup)
+        lbl.set_markup(label_links(markup))
     except GLib.Error:
         lbl.set_text(detail)
     lbl.connect("activate-link", on_link)
@@ -616,6 +646,10 @@ textview.md, textview.md > text { background: none; }
 .plan-decision.refused { color: #d6453d; background: rgba(229, 83, 75, 0.14); }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
+.card-hint { font-size: 0.92em; opacity: 0.8; }
+/* Terminal sans Remote Control (remotecontrol.py) : pastille de l'en-tête, carte du fil */
+menubutton.rc-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; color: #d4860b; }
+.wait-icon { color: #d4860b; }
 .questions { margin-bottom: 4px; }
 .question-option { margin-left: 8px; }
 .subagent { margin: 0 8px; }
@@ -675,10 +709,6 @@ textview.md, textview.md > text { background: none; }
 .after-fork { opacity: 0.35; }
 .fork-bar { border-radius: 6px; padding: 4px 8px; background: rgba(61, 174, 233, 0.15); }
 .copy.flat { padding: 0 6px; }
-.queued { padding: 2px 4px 2px 10px; border-radius: 8px; background: rgba(61, 174, 233, 0.12); }
-.queued-label { font-weight: bold; color: #3d8fd1; }
-.todos { padding: 4px 10px; border-radius: 8px; background: rgba(61, 174, 233, 0.08);
-         border: 1px solid rgba(61, 174, 233, 0.30); }
 .todo-list { padding: 2px 0 4px 18px; }
 .todo-mark { min-width: 14px; }
 .todo.in_progress { font-weight: bold; }
@@ -762,11 +792,6 @@ button.viewsave:hover { opacity: 1; }
 .chat-title { font-size: 1.2em; font-weight: bold; }
 .head-meta { font-size: 0.9em; }
 .head-meta > label { opacity: 0.7; }
-.pill { font-size: 0.9em; font-weight: bold; padding: 2px 10px; border-radius: 10px; }
-.pill.busy { color: #d4860b; background: rgba(227, 162, 59, 0.16); }
-.pill.waiting { color: #e5534b; background: rgba(229, 83, 75, 0.15); }
-.pill.shells { font-weight: normal; background: rgba(128, 128, 128, 0.15); }
-.pill spinner { min-width: 12px; min-height: 12px; }
 /* Contexte rempli (jauge) et coût de la dernière réponse */
 .usage > label, .usage > box > label { opacity: 0.7; }
 levelbar.context { min-width: 44px; }
@@ -789,17 +814,33 @@ textview.composer-input, textview.composer-input > text { background: none; }
 .composer-new { padding: 8px 10px 0 12px; font-size: 0.95em; }
 .composer-new > label { opacity: 0.7; }
 .hint { font-size: 0.9em; opacity: 0.7; }
-.strip { padding: 4px 8px 4px 12px; background: rgba(227, 162, 59, 0.08);
-         border-bottom: 1px solid rgba(128, 128, 128, 0.2); font-size: 0.95em; }
-.strip-label { color: #d4860b; font-weight: bold; }
-.strip.waiting { background: rgba(229, 83, 75, 0.08); }
-.strip.waiting .strip-label { color: #e5534b; }
-.strip spinner { color: #d4860b; }
-.strip-time { opacity: 0.7; font-feature-settings: "tnum"; }
-button.agents-pill { min-height: 22px; padding: 0 8px; border: none; border-radius: 6px; box-shadow: none;
-                     background: rgba(227, 162, 59, 0.16); color: #d4860b; font-weight: bold; }
-button.agents-pill:hover { background: rgba(227, 162, 59, 0.28); }
-button.agents-pill image { -gtk-icon-size: 14px; }
+/* Ce qui tourne et ce qui attend (activity.py) : à droite de la saisie, ou au-dessus.
+   Le trait de séparation est une ombre de 1px des deux côtés : le cadre de la saisie
+   (overflow caché) masque celle qui tombe sur son bord. */
+.activity-side { background: rgba(128, 128, 128, 0.07);
+                 box-shadow: -1px 0 alpha(currentColor, 0.15), 0 1px alpha(currentColor, 0.15); }
+.activity { padding: 4px 0; }
+.act-row { padding: 5px 6px 5px 12px; }
+.act-row.sub { padding-left: 32px; }
+.act-row.claude { background: rgba(227, 162, 59, 0.08); }
+.act-row.request { background: rgba(229, 83, 75, 0.08); }
+.act-row.queued { background: rgba(61, 174, 233, 0.10); }
+.act-icon { min-width: 16px; min-height: 18px; }
+.act-icon image { -gtk-icon-size: 14px; }
+.act-icon spinner { min-width: 14px; min-height: 14px; color: #d4860b; }
+.act-label { font-weight: bold; }
+.act-row.claude .act-label { color: #d4860b; }
+.act-row.request .act-label, .act-row.request .act-icon { color: #e5534b; }
+.act-row.queued .act-label, .act-row.queued .act-icon { color: #3d8fd1; }
+.act-row.agent .act-icon { color: #d4860b; }
+.act-detail { font-size: 0.92em; opacity: 0.85; }
+.act-detail.mono { font-family: monospace; font-size: 0.88em; }
+.act-sub { font-size: 0.88em; opacity: 0.65; }
+.act-time { font-size: 0.88em; opacity: 0.7; font-feature-settings: "tnum"; }
+button.act-btn { min-width: 24px; min-height: 24px; padding: 0; margin-top: -3px; }
+button.stop.act-stop { min-width: 26px; min-height: 22px; padding: 0; margin-top: -2px; }
+.todos { padding: 5px 6px 5px 6px; }
+.todos expander-widget > box > title { padding: 0; }
 button.stop { color: #e5534b; border: 1px solid rgba(229, 83, 75, 0.55); background: none;
               box-shadow: none; min-height: 24px; padding: 0 10px; font-weight: bold; }
 button.stop:hover { background: rgba(229, 83, 75, 0.12); }
@@ -838,20 +879,21 @@ DARK_CSS = """
 .sessions > row.session:selected { background-color: #1b313e; }
 .dot { background: #3daee9; }
 .row-time.unread { color: #3daee9; }
-.row-time.busy, .card-kind.busy, .pill.busy, .strip-label, button.agents-pill { color: #f0b85a; }
-.st-busy, .strip spinner, .tool-running { color: #e3a23b; }
-.row-time.action, .st-action, .card-kind.action, .pill.waiting, .strip.waiting .strip-label,
+.row-time.busy, .card-kind.busy, .act-row.claude .act-label, .act-row.agent .act-icon { color: #f0b85a; }
+.st-busy, .act-icon spinner, .tool-running { color: #e3a23b; }
+.row-time.action, .st-action, .card-kind.action, .act-row.request .act-label, .act-row.request .act-icon,
 .diff-del, .tool-failed, button.stop, .row-folder.missing { color: #f0716a; }
 .card-kind.unread, .choice-check { color: #3daee9; }
 .hostchip { background: rgba(255, 255, 255, 0.08); color: #d0d4d8; }
 .tagchip, button.tagchip, button.link-btn { color: #6cc0f0; }
-.queued-label { color: #8fd0f4; }
+.act-row.queued .act-label, .act-row.queued .act-icon { color: #8fd0f4; }
 .composer { border-color: #464b51; }
 .shell-mark { color: #f07dc0; }
 .composer.shell-mode { border-color: #f07dc0; }
 .home-card { background: #26292d; border-color: #3a3f45; }
 menubutton.chip > button { border-color: #3a3f45; color: #dfe3e7; }
 menubutton.chip.plan > button { color: #8fd0f4; }
+menubutton.rc-chip > button, .wait-icon { color: #f0b85a; }
 .count.busy { color: #f0b85a; }
 levelbar.context block.ok { background: #3daee9; }
 levelbar.context block.warn { background: #e3a23b; }

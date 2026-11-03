@@ -132,8 +132,8 @@ class TestVolet(unittest.TestCase):
         self.assertEqual((duration(42), duration(185), duration(3725)), ("42 s", "3 min", "1 h 02"))
 
     def test_bandeau(self):
-        """Pastille et étape des sous-agents dans le bandeau d'activité de la saisie."""
-        from claude_hub.agentsview import agent_line, agents_tooltip, running_agents
+        """Sous-agents au travail et leur étape, pour la liste d'activité de la saisie."""
+        from claude_hub.agentsview import agent_line, running_agents
         agents = [
             {"id": "a1", "type": "Explore", "description": "Trouver  les\ntests", "start": 10, "end": 50,
              "last": {"role": "tool", "name": "Grep", "input": {"pattern": "set_sort_func"}}},
@@ -152,11 +152,6 @@ class TestVolet(unittest.TestCase):
         self.assertEqual(agent_line(run[1]), "Trouver les tests › Grep set_sort_func")
         self.assertEqual(agent_line(run[2]), "Plan › Je lis le code")  # sans description : le type
         self.assertEqual(agent_line({"id": "x"}), "Agent")
-        tip = agents_tooltip(run).splitlines()
-        self.assertEqual(tip[0], "general-purpose · Review fix › Bash cargo test -p shipments")
-        self.assertEqual(tip[-1], "Clic : volet des sous-agents")
-        many = agents_tooltip([{"id": str(i), "description": f"d{i}"} for i in range(11)], limit=8)
-        self.assertEqual(many.splitlines()[-2:], ["… et 3 autres", "Clic : volet des sous-agents"])
 
 
 if __name__ == "__main__":

@@ -28,24 +28,25 @@ from .dirpicker import RemoteDirDialog
 from .tags import TagStore, dir_matches, dir_token, parse_query, tag_matches, toggle_token
 from .tagui import TAG_ICON, TagPopover, filter_popover, tag_chips
 from .viewer import FileViewer, ViewerWindow, follow_link, resolve
+from .remotecontrol import PERMISSION, RcChip, WaitCard
 from .permissions import EXEC_MODES, PLAN_REFUSAL, RequestCard, control_response, plan_allow, plan_deny
 from .planview import PlanPanel
 from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
-from .agentsview import (AGENT_ID, AgentsPanel, agent_line, agent_state, agents_tooltip,
-                         running_agents, workflow_text)
+from .agentsview import AGENT_ID, AgentsPanel, agent_state, running_agents, workflow_text
 from .toolcall import ToolCall, ToolRun
 from .feedtime import Timed, day_separator, last_day, unwrap
 from .feedsync import changed_from
 from .todos import TodoList, TodoPanel, created_id
+from .activity import (MAX_HEIGHT as ACTIVITY_MAX_HEIGHT, SIDE_WIDTH as ACTIVITY_WIDTH, ActivityPanel,
+                       ActivitySplit, agent_specs, claude_spec, queued_spec, request_spec, shell_spec)
 from .rename import RenamePopover, can_rename, rename_session
-from .shell import (ShellBlock, background_label, background_tooltip, mark_monitor, monitor_started,
-                    shell_argv, shell_command, waiting_text)
+from .shell import ShellBlock, mark_monitor, monitor_started, shell_argv, shell_command, waiting_text
 from .commands import CommandPopover, fetch_commands, match_commands, typed_command
 from .widgets import (
     ChoiceButton, Clamp, count_badge, host_chip, host_icon, host_kind, menu_popover, section_title, set_count,
     short_host, themed_icon, with_placeholder,
 )
-from .listrow import ACTION_STATES, NOTE_ICON, SessionRow, day_label, elapsed_text, local_date, status_kind
+from .listrow import ACTION_STATES, NOTE_ICON, SessionRow, day_label, local_date, status_kind
 from .home import DirButton, HomePage, plan_digest
 from .changes import EDIT_TOOLS, ChangesPanel, edits_from_items, group_files
 from .notes import excerpt, host_index, note_preview, note_snippet, store_of, valid_id, where_text
@@ -58,7 +59,6 @@ from .usage import UsageBox, context_tokens, cost_text, learn_windows, remember_
 HOME = ""  # clé du brouillon de la saisie de l'accueil (nouvelle conversation)
 CHAT_HINT = "Écrire à Claude…   « / » pour les commandes"
 HOME_HINT = "Que doit faire Claude ?   « / » pour les commandes"
-AGENT_STEPS = {f"Claude utilise {name}" for name in AGENT_TOOLS}  # étape : lancement d'un sous-agent
 SIDE_PAGES = ("plan", "file", "agents", "changes", "notes")  # pages du volet de droite
 
 
@@ -122,6 +122,7 @@ class Hub(Gtk.ApplicationWindow):
         self.pending = {}        # id de session -> {request_id: demande can_use_tool sans réponse}
         # (celles d'un terminal ou de claude.ai portent « remote » : l'id Remote Control)
         self.remote_answered = set()  # demandes répondues d'ici, encore publiées un moment par l'API
+        self.wait_card = None    # carte « Claude attend ta réponse dans son terminal » du fil
         self.agent_blocks = {}   # id de l'appel Agent -> bloc du sous-agent dans la vue affichée
         self.tool_calls = {}     # id d'un autre appel d'outil -> sa ligne dépliable
         self.remote_home = {}
@@ -371,19 +372,7 @@ class Hub(Gtk.ApplicationWindow):
         top = Gtk.Box(spacing=10)
         self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["chat-title"])
         top.append(self.title)
-        self.activity = Gtk.Box(spacing=6, css_classes=["pill"], visible=False, valign=Gtk.Align.CENTER)
-        self.spinner = Gtk.Spinner()
-        self.activity_label = Gtk.Label()
-        self.activity.append(self.spinner)
-        self.activity.append(self.activity_label)
-        top.append(self.activity)
-        # shells laissés en arrière-plan (« 1 shell » du terminal) : icône fixe, sans animation
-        self.shells_pill = Gtk.Box(spacing=5, css_classes=["pill", "shells"], visible=False,
-                                   valign=Gtk.Align.CENTER)
-        self.shells_pill.append(themed_icon("utilities-terminal-symbolic", "terminal-symbolic"))
-        self.shells_label = Gtk.Label()
-        self.shells_pill.append(self.shells_label)
-        top.append(self.shells_pill)
+        # (ce qui tourne et ce qui attend : à côté de la saisie, voir activity.py)
         top.append(Gtk.Box(hexpand=True))
         buttons = Gtk.Box(spacing=2, valign=Gtk.Align.CENTER)
         self.agents_btn = Gtk.Button(visible=False, css_classes=["flat"])
@@ -431,6 +420,7 @@ class Hub(Gtk.ApplicationWindow):
         # hôte · modèle et effort de la dernière réponse · dossier · id · tags
         self.head_meta = Gtk.Box(spacing=8, css_classes=["head-meta"])
         self.head_host = Gtk.Box()
+        self.rc_chip = RcChip()  # terminal sans Remote Control (remotecontrol.py)
         self.head_model = Gtk.Label()
         self.head_cwd = Gtk.Label(css_classes=["mono"], ellipsize=Pango.EllipsizeMode.MIDDLE,
                                   selectable=True)
@@ -438,8 +428,8 @@ class Hub(Gtk.ApplicationWindow):
         self.head_tags = Gtk.Box(spacing=4, visible=False)
         self.head_usage = UsageBox()  # contexte rempli, coût de la dernière réponse
         self.head_seps = [Gtk.Label(label="·") for _ in range(2)]
-        for w in (self.head_host, self.head_model, self.head_usage, self.head_seps[0], self.head_cwd,
-                  self.head_seps[1], self.head_id, self.head_tags):
+        for w in (self.head_host, self.rc_chip, self.head_model, self.head_usage, self.head_seps[0],
+                  self.head_cwd, self.head_seps[1], self.head_id, self.head_tags):
             self.head_meta.append(w)
         head.append(self.head_meta)
         conv.append(head)
@@ -458,13 +448,11 @@ class Hub(Gtk.ApplicationWindow):
         vadj.connect("changed", self.on_scroll_resized)
         vadj.connect("value-changed", self.on_scroll_moved)
 
-        # Sous le fil, dans la même colonne : tâches, copie en préparation, file, saisie.
+        # Sous le fil, dans la même colonne : copie en préparation, puis la saisie, avec à
+        # côté (au-dessus quand la place manque) ce qui tourne et ce qui attend.
         bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        chat.append(Clamp(bottom, 780, hexpand=True, margin_start=20, margin_end=20, margin_bottom=14))
-
-        # Tâches de Claude (TodoWrite, TaskCreate…), tant qu'il en reste à faire.
-        self.todo_panel = TodoPanel()
-        bottom.append(self.todo_panel)
+        chat.append(Clamp(bottom, 780, extra=self.activity_extra, hexpand=True, margin_start=20, margin_end=20,
+                          margin_bottom=14))
 
         # Copie de la conversation à partir d'un message (bouton au survol des messages).
         self.fork_bar = Gtk.Box(spacing=6, css_classes=["fork-bar"], visible=False)
@@ -477,41 +465,19 @@ class Hub(Gtk.ApplicationWindow):
         self.fork_bar.append(cancel)
         bottom.append(self.fork_bar)
 
-        # Messages en attente de la fin de la réponse en cours.
-        self.queue_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, visible=False)
-        bottom.append(self.queue_box)
-
+        # Un seul cadre : la saisie (main), et la liste de ce qui tourne et de ce qui
+        # attend (Claude, sous-agents, shells et monitors, tâches, messages en file).
         self.composer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["composer"],
                                 overflow=Gtk.Overflow.HIDDEN)
         bottom.append(self.composer)
-        # Activité de Claude : étape en cours, sa durée, et « Arrêter ».
-        self.strip = Gtk.Box(spacing=8, css_classes=["strip"], visible=False)
-        self.strip_spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
-        self.strip_label = Gtk.Label(css_classes=["strip-label"])
-        self.strip_detail = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
-                                      css_classes=["mono", "dim"])
-        self.strip_time = Gtk.Label(css_classes=["strip-time"])
-        # Sous-agents au travail (« 🤖 3 sous-agents ») : ouvre leur volet.
-        self.strip_agents = Gtk.Button(visible=False, valign=Gtk.Align.CENTER)
-        self.strip_agents.add_css_class("agents-pill")
-        inner = Gtk.Box(spacing=5)
-        inner.append(Gtk.Image(icon_name="claude-hub-agents-symbolic"))
-        self.strip_agents_label = Gtk.Label()
-        inner.append(self.strip_agents_label)
-        self.strip_agents.set_child(inner)
-        self.strip_agents.connect("clicked", lambda _b: self.toggle_agents())
-        self.stop_btn = Gtk.Button(css_classes=["stop"], visible=False, valign=Gtk.Align.CENTER,
-                                   tooltip_text="Interrompre Claude (Échap)")
-        inner = Gtk.Box(spacing=6)
-        inner.append(Gtk.Image(icon_name="media-playback-stop-symbolic"))
-        inner.append(Gtk.Label(label="Arrêter"))
-        self.stop_btn.set_child(inner)
-        self.stop_btn.connect("clicked", lambda _b: self.stop())
-        for w in (self.strip_spinner, self.strip_label, self.strip_agents, self.strip_detail,
-                  self.strip_time, self.stop_btn):
-            self.strip.append(w)
-        self.composer.append(self.strip)
-        self.strip_since, self.strip_timer = None, 0
+        main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.todo_panel = TodoPanel()  # tâches de Claude (TodoWrite, TaskCreate…)
+        self.activity_panel = ActivityPanel(self.todo_panel)
+        self.activity_side = Gtk.ScrolledWindow(
+            child=self.activity_panel, visible=False, css_classes=["activity-side"],
+            hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+            max_content_height=ACTIVITY_MAX_HEIGHT)
+        self.composer.append(ActivitySplit(main, self.activity_side))
 
         # Accueil : hôte et dossier de la nouvelle conversation.
         self.new_line = Gtk.Box(spacing=6, css_classes=["composer-new"], visible=False)
@@ -524,12 +490,12 @@ class Hub(Gtk.ApplicationWindow):
         for w in (Gtk.Label(label="Nouvelle conversation sur"), self.new_host_btn, Gtk.Label(label="dans"),
                   self.dir_btn):
             self.new_line.append(w)
-        self.composer.append(self.new_line)
+        main.append(self.new_line)
 
         self.attachments = []    # [(media_type, octets)]
         self.attach_box = Gtk.Box(spacing=6, margin_start=10, margin_top=8, visible=False,
                                   halign=Gtk.Align.START)
-        self.composer.append(self.attach_box)
+        main.append(self.attach_box)
 
         self.input = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, hexpand=True, top_margin=10,
                                   bottom_margin=4, left_margin=12, right_margin=12)
@@ -549,7 +515,8 @@ class Hub(Gtk.ApplicationWindow):
                                           max_content_height=220, propagate_natural_height=True,
                                           hscrollbar_policy=Gtk.PolicyType.NEVER)
         field, self.placeholder = with_placeholder(input_scroll, self.input, CHAT_HINT)
-        self.composer.append(field)
+        field.set_vexpand(True)  # côte à côte avec une liste plus haute : le champ s'étire
+        main.append(field)
         # Complétion des commandes « / » : liste par (hôte, dossier), demandée à claude.
         self.commands = {}  # (hôte, dossier) -> [commande] | "loading" | Exception
         self.cmd_popover = CommandPopover(input_scroll, self.pick_command)
@@ -607,7 +574,7 @@ class Hub(Gtk.ApplicationWindow):
                                     valign=Gtk.Align.CENTER, tooltip_text="Démarrer la conversation (Entrée)")
         self.start_btn.connect("clicked", lambda _b: self.start_from_home())
         bar.append(self.start_btn)
-        self.composer.append(bar)
+        main.append(bar)
         return chat
 
     def model_label(self, model):
@@ -1619,8 +1586,8 @@ class Hub(Gtk.ApplicationWindow):
             self.show_shells(s)
         else:
             self.load_history()
-        self.show_strip(None)  # le bandeau d'une autre conversation ne doit pas rester
-        self.todo_panel.show(s.get("todos"))
+        self.activity_panel.show([])  # les lignes d'une autre conversation ne doivent pas rester
+        self.show_todos(s.get("todos"))
         self.update_send_btn()
         self.show_queue()
         self.update_status()
@@ -1664,8 +1631,8 @@ class Hub(Gtk.ApplicationWindow):
         self.restore_input(HOME)
         self.show_mode(None)
         self.show_defaults()
-        self.show_strip(None)
-        self.todo_panel.show(None)
+        self.activity_panel.show([])
+        self.show_todos(None)
         self.show_queue()
         self.update_send_btn()
         self.update_status()
@@ -1696,8 +1663,11 @@ class Hub(Gtk.ApplicationWindow):
         sinon une action à faire là où tourne claude (terminal, claude.ai)."""
         reqs = self.pending.get(s["id"])
         if not reqs:
-            where = "sur claude.ai" if s.get("source") == "claude-cloud" else "dans son terminal"
-            return {"kind": "action", "text": f"Claude attend une réponse {where}."}
+            if s.get("source") == "claude-cloud":
+                return {"kind": "action", "text": "Claude attend une réponse sur claude.ai."}
+            if s.get("waiting_for") == PERMISSION:  # lu par « stat » (conversation affichée)
+                return {"kind": "action", "text": "Claude demande une autorisation dans son terminal."}
+            return {"kind": "action", "text": "Claude attend une réponse dans son terminal."}
         rid, req = next(iter(reqs.items()))
         tool, inp = req.get("tool_name"), req.get("input") or {}
         if tool == "ExitPlanMode":
@@ -1811,36 +1781,37 @@ class Hub(Gtk.ApplicationWindow):
         busy = bool(self.proc)
         self.send_btn.set_tooltip_text("Transmis à Claude, qui le lira après l'étape en cours"
                                        if busy else None)
-        self.stop_btn.set_visible(busy)
+        self.update_activity()  # « Arrêter » sur la ligne de Claude
         # /rename passe par un autre claude -p : pas pendant que celui du hub écrit
         self.rename_btn.set_sensitive(not busy)
         self.rename_btn.set_tooltip_text("Renommage possible une fois la réponse finie" if busy
                                          else "Renommer la conversation")
 
     def show_queue(self):
-        """Affiche les messages en file de la conversation affichée."""
-        while (child := self.queue_box.get_first_child()):
-            self.queue_box.remove(child)
+        """Messages en file de la conversation affichée, dans la liste d'activité."""
         queue = self.queues.get(self.current["id"], []) if self.current else []
-        for i, (text, images) in enumerate(queue):
-            row = Gtk.Box(spacing=8, css_classes=["queued"])
-            row.append(Gtk.Label(label="En file", css_classes=["queued-label"],
-                                 tooltip_text="Envoyé à la fin de la réponse en cours"))
-            summary = " ".join(text.split()) or ("(image seule)" if images else "(commandes « ! » seules)")
-            if images:
-                summary += f"  ·  {len(images)} image{'s' if len(images) > 1 else ''}"
-            row.append(Gtk.Label(label=summary, xalign=0, hexpand=True,
-                                 ellipsize=Pango.EllipsizeMode.END, tooltip_text=text or None))
-            edit = Gtk.Button(icon_name="document-edit-symbolic", css_classes=["flat"],
-                              tooltip_text="Remettre dans la saisie pour le modifier")
-            edit.connect("clicked", lambda _b, i=i: self.unqueue(i, edit=True))
-            row.append(edit)
-            drop = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat"],
-                              tooltip_text="Retirer de la file")
-            drop.connect("clicked", lambda _b, i=i: self.unqueue(i))
-            row.append(drop)
-            self.queue_box.append(row)
-        self.queue_box.set_visible(bool(queue))
+        self.activity_panel.show(queued=[
+            queued_spec(i, text, images, edit=lambda i=i: self.unqueue(i, edit=True),
+                        remove=lambda i=i: self.unqueue(i))
+            for i, (text, images) in enumerate(queue)])
+        self.show_activity_side()
+
+    def show_todos(self, todos):
+        """Tâches de Claude (TodoList, ou None), dans la liste d'activité."""
+        self.todo_panel.show(todos)
+        self.show_activity_side()
+
+    def activity_extra(self):
+        """Largeur ajoutée à droite de la saisie pour la liste d'activité, quand elle est
+        affichée : la saisie garde sa largeur si la fenêtre a la place (Clamp)."""
+        side = getattr(self, "activity_side", None)
+        return ACTIVITY_WIDTH if side is not None and side.get_visible() else 0
+
+    def show_activity_side(self):
+        """La liste d'activité n'apparaît à côté de la saisie que si elle a des lignes."""
+        shown = self.activity_panel.has_content()
+        if self.activity_side.get_visible() != shown:
+            self.activity_side.set_visible(shown)
 
     def unqueue(self, i, edit=False):
         queue = self.queues.get(self.current["id"], [])
@@ -1864,19 +1835,57 @@ class Hub(Gtk.ApplicationWindow):
         self.agent_blocks = {}
         self.tool_calls = {}
         self.feed, self.feed_start = [], 0
+        self.wait_card = None
 
     def open_question(self, items):
         """Conversation qui attend une réponse dans son terminal, sans Remote Control : déplie
         la question de Claude (AskUserQuestion) si c'est son dernier appel, pour la lire sans
-        chercher (on y répond dans le terminal)."""
+        chercher (on y répond dans le terminal). Faux si elle n'est pas dans le fil : en mode
+        auto, ou dans un tour relancé par la fin d'une tâche de fond, Claude Code ne l'écrit
+        qu'une fois répondue (docs/mode-plan-et-sous-agents.md)."""
         item = items[-1] if items else {}
         call = self.tool_calls.get(item.get("id")) if item.get("name") == "AskUserQuestion" else None
         if call is None or call.get_root() is not self:
-            return
+            return False
         run = call.get_ancestor(ToolRun.__gtype__)
         if run is not None:
             run.reveal()  # repliée en « N étapes »
         call.expander.set_expanded(True)
+        return True
+
+    def note_stat(self, s, res):
+        """Remote Control et attente du Claude de s (terminal), relus par la commande « stat »."""
+        if res.get("live"):
+            s["linked"], s["waiting_for"] = bool(res.get("bridge")), res.get("waiting_for")
+        else:
+            s.pop("linked", None)
+            s.pop("waiting_for", None)
+
+    def without_remote_control(self, s):
+        """s tourne dans un terminal sans être reliée à Remote Control (selon le dernier
+        « stat ») : Claude Hub ne peut ni lui écrire ni répondre à ses demandes."""
+        return (bool(s) and s.get("source") is None and s["host"] != CLOUD and not s.get("new")
+                and not self.is_streaming(s) and bool(s.get("live")) and s.get("linked") is False)
+
+    def wait_in_terminal(self, s, shown):
+        """Carte « Claude attend ta réponse dans son terminal » à la fin du fil, quand s attend
+        sans carte à laquelle répondre d'ici (shown : sa question est dépliée dans le fil) ;
+        refaite d'après son état, ou retirée."""
+        had = self.drop_wait_card()
+        if (s is not self.current or s.get("source") is not None or s["host"] == CLOUD
+                or s.get("live") not in ACTION_STATES or self.pending.get(s["id"])):
+            return
+        self.wait_card = WaitCard(s.get("waiting_for"), s.get("linked") is not False, shown)
+        self.append_item(self.wait_card)
+        if not had:
+            self.scroll_end()
+
+    def drop_wait_card(self):
+        """Retire la carte « Claude attend ta réponse dans son terminal » ; vrai s'il y en avait une."""
+        card, self.wait_card = self.wait_card, None
+        if card is not None and card.get_parent() is self.msgs:
+            self.msgs.remove(card)
+        return card is not None
 
     @staticmethod
     def can_answer_remote(s):
@@ -1887,27 +1896,38 @@ class Hub(Gtk.ApplicationWindow):
 
     def load_requests(self, s, items):
         """Conversation qui attend (terminal, claude.ai) : ses demandes en attente, lues dans
-        l'API Remote Control, en cartes auxquelles on répond d'ici. Sans Remote Control,
-        la question est seulement dépliée dans le fil."""
+        l'API Remote Control, en cartes auxquelles on répond d'ici. Sinon (pas de Remote
+        Control, API indisponible), la question est dépliée dans le fil si elle y est, et une
+        carte dit d'aller répondre dans le terminal."""
         if not self.can_answer_remote(s):
             return self.open_question(items)
         sid = s["id"]
 
         def fetch():
-            bridge = sid if s.get("source") == "claude-cloud" else run_helper(
-                s["host"], "stat", sid).get("bridge")
-            return [(rid, dict(req, remote=bridge)) for rid, req in remote_pending(bridge)] if bridge else []
+            res = None if s.get("source") == "claude-cloud" else run_helper(s["host"], "stat", sid)
+            bridge = sid if res is None else res.get("bridge")
+            try:
+                reqs = [(rid, dict(req, remote=bridge)) for rid, req in remote_pending(bridge)
+                        ] if bridge else []
+            except Exception:  # noqa: BLE001 — API indisponible : les cartes déjà là restent
+                reqs = None
+            return res, reqs
 
-        def done(reqs):
+        def done(out):
+            res, reqs = out
             if s is not self.current or self.is_streaming(s):
                 return
-            self.show_remote_requests(s, reqs)
+            if res is not None:
+                self.note_stat(s, res)
+            if reqs is not None:
+                self.show_remote_requests(s, reqs)
             if not self.pending.get(sid):
-                self.open_question(items)
+                self.wait_in_terminal(s, self.open_question(items))
+            self.update_status()
 
-        def fail(_e):  # API indisponible : la question reste lisible dans le fil
+        def fail(_e):  # script distant injoignable : la question reste lisible dans le fil
             if s is self.current:
-                self.open_question(items)
+                self.wait_in_terminal(s, self.open_question(items))
         in_thread(fetch, done, fail)
 
     def show_remote_requests(self, s, reqs):
@@ -1941,7 +1961,9 @@ class Hub(Gtk.ApplicationWindow):
 
     def drop_remote_requests(self, s):
         """s n'attend plus rien (selon son hôte ou claude.ai) : oublie ses demandes lues
-        dans l'API, et retire leurs cartes."""
+        dans l'API, et retire leurs cartes (et celle qui disait de répondre dans le terminal)."""
+        if s is self.current:
+            self.drop_wait_card()
         mine = self.pending.get(s["id"])
         if mine and any(req.get("remote") for req in mine.values()):
             self.show_remote_requests(s, [])
@@ -1975,7 +1997,7 @@ class Hub(Gtk.ApplicationWindow):
             # Le script distant rejoue toute la transcription ; Cursor et le cloud, l'historique lu.
             s["todos"] = (TodoList.from_events(res["todos"]) if "todos" in res
                           else TodoList.from_items(res["items"]))
-            self.todo_panel.show(s["todos"])
+            self.show_todos(s["todos"])
             if s.get("live") in ACTION_STATES:
                 self.load_requests(s, res["items"])
             else:
@@ -2031,8 +2053,9 @@ class Hub(Gtk.ApplicationWindow):
         l'index start de la transcription), sans le reconstruire : les éléments inchangés
         restent tels quels (dépliés, sélection, défilement) ; ce qui suit le dernier d'entre
         eux (éléments changés, réponse reçue en direct, avis) laisse la place aux éléments
-        relus. Les cartes des demandes encore en attente et les commandes « ! » pas encore
-        envoyées restent à la fin. Faux s'il faut tout reconstruire."""
+        relus. Les cartes des demandes encore en attente (et celle qui dit de répondre dans
+        le terminal) et les commandes « ! » pas encore envoyées restent à la fin. Faux s'il
+        faut tout reconstruire."""
         if self.feed_of is not s or not self.feed or self.feed[-1][1].get_parent() is not self.msgs:
             return False  # fil d'une autre conversation (copie, suite d'une conversation Cursor)
         at = changed_from([it for it, _ in self.feed], self.feed_start, items, start)
@@ -2055,7 +2078,7 @@ class Hub(Gtk.ApplicationWindow):
         while first is not None:
             nxt = first.get_next_sibling()
             self.msgs.remove(first)
-            if isinstance(first, RequestCard) and first.request_id in pending:
+            if (isinstance(first, RequestCard) and first.request_id in pending) or first is self.wait_card:
                 cards.append(first)
             first = nxt
         while (last := self.msgs.get_last_child()) is not None and last.has_css_class("feed-day"):
@@ -2173,6 +2196,8 @@ class Hub(Gtk.ApplicationWindow):
             s["workflows"] = res.get("workflows") or []  # workflows en arrière-plan pas encore finis
             s["workflows_waiting"] = bool(res.get("waiting"))  # Claude a fini son tour et les attend
             s["shells"] = res.get("shells") or []  # shells en arrière-plan qui tournent
+            if s.get("source") is None:
+                self.note_stat(s, res)
             self.update_status()
             if res["size"] != self.size and self.size != -1:
                 self.load_history()  # relit aussi les demandes en attente
@@ -2183,42 +2208,6 @@ class Hub(Gtk.ApplicationWindow):
         else:
             in_thread(lambda: run_helper(s["host"], "stat", s["id"]), done)
         return True
-
-    def show_strip(self, text, detail=None, since=None, agents=()):
-        """Bandeau d'activité de la saisie : étape (« Claude utilise Bash »), sous-agents au
-        travail, détail et durée depuis since ; None le masque."""
-        self.show_strip_agents(agents if text else ())
-        if not text:
-            if self.strip_timer:
-                GLib.source_remove(self.strip_timer)
-                self.strip_timer = 0
-            self.strip_spinner.set_spinning(False)
-            self.strip.set_visible(False)
-            return
-        detail = " ".join((detail or "").split())
-        if self.strip_label.get_text() != text:
-            self.strip_label.set_text(text)
-        if self.strip_detail.get_text() != detail:
-            self.strip_detail.set_text(detail)
-            self.strip_detail.set_tooltip_text(detail or None)
-        self.strip_since = since or time.monotonic()
-        self.strip_spinner.set_spinning(True)
-        self.strip.set_visible(True)
-        if not self.strip_timer:
-            self.strip_timer = GLib.timeout_add(1000, self.tick_strip)
-        self.tick_strip()
-
-    def show_strip_agents(self, agents):
-        """Pastille « 🤖 3 sous-agents » du bandeau (agents : ceux qui travaillent)."""
-        self.strip_agents.set_visible(bool(agents))
-        if not agents:
-            return
-        label = f"{len(agents)} sous-agent{'s' if len(agents) > 1 else ''}"
-        if self.strip_agents_label.get_text() != label:
-            self.strip_agents_label.set_text(label)
-        tip = agents_tooltip(agents)
-        if self.strip_agents.get_tooltip_text() != tip:
-            self.strip_agents.set_tooltip_text(tip)
 
     def running_agents(self, s):
         """Sous-agents de s qui travaillent, le plus récemment actif en premier : ceux de la
@@ -2241,79 +2230,62 @@ class Hub(Gtk.ApplicationWindow):
             return stream.get("bg_shells") or []
         return s.get("shells") or []
 
-    def show_background(self, s):
-        """Pastille « 1 shell en cours » (ou « 1 monitor ») de l'en-tête, avec la liste en
-        info-bulle."""
-        shells = self.background_shells(s)
-        self.shells_pill.set_visible(bool(shells))
-        if not shells:
-            return
-        label, tip = background_label(shells), background_tooltip(shells)
-        if self.shells_label.get_text() != label:
-            self.shells_label.set_text(label)
-        if self.shells_pill.get_tooltip_text() != tip:
-            self.shells_pill.set_tooltip_text(tip)
-
-    def tick_strip(self):
-        text = elapsed_text(time.monotonic() - (self.strip_since or time.monotonic()))
-        if self.strip_time.get_text() != text:
-            self.strip_time.set_text(text)
-        return True
-
     def step(self, s, text, detail=None):
         """Étape en cours de la réponse de s (claude -p lancé d'ici), avec son heure de début,
-        affichée dans le bandeau si s est la conversation affichée."""
+        affichée à côté de la saisie si s est la conversation affichée."""
         if (s.get("step") or (None, None))[:2] != (text, detail):
             s["step"] = (text, detail, time.monotonic())
         if self.current and self.current["id"] == s["id"]:
             self.update_activity()
 
     def update_activity(self):
-        """Pastille de l'en-tête et bandeau de la saisie."""
+        """Ce qui tourne et ce qui attend, à côté de la saisie (activity.py) : Claude au
+        travail (ou la demande qui attend une réponse), ses sous-agents, ses shells et
+        monitors en arrière-plan. Les tâches et la file ont leurs propres mises à jour."""
         s = self.current
         stream = self.streams.get(s["id"], (None, None))[1] if s else None
+        rows, busy = [], False
         if s and self.pending.get(s["id"]):
-            status, text = "waiting", "Claude attend ta réponse"
-        elif self.proc:  # les sous-agents sont comptés dans le bandeau de la saisie
-            status, text = "busy", "Claude travaille"
-        elif s and s.get("live") == "busy":
-            status = "busy"
+            rows.append(request_spec(self.request_entry(s), jump=self.show_request))
+        elif self.proc:
+            busy = True
+            step, detail, since = stream.get("step") or ("Claude réfléchit", None, None)
+            if stream.get("idle"):  # tour fini : claude attend ses sous-agents, shells ou monitors
+                shells = self.background_shells(s)
+                if self.running_agents(s):
+                    step, detail = "Claude attend ses sous-agents", None
+                elif shells:
+                    step, detail = waiting_text(shells), None
+            rows.append(claude_spec(step, detail, since, stop=self.stop))
+        elif s and s.get("live") == "busy":  # dans un terminal ou Cursor (et ses workflows)
+            busy = True
             n = len(s.get("workflows") or ()) if s.get("workflows_waiting") else 0
             text = ("Cursor génère" if s.get("source") == "cursor"
                     else "Claude attend un workflow" if n == 1
                     else f"Claude attend {n} workflows" if n
                     else "Claude travaille (dans un terminal)")
-        elif s and s.get("live") in ACTION_STATES:
-            status, text = "waiting", "Action requise"
-        else:
-            status, text = None, ""
-        self.activity.set_visible(bool(status))
-        self.activity_label.set_text(text)
-        self.activity.set_css_classes(["pill"] + ([status] if status else []))
-        self.spinner.set_visible(status == "busy")
-        self.spinner.set_spinning(status == "busy")
-        agents = self.running_agents(s) if status == "busy" else []
-        if status == "busy" and self.proc:
-            step, detail, since = stream.get("step") or ("Claude réfléchit", None, None)
-            shells = self.background_shells(s)
-            if agents and stream.get("idle"):  # tour fini, claude attend ses sous-agents
-                step = "Claude attend ses sous-agents"
-            elif shells and stream.get("idle"):  # tour fini, claude attend ses shells ou monitors
-                step = waiting_text(shells)
-                detail = shells[0].get("description") or shells[0].get("command")
-            # Pendant un appel Agent ou l'attente, l'étape du sous-agent dit davantage.
-            if agents and (not detail or stream.get("idle") or step in AGENT_STEPS):
-                detail = agent_line(agents[0])
-            self.show_strip(step, detail, since, agents)
-        elif status == "busy":  # dans un terminal ou Cursor (et l'avancement de ses workflows)
-            detail = workflow_text(s.get("workflows")) or (agent_line(agents[0]) if agents else None)
-            self.show_strip(text, detail, self.busy_start(s), agents)
-        else:
-            if s:
-                s.pop("busy_since", None)
-            self.show_strip(None)
-        self.stop_btn.set_visible(bool(self.proc))
-        self.show_background(s)
+            rows.append(claude_spec(text, workflow_text(s.get("workflows")), self.busy_start(s)))
+        elif s and s.get("live") in ACTION_STATES:  # on y répond là où tourne claude
+            rows.append(request_spec(self.request_entry(s)))
+        if s and not busy:
+            s.pop("busy_since", None)
+        if busy:
+            rows += agent_specs(self.running_agents(s), indent=True,
+                                open_agent=lambda a: self.open_agent(a.get("id") or a.get("tool")),
+                                open_panel=self.show_agents_panel)
+        rows += [shell_spec(sh) for sh in self.background_shells(s)]
+        self.activity_panel.show(rows)
+        self.show_activity_side()
+
+    def show_request(self):
+        """« Aller à la demande » : le fil défile jusqu'à la carte qui attend une réponse."""
+        pending = self.pending.get(self.current["id"]) if self.current else None
+        child = self.msgs.get_last_child()
+        while child is not None:
+            if isinstance(child, RequestCard) and pending and child.request_id in pending:
+                return self.scroll_to(child)
+            child = child.get_prev_sibling()
+        self.scroll_end()
 
     def set_live_since(self, s, since):
         """Garde la date (ms, horloge de l'hôte) où la session de s est passée à « busy »,
@@ -2340,6 +2312,10 @@ class Hub(Gtk.ApplicationWindow):
     def update_status(self):
         s = self.current
         self.update_activity()
+        if self.without_remote_control(s):
+            self.rc_chip.show_for(s["host"])
+        else:
+            self.rc_chip.set_visible(False)
         if self.proc:
             return
         if s is None:
@@ -2357,6 +2333,9 @@ class Hub(Gtk.ApplicationWindow):
         elif s and s.get("source") == "cursor":
             self.status.set_text("Conversation Cursor (lecture seule) : ton message démarre une "
                                  "session Claude sur le même hôte, avec cette conversation en contexte.")
+        elif s and s.get("live") and not s.get("new") and s.get("linked") is False:
+            self.status.set_text("Ouverte dans un terminal sans Remote Control : Claude Hub te "
+                                 "proposera une copie (voir « Sans Remote Control » en haut).")
         elif s and s.get("live") and not s.get("new"):
             self.status.set_text("Ouverte dans un terminal : ton message lui sera transmis via "
                                  "Remote Control (sinon, Claude Hub te proposera une copie).")
@@ -3276,7 +3255,7 @@ class Hub(Gtk.ApplicationWindow):
                 elif b.get("type") == "tool_use":
                     self.step(s, f"Claude utilise {b.get('name')}", tool_detail(b.get("input")))
         if self.track_todos(ev, s) and s is self.current:
-            self.todo_panel.show(s["todos"])
+            self.show_todos(s["todos"])
         if s is not self.current:
             return
         if t == "user":  # sorties d'outils (de la conversation ou d'un sous-agent)
@@ -3634,9 +3613,11 @@ class Hub(Gtk.ApplicationWindow):
         alive = self.agents_alive(s)
         running = sum(agent_state(a, alive) == "running" for a in agents)
         self.agents_btn.set_visible(bool(agents))
-        self.agents_count.set_text(f"{len(agents)}" + (f" · {running} en cours" if running else ""))
-        self.agents_btn.set_tooltip_text(f"Sous-agents de cette conversation ({len(agents)})")
-        self.update_activity()  # pastille et étape des sous-agents dans le bandeau
+        # ceux qui travaillent sont listés à côté de la saisie : ici, le total
+        self.agents_count.set_text(f"{len(agents)}")
+        self.agents_btn.set_tooltip_text(f"Sous-agents de cette conversation ({len(agents)}"
+                                         + (f", dont {running} au travail)" if running else ")"))
+        self.update_activity()  # lignes des sous-agents à côté de la saisie
         if self.has_agents_files(s):
             host, sid = s["host"], s["id"]
             self.agents_panel.set_session(
@@ -3669,6 +3650,9 @@ class Hub(Gtk.ApplicationWindow):
     def toggle_agents(self):
         if self.agents_panel.get_visible() and self.side_stack.get_visible_child() is self.agents_panel:
             return self.close_side("agents")
+        self.show_agents_panel()
+
+    def show_agents_panel(self):
         self.agents_panel.update((self.current or {}).get("agents"), self.agents_alive(self.current))
         self.show_side("agents")
 

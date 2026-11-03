@@ -6,8 +6,8 @@ l'affiche dans le fil. Comme dans le terminal, Claude ne répond pas tout de sui
 la commande et sa sortie partent avec le message suivant, dans les balises que
 Claude Code enregistre pour elles (<bash-input>, <bash-stdout>, <bash-stderr>).
 
-Aussi : textes de la pastille de l'en-tête pour les shells et les monitors (outil Monitor)
-qui tournent en arrière-plan.
+Aussi : textes des shells et des monitors (outil Monitor) qui tournent en arrière-plan,
+pour la liste d'activité à côté de la saisie (activity.py).
 """
 import os
 import re
@@ -66,14 +66,9 @@ def background_counts(shells, one="1"):
     return " et ".join(f"{one if k == 1 else k} {what}{'s' if k > 1 else ''}" for k, what in parts if k)
 
 
-def background_label(shells):
-    """Pastille de l'en-tête pour les shells et monitors qui tournent en arrière-plan
-    (« 1 shell en cours », le « 1 shell » du terminal) ; "" s'il n'y en a pas."""
-    return f"{background_counts(shells)} en cours" if shells else ""
-
-
 def waiting_text(shells):
-    """Bandeau de la saisie quand Claude a fini son tour et attend ses tâches de fond."""
+    """Ligne de Claude, à côté de la saisie, quand il a fini son tour et attend ses tâches
+    de fond."""
     return f"Claude attend {background_counts(shells, 'un')}"
 
 
@@ -86,7 +81,7 @@ def since_text(seconds):
 
 
 def background_tooltip(shells, now=None, limit=8):
-    """Info-bulle de la pastille : par shell ou monitor, sa description (ou sa commande) et
+    """Info-bulle des lignes des tâches de fond : par shell ou monitor, sa description (ou sa commande) et
     depuis quand il tourne, puis la première ligne de sa commande, et pour un monitor son
     dernier événement."""
     now = time.time() if now is None else now

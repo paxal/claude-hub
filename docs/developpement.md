@@ -53,7 +53,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `cursor.py` | conversations Cursor (base `state.vscdb`, Linux ou macOS ; recherche) |
 | `cloud.py` | sessions claude.ai/code et agents cloud Cursor ; jeton lu dans `~/.claude` ou le trousseau macOS |
 | `render.py` | Markdown en ligne, coloration, images, chemins cliquables, cartes des messages, ligne d'un appel d'outil, CSS (et teintes du thème sombre) |
-| `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie, gestionnaire de signal qui ne retient pas son widget (`weak_handler`) |
+| `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`, qui peut s'élargir à droite pour la liste d'activité), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie, gestionnaire de signal qui ne retient pas son widget (`weak_handler`) |
 | `listrow.py` | lignes de la liste (icône d'état, heure, boutons du survol), séparateurs de jour |
 | `feedtime.py` | heure des éléments du fil (colonne à droite) et séparateurs de jour du fil |
 | `feedsync.py` | relecture de l'historique : premier élément du fil à refaire, pour n'ajouter que le nouveau au lieu de tout reconstruire |
@@ -67,18 +67,20 @@ restent sur `master`. Marche à suivre pour les agents :
 | `attachments.py` | conversion des images jointes |
 | `viewer.py` | volet et fenêtre d'affichage des fichiers cités |
 | `permissions.py` | cartes des demandes de Claude (plan, questions, autorisations) et réponses |
+| `remotecontrol.py` | conversation ouverte dans un terminal sans Remote Control : pastille de l'en-tête et son explication, carte du fil quand Claude attend une réponse dans le terminal |
 | `planview.py` | plan de Claude dans le volet latéral, avec ses actions |
 | `subagents.py` | blocs des sous-agents (suivi en direct, transcription à la demande) |
 | `agentsview.py` | volet « Sous-agents » : arbre des sous-agents, état et transcription suivie |
 | `toolcall.py` | appels d'outils dépliables sur leur sortie (en direct, ou lue à la demande), suites repliées en « N étapes » |
-| `todos.py` | liste de tâches de Claude (TodoWrite, TaskCreate, TaskUpdate) et son volet |
+| `todos.py` | liste de tâches de Claude (TodoWrite, TaskCreate, TaskUpdate) et son volet repliable, dans la liste d'activité |
+| `activity.py` | ce qui tourne et ce qui attend, à côté de la saisie : Claude (étape, durée, « Arrêter ») ou la demande en attente, sous-agents, shells et monitors, tâches, messages en file ; lignes mises à jour sur place d'après leur clé ; disposition à droite de la saisie ou au-dessus (`ActivitySplit`) |
 | `dirpicker.py` | sélecteur de dossier sur un hôte SSH |
 | `tags.py` | stockage des tags, analyse de la recherche (`#tag`, `dir:`) |
 | `notes.py` | notes Markdown : lecture et écriture sur l'hôte de la conversation (ce PC pour le cloud), index, file d'enregistrement, extraits pour la recherche |
 | `notesview.py` | volet « Notes » : aperçu, édition, enregistrement automatique |
 | `tagui.py` | pastilles, éditeur de tags, menus de filtre |
 | `commands.py` | complétion des commandes « / » (liste demandée à `claude`, filtrage, suggestions) |
-| `shell.py` | commandes « ! » : lancement sur l'hôte, bloc du fil, texte joint au message suivant ; textes de la pastille des shells et monitors en arrière-plan |
+| `shell.py` | commandes « ! » : lancement sur l'hôte, bloc du fil, texte joint au message suivant ; décompte et info-bulle des shells et monitors en arrière-plan |
 | `rename.py` | renommage par `/rename` (commande sur l'hôte, popover) |
 | `window.py` | fenêtre principale |
 | `app.py` | application GTK et point d'entrée |

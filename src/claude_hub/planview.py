@@ -6,7 +6,7 @@ carte du fil et le volet ensemble.
 """
 from .gtk import Gtk, Pango
 from .permissions import EXEC_MODES, mode_row
-from .render import copy_button, esc, file_href, make_label, render_md
+from .render import copy_button, esc, file_href, label_links, make_label, render_md
 
 
 class PlanPanel(Gtk.Box):
@@ -57,7 +57,7 @@ class PlanPanel(Gtk.Box):
         self.sid, self.plan, self.path, self.request_id = sid, plan, path, request_id
         self.decision = None
         if path:
-            self.where.set_markup(f'<a href="{esc(file_href(path))}">{esc(path)}</a>')
+            self.where.set_markup(label_links(f'<a href="{esc(file_href(path))}">{esc(path)}</a>'))
             self.where.set_tooltip_text(path)
         else:
             self.where.set_text("")
