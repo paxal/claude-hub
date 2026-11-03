@@ -56,6 +56,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `widgets.py` | widgets communs : colonne de largeur limitée (`Clamp`), pastilles renvoyées à la ligne (`WrapBox`), bouton à choix (modèle, effort, mode, hôte), pastille d'hôte, texte indicatif de la saisie, gestionnaire de signal qui ne retient pas son widget (`weak_handler`) |
 | `listrow.py` | lignes de la liste (icône d'état, heure, boutons du survol), séparateurs de jour |
 | `feedtime.py` | heure des éléments du fil (colonne à droite) et séparateurs de jour du fil |
+| `feedsync.py` | relecture de l'historique : premier élément du fil à refaire, pour n'ajouter que le nouveau au lieu de tout reconstruire |
 | `switcher.py` | sélecteur rapide Ctrl+K et sa recherche approximative |
 | `views.py` | vues enregistrées (pastilles sous la recherche) |
 | `changes.py` | fichiers modifiés : diffs (claude ou recalculés), regroupement par fichier, volet |

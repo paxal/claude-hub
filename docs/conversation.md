@@ -236,6 +236,20 @@ La liste est reconstituée sur toute la transcription, même quand l'historique
 affiché est tronqué, puis suivie en direct pendant une réponse. Les tâches des
 sous-agents n'y figurent pas.
 
+## Suivi du fil
+
+La conversation affichée est relue quand sa transcription change : toutes les 4 s
+pour une conversation d'un terminal ou de Cursor, quand l'API annonce du nouveau
+pour le cloud, et à la fin d'une réponse lancée d'ici. Le fil n'est pas reconstruit
+pour autant : seuls les éléments nouveaux, ou ceux qui ont changé (sortie d'une
+commande « ! » du terminal, sous-agent du cloud qui avance), y entrent. Le reste
+garde son état (appels dépliés, sélection), et la vue ne bouge pas si l'on est
+remonté lire plus haut ; en bas du fil, elle suit les nouveaux éléments. À la fin
+d'une réponse lancée d'ici, ce qui a été reçu en direct est remplacé par les
+éléments de la transcription (heure, point de copie). Le fil n'est reconstruit en
+entier qu'à l'ouverture de la conversation (avec ses 300 derniers éléments, une
+conversation longue y passe une à deux secondes).
+
 ## Écrire pendant une réponse
 
 Le bouton « Envoyer » a un menu avec trois façons d'envoyer un message pendant
