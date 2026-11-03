@@ -60,7 +60,8 @@ scénario lève une exception).
 ## Faux claude
 
 `FAUX_CLAUDE_SCENARIO` : `simple` (défaut), `long` (texte, code, tableau, outils,
-TodoWrite, Edit), `plan`, `autorisation`, `question`, `sous-agent`, `erreur`, `lent`
+TodoWrite, Edit), `plan`, `build` (plan puis exécution : tâches, Edit, Write, autorisation
+Bash, réponse finale), `autorisation`, `question`, `sous-agent`, `erreur`, `lent`
 (10 étapes d'une seconde : bandeau, « Arrêter », file d'attente), `shell` (Bash laissé
 en arrière-plan 6 s : pastille « 1 shell en cours »), ou le chemin d'un
 JSON avec ses propres étapes (format en tête de `tests/faux-claude`).

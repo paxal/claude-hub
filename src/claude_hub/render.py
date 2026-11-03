@@ -4,6 +4,7 @@ import re
 from urllib.parse import quote, unquote
 
 from .gtk import GLib, Gdk, GdkPixbuf, Gio, Gtk, Pango
+from .hosts import MODE_LABELS
 from .todos import TODO_TOOLS, todo_detail
 
 
@@ -412,18 +413,51 @@ def images_row(images):
     return row
 
 
-def plan_widget(plan, path=None, box=None):
+def plan_decision_text(decision):
+    """Texte de la pastille d'un plan tranché : decision = {"ok", "mode", "text",
+    "interrupted", "label"} (mode : celui choisi pour l'exécution, connu seulement quand la
+    réponse est partie d'ici ; label : autre issue, demande expirée ou annulée)."""
+    if decision.get("label"):
+        return decision["label"]
+    if decision.get("interrupted"):
+        return "⏹ Interrompu"
+    if not decision.get("ok"):
+        return "✗ Refusé"
+    mode = MODE_LABELS.get(decision.get("mode"))
+    return f"✓ Validé · {mode.lower()}" if mode else "✓ Validé"
+
+
+def show_plan_decision(box, decision):
+    """Ajoute à un plan (plan_widget) la décision prise : pastille dans l'en-tête et, pour
+    un refus, la remarque transmise à Claude. Visibles même plan replié."""
+    badge = Gtk.Label(label=plan_decision_text(decision), ellipsize=Pango.EllipsizeMode.END,
+                      css_classes=["plan-decision", "ok" if decision.get("ok") else "refused"])
+    if decision.get("tip"):
+        badge.set_tooltip_text(decision["tip"])
+    box.plan_head.insert_child_after(badge, box.plan_head.get_first_child())
+    text = " ".join(str(decision.get("text") or "").split())
+    if text and not decision.get("ok"):
+        remark = Gtk.Label(label=f"Remarque : {text}", xalign=0, wrap=True, lines=2,
+                           ellipsize=Pango.EllipsizeMode.END, css_classes=["sid"],
+                           tooltip_text=str(decision["text"]))
+        box.insert_child_after(remark, box.plan_head)
+
+
+def plan_widget(plan, path=None, box=None, decision=None):
     """Plan soumis par Claude (ExitPlanMode), rendu en Markdown dans un cadre (box, ou un nouveau).
 
     Le bouton « volet » appelle open_plan(plan, path) de la fenêtre ; tant que le
     volet montre ce plan, la fenêtre masque box.plan_body (repli de la carte).
+    decision : la réponse donnée au plan, s'il a été tranché (show_plan_decision).
     """
     box = box or Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.add_css_class("card")
     box.add_css_class("plan")
     head = Gtk.Box(spacing=6)
-    head.append(Gtk.Label(label="📋 Plan proposé par Claude", xalign=0, hexpand=True,
+    # Le titre ne s'étire pas : la pastille de la décision le suit, les boutons vont à droite.
+    head.append(Gtk.Label(label="📋 Plan proposé par Claude", xalign=0,
                           css_classes=["card-title"]))
+    head.append(Gtk.Box(hexpand=True))
     side = Gtk.Button(icon_name="view-dual-symbolic", css_classes=["flat"],
                       tooltip_text="Ouvrir dans le volet")
 
@@ -435,7 +469,7 @@ def plan_widget(plan, path=None, box=None):
     head.append(side)
     head.append(copy_button(plan, "Copier le plan (Markdown)"))
     box.append(head)
-    box.plan_text, box.plan_side = plan, side
+    box.plan_text, box.plan_side, box.plan_head = plan, side, head
     box.plan_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     if isinstance(path, str) and path:
         box.plan_body.append(make_label(f'<a href="{esc(file_href(path))}">{esc(path)}</a>', "sid"))
@@ -443,6 +477,8 @@ def plan_widget(plan, path=None, box=None):
     render_md(plan or "(plan vide)", body)
     box.plan_body.append(body)
     box.append(box.plan_body)
+    if decision:
+        show_plan_decision(box, decision)
     return box
 
 
@@ -502,7 +538,8 @@ def message_widget(item, on_fork=None):
     if role == "tool":
         inp = item.get("input") if isinstance(item.get("input"), dict) else {}
         if item.get("name") == "ExitPlanMode" and isinstance(inp.get("plan"), str):
-            return plan_widget(inp["plan"], inp.get("planFilePath"))
+            decision = item.get("decision") if isinstance(item.get("decision"), dict) else None
+            return plan_widget(inp["plan"], inp.get("planFilePath"), decision=decision)
         return tool_line(item)
     if role == "user" and (item.get("text") or "").startswith("[Request interrupted by user"):
         return make_label("⏹ Interrompu", "notice")  # noté par claude après une interruption
@@ -565,6 +602,9 @@ textview.md, textview.md > text { background: none; }
 .card.done.refused { color: #e5534b; }
 .plan-summary.ok { color: #3fb950; }
 .plan-summary.refused { color: #e5534b; }
+.plan-decision { border-radius: 10px; padding: 0 8px; font-size: 0.9em; font-weight: bold; }
+.plan-decision.ok { color: #2f9e44; background: rgba(63, 185, 80, 0.14); }
+.plan-decision.refused { color: #d6453d; background: rgba(229, 83, 75, 0.14); }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
 .questions { margin-bottom: 4px; }
@@ -810,6 +850,8 @@ levelbar.context block.warn { background: #e3a23b; }
 levelbar.context block.full { background: #f0716a; }
 .usage label.context-text.full { color: #f0716a; }
 button.viewchip.active { color: #8fd0f4; }
+.plan-decision.ok { color: #56d364; }
+.plan-decision.refused { color: #f0716a; }
 """
 
 # Breeze : curseur de défilement de 6px + bordures 2×5px + marges 2×-9px = -2px, d'où

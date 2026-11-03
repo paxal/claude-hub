@@ -351,6 +351,23 @@ function createdTask(r, creating) {
   return null;
 }
 
+const PLAN_REMARK = 2000;  // caractères gardés de la remarque jointe au refus d'un plan
+
+// Décision prise sur un plan (ExitPlanMode), d'après le résultat de l'outil : validé (ok),
+// refusé avec la remarque transmise à Claude (text), ou demande interrompue. Notée sur
+// l'élément du plan (plans : id de l'appel -> élément). Le mode d'exécution choisi en
+// validant n'est pas dans la transcription.
+function planDecision(c, plans) {
+  for (const b of Array.isArray(c) ? c : []) {
+    if (!b || typeof b !== "object" || b.type !== "tool_result" || typeof b.tool_use_id !== "string"
+        || !plans.has(b.tool_use_id)) continue;
+    const ok = !b.is_error;
+    const text = ok ? "" : resultText(b.content);
+    plans.get(b.tool_use_id).decision = text.startsWith("[Request interrupted by user")
+      ? {ok: false, text: "", interrupted: true} : {ok, text: cut(text, PLAN_REMARK)};
+  }
+}
+
 // Messages et appels d'outils d'une transcription ; renvoie [items, dernier modèle, son effort].
 // todos : liste complétée par les appels de TodoWrite, TaskCreate et TaskUpdate de toute
 // la transcription, et par les numéros attribués aux tâches créées.
@@ -365,6 +382,7 @@ function usageTokens(u) {
 // ({tokens, model}), null après une compaction.
 function transcriptItems(p, sidechain = false, todos = null, usage = null) {
   const items = [], creating = new Set();
+  const plans = new Map();  // id de l'appel ExitPlanMode -> élément du plan, qui recevra la décision
   let model = null, effort = null;
   let caveat = false;  // message précédent : avertissement d'une commande locale (/rename…)
   let mark = 0, when = null;  // éléments de l'enregistrement en cours (à dater), sa date
@@ -402,6 +420,7 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
       continue;
     }
     if (r.type === "user") {
+      if (plans.size) planDecision(c, plans);
       const ev = creating.size && todos ? createdTask(r, creating) : null;
       if (ev) todos.push(ev);
       let t = textOf(c);
@@ -428,6 +447,7 @@ function transcriptItems(p, sidechain = false, todos = null, usage = null) {
       }
       else if (b.type === "tool_use") {
         items.push({role: "tool", name: b.name, input: b.input, id: b.id === undefined ? null : b.id});
+        if (b.name === "ExitPlanMode" && typeof b.id === "string") plans.set(b.id, items[items.length - 1]);
         if (todos && TODO_TOOLS.includes(b.name)) {
           todos.push(items[items.length - 1]);
           if (b.name === "TaskCreate") creating.add(b.id === undefined ? null : b.id);

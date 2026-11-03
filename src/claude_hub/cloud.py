@@ -229,9 +229,12 @@ def cloud_history(sid, limit):
             break
         after = page.get("last_id")
     items, agents = [], cloud_agents(events)
+    plans = {}  # id de l'appel ExitPlanMode -> élément du plan, qui recevra la décision
     for ev in events:
         content = (ev.get("message") or {}).get("content")
         start = len(items)
+        if ev.get("type") == "user" and plans:
+            plan_decision(content, plans)
         if ev.get("type") == "user" and (ev.get("isCompactSummary") or not ev.get("isSynthetic")):
             text = content if isinstance(content, str) else "\n".join(
                 b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
@@ -251,10 +254,26 @@ def cloud_history(sid, limit):
                                   "id": b.get("id")})
                     if b.get("id") in agents:
                         items[-1]["agent"] = agents[b["id"]]
+                    if b.get("name") == "ExitPlanMode" and isinstance(b.get("id"), str):
+                        plans[b["id"]] = items[-1]
         ts = iso_ts(ev.get("timestamp") or ev.get("created_at"))
         for it in items[start:] if ts else ():  # heure affichée dans le fil
             it["ts"] = int(ts)
     return {"size": len(events), "total": len(items), "items": items[-limit:]}
+
+
+def plan_decision(content, plans):
+    """Décision prise sur un plan, d'après le résultat d'ExitPlanMode : comme la commande
+    « history » des scripts distants (validé, refusé avec la remarque, ou interrompu)."""
+    for b in content if isinstance(content, list) else []:
+        if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                and isinstance(b.get("tool_use_id"), str) and b["tool_use_id"] in plans):
+            continue
+        ok = not b.get("is_error")
+        text = "" if ok else block_text(b.get("content"))
+        plans[b["tool_use_id"]]["decision"] = (
+            {"ok": False, "text": "", "interrupted": True} if text.startswith("[Request interrupted by user")
+            else {"ok": ok, "text": text[:2000]})
 
 
 def block_text(content):

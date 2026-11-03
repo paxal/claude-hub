@@ -125,6 +125,18 @@ Dans le `.jsonl` de la conversation (rechargement, hôtes distants) :
 
 - bloc `tool_use` `name == "ExitPlanMode"`, `input.plan` ;
 - la ligne `user` du résultat a `toolUseResult = {"plan", "isAgent", "filePath"}` ;
+- **décision** (vérifié, Haiku, claude 2.1.3xx : un refus puis une validation) :
+  le `tool_result` d'un plan refusé a `is_error: true` et pour contenu la
+  remarque telle quelle (`toolUseResult` : `"Error: <remarque>"`,
+  `toolDenialKind`) ; celui d'un plan validé commence par « User has approved
+  your plan. You can now start coding… » et recopie le plan. Le mode choisi
+  pour l'exécution n'est écrit nulle part : les lignes `user` des résultats
+  n'ont pas de `permissionMode` (seul le message tapé en a un). Chaque
+  résultat porte `permissionDecision` (`{"decision": "accept"|"reject",
+  "source": "user_reject"|"user_temporary"|"config", …}`). La commande
+  `history` des scripts distants en tire `decision` sur l'élément du plan :
+  `{"ok", "text"}` (la remarque d'un refus), ou `{"ok": false, "interrupted":
+  true}` pour un résultat `[Request interrupted by user…]` ;
 - pièces jointes `attachment.type` = `plan_mode` (entrée) et
   `plan_mode_exit` (sortie) ;
 - chaque message `user` porte `permissionMode` (`"plan"`, …) ;
