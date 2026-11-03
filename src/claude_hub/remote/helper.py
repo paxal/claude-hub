@@ -284,6 +284,8 @@ def cmd_note(sid):
     print(json.dumps(res))
 
 TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
+EVENT = re.compile(r"<event>(.*?)</event>", re.S)
+EVENT_LIMIT = 500  # caractères gardés du dernier événement d'un monitor
 BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
 USER_BACKGROUNDED = re.compile(r"<bash-stdout>Command was manually backgrounded by user with ID: (\w+)")
 
@@ -296,42 +298,71 @@ def user_record(line):
     return r if isinstance(r, dict) and r.get("type") == "user" and not r.get("isSidechain") else None
 
 def shell_event(line, last_input):
-    """Shell passé en arrière-plan ou arrêté d'après une ligne : (« start », id, appel Bash,
-    commande), (« stop », id, None, None) ou None ; et la dernière commande « ! » tapée.
-    Arrière-plan : run_in_background, délai dépassé, Ctrl+B (backgroundTaskId), ou commande
-    « ! » renvoyée en arrière-plan. Arrêt : résultat de TaskStop (ou de l'ancien KillShell),
-    qui n'écrit pas de <task-notification>."""
-    if not ('"backgroundTaskId"' in line or "<bash-" in line or "Successfully" in line):
+    """Shell ou monitor lancé en arrière-plan, ou arrêté, d'après une ligne : (« start », id,
+    appel d'outil, commande, « shell » ou « monitor »), (« stop », id, None, None, None) ou
+    None ; et la dernière commande « ! » tapée. Shell : run_in_background, délai dépassé,
+    Ctrl+B (backgroundTaskId), ou commande « ! » renvoyée en arrière-plan. Monitor : résultat
+    de l'outil Monitor (taskId et timeoutMs). Arrêt : résultat de TaskStop (ou de l'ancien
+    KillShell), qui n'écrit pas de <task-notification>."""
+    if not ('"backgroundTaskId"' in line or "<bash-" in line or "Successfully" in line
+            or '"timeoutMs"' in line):
         return None, last_input
     r = user_record(line)
     if r is None:
         return None, last_input
     res, content = r.get("toolUseResult"), (r.get("message") or {}).get("content")
-    if isinstance(res, dict) and res.get("backgroundTaskId"):
+    shell = isinstance(res, dict) and res.get("backgroundTaskId")
+    if shell or (isinstance(res, dict) and res.get("taskId") and "timeoutMs" in res):
         tool = None
         for b in content if isinstance(content, list) else []:
             if isinstance(b, dict) and b.get("type") == "tool_result":
                 tool = b.get("tool_use_id")
                 break
-        return ("start", str(res["backgroundTaskId"]), tool, None), last_input
+        return (("start", str(res["backgroundTaskId"]), tool, None, "shell") if shell
+                else ("start", str(res["taskId"]), tool, None, "monitor")), last_input
     if isinstance(res, dict) and str(res.get("message") or "").startswith("Successfully"):
         tid = res.get("task_id") or res.get("shell_id")
-        return (("stop", str(tid), None, None) if tid else None), last_input
+        return (("stop", str(tid), None, None, None) if tid else None), last_input
     t = text_of(content)
     m = BASH_INPUT.search(t)
     if m:
         last_input = m.group(1).strip()
     m = USER_BACKGROUNDED.search(t)
-    return (("start", m.group(1), None, last_input) if m else None), last_input
+    return (("start", m.group(1), None, last_input, "shell") if m else None), last_input
+
+def json_text(raw):
+    """Texte d'un morceau de chaîne JSON pris tel quel dans une ligne (échappements décodés)."""
+    try:
+        return json.loads('"' + raw + '"')
+    except ValueError:
+        return raw
+
+def notified(line):
+    """Tâches des <task-notification> d'une ligne : [(id, événement)], événement None quand
+    la notification dit la tâche finie. Un monitor en envoie une à chaque événement (<event>,
+    sans <status>) ; il finit sur un <status>, ou sur un message de Claude Code entre
+    crochets (« [Monitor expired …] », « [Monitor stopped] »…)."""
+    out = []
+    for part in line.split("<task-notification>")[1:]:
+        part = part.split("</task-notification>", 1)[0]
+        m = TASK_ID.search(part)
+        if not m:
+            continue
+        ev = EVENT.search(part) if "<status>" not in part else None
+        text = json_text(ev.group(1)) if ev else None
+        out.append((m.group(1), None if text is None or text.startswith("[Monitor ") else text))
+    return out
 
 def scan_main(p, started):
     """Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
     lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
     plus ancien est mort avec son processus) et pas encore notifiés comme finis, lignes
     écrites depuis la fin du dernier tour de Claude (None si aucun tour n'est fini), et
-    shells passés en arrière-plan depuis started, ni notifiés comme finis ni arrêtés
-    ({"id", "tool" : appel Bash, "command" : commande « ! », "start" : epoch})."""
+    shells et monitors lancés en arrière-plan depuis started, ni notifiés comme finis ni
+    arrêtés ({"id", "kind" : shell ou monitor, "tool" : appel d'outil, "command" : commande
+    « ! », "start" : epoch, "event" : dernier événement d'un monitor})."""
     bridge, launched, ended, tail, shells, last_input = None, {}, set(), None, [], None
+    events = {}  # monitor -> son dernier événement
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
             if '"bridge-session"' in line:
@@ -345,7 +376,7 @@ def scan_main(p, started):
             elif ev:
                 t = msg_time(line)
                 if started is None or t is None or t * 1000 >= started:
-                    shells.append({"id": ev[1], "tool": ev[2], "command": ev[3], "start": t})
+                    shells.append({"id": ev[1], "kind": ev[4], "tool": ev[2], "command": ev[3], "start": t})
             if '"local_workflow"' in line:
                 try:
                     r = json.loads(line)
@@ -359,12 +390,19 @@ def scan_main(p, started):
                 except (ValueError, AttributeError):
                     pass
             if "<task-notification>" in line:
-                ended.update(TASK_ID.findall(line))
+                for tid, event in notified(line):
+                    if event is None:
+                        ended.add(tid)
+                    else:
+                        events[tid] = event[:EVENT_LIMIT]
             if '"subtype":"turn_duration"' in line:
                 tail = []
             elif tail is not None:
                 tail.append(line)
     pending = [w for tid, w in launched.items() if tid not in ended]
+    for sh in shells:
+        if sh["kind"] == "monitor":
+            sh["event"] = events.get(sh["id"])
     return bridge, pending, tail, [sh for sh in shells if sh["id"] not in ended]
 
 def task_outputs(pid):
@@ -398,8 +436,8 @@ def task_outputs(pid):
     return out
 
 def shell_inputs(p, shells):
-    """Description et commande des appels Bash qui ont lancé les shells (seconde passe,
-    faite seulement quand un shell tourne)."""
+    """Description et commande des appels Bash ou Monitor qui ont lancé les shells et les
+    monitors (seconde passe, faite seulement quand l'un d'eux tourne)."""
     want = {}
     for sh in shells:
         if sh.get("tool"):
@@ -421,15 +459,25 @@ def shell_inputs(p, shells):
                     sh["description"] = inp.get("description") if isinstance(inp.get("description"), str) else ""
                     sh["command"] = inp.get("command") if isinstance(inp.get("command"), str) else sh["command"]
 
-def running_shells(p, shells, pid):
-    """Shells en arrière-plan qui tournent encore : ceux de la transcription dont la sortie
-    est encore ouverte (un shell arrêté depuis le terminal ne laisse aucune trace dans la
-    transcription), ou tous si /proc ne le dit pas. {"id", "description", "command", "start"}."""
-    alive = task_outputs(pid) if shells else None
-    shells = [sh for sh in shells if alive is None or sh["id"] in alive]
+def running_shells(p, shells, pid, status):
+    """Shells et monitors en arrière-plan qui tournent encore. Shell : sa sortie est encore
+    ouverte (un shell arrêté depuis le terminal ne laisse aucune trace dans la transcription),
+    ou tous si /proc ne le dit pas. Monitor : claude lit sa sortie et l'écrit lui-même, mais
+    sa fin est notifiée ; et la session (status) ne repasse à « idle » qu'une fois ses shells
+    et monitors finis (« shell » d'ici là). {"id", "kind", "description", "command", "start"},
+    plus "event" pour un monitor."""
+    alive = task_outputs(pid) if any(sh["kind"] == "shell" for sh in shells) else None
+    shells = [sh for sh in shells if (status != "idle" if sh["kind"] == "monitor"
+                                      else alive is None or sh["id"] in alive)]
     shell_inputs(p, shells)
-    return [{"id": sh["id"], "description": sh.get("description") or "",
-             "command": sh.get("command") or "", "start": sh["start"]} for sh in shells]
+    out = []
+    for sh in shells:
+        o = {"id": sh["id"], "kind": sh["kind"], "description": sh.get("description") or "",
+             "command": sh.get("command") or "", "start": sh["start"]}
+        if sh["kind"] == "monitor":
+            o["event"] = sh.get("event")
+        out.append(o)
+    return out
 
 def starts_turn(line):
     """Vrai si la ligne montre Claude au travail : sa réponse, un résultat d'outil, ou un
@@ -491,8 +539,9 @@ def cmd_stat(sid):
                       "live": (sess.get("status") or "idle") if sess else None, "bridge": bridge,
                       "since": ms_of(sess.get("statusUpdatedAt")) if sess else None,
                       "workflows": workflows,
-                      # shells en arrière-plan (« 1 shell » du terminal)
-                      "shells": running_shells(p, shells, sess.get("pid")) if sess else [],
+                      # shells et monitors en arrière-plan (« 1 shell », « 1 monitor » du terminal)
+                      "shells": running_shells(p, shells, sess.get("pid"), sess.get("status"))
+                      if sess else [],
                       # Claude a fini son tour et attend la fin des workflows
                       "waiting": bool(workflows) and tail is not None
                       and not any(starts_turn(l) for l in tail)}))

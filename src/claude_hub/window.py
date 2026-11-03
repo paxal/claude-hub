@@ -37,7 +37,8 @@ from .toolcall import ToolCall, ToolRun
 from .feedtime import Timed, day_separator, last_day, unwrap
 from .todos import TodoList, TodoPanel, created_id
 from .rename import RenamePopover, can_rename, rename_session
-from .shell import ShellBlock, background_label, background_tooltip, shell_argv, shell_command
+from .shell import (ShellBlock, background_label, background_tooltip, mark_monitor, monitor_started,
+                    shell_argv, shell_command, waiting_text)
 from .commands import CommandPopover, fetch_commands, match_commands, typed_command
 from .widgets import (
     ChoiceButton, Clamp, count_badge, host_chip, host_icon, host_kind, menu_popover, section_title, set_count,
@@ -2127,8 +2128,8 @@ class Hub(Gtk.ApplicationWindow):
         return running_agents(files + live, self.agents_alive(s))
 
     def background_shells(self, s):
-        """Shells en arrière-plan de s qui tournent : annoncés par le flux de son claude -p,
-        sinon relus sur l'hôte (session de terminal, commande « stat »)."""
+        """Shells et monitors en arrière-plan de s qui tournent : annoncés par le flux de son
+        claude -p, sinon relus sur l'hôte (session de terminal, commande « stat »)."""
         if not s:
             return []
         stream = self.streams.get(s["id"], (None, None))[1]
@@ -2137,7 +2138,8 @@ class Hub(Gtk.ApplicationWindow):
         return s.get("shells") or []
 
     def show_background(self, s):
-        """Pastille « 1 shell en cours » de l'en-tête, avec la liste en info-bulle."""
+        """Pastille « 1 shell en cours » (ou « 1 monitor ») de l'en-tête, avec la liste en
+        info-bulle."""
         shells = self.background_shells(s)
         self.shells_pill.set_visible(bool(shells))
         if not shells:
@@ -2192,9 +2194,8 @@ class Hub(Gtk.ApplicationWindow):
             shells = self.background_shells(s)
             if agents and stream.get("idle"):  # tour fini, claude attend ses sous-agents
                 step = "Claude attend ses sous-agents"
-            elif shells and stream.get("idle"):  # tour fini, claude attend la fin de ses shells
-                step = ("Claude attend un shell" if len(shells) == 1
-                        else f"Claude attend {len(shells)} shells")
+            elif shells and stream.get("idle"):  # tour fini, claude attend ses shells ou monitors
+                step = waiting_text(shells)
                 detail = shells[0].get("description") or shells[0].get("command")
             # Pendant un appel Agent ou l'attente, l'étape du sous-agent dit davantage.
             if agents and (not detail or stream.get("idle") or step in AGENT_STEPS):
@@ -3027,7 +3028,8 @@ class Hub(Gtk.ApplicationWindow):
         self.keep_mode(s["id"], s["mode"])
         self.unsent.pop(s["id"], None)  # envoyée : n'est plus un brouillon
         s["tasks"], s["idle"] = set(), False
-        s.pop("bg_shells", None)
+        for key in ("bg_shells", "monitors", "monitor_calls"):
+            s.pop(key, None)
         s["step"] = ("Claude réfléchit", None, time.monotonic())
         s.pop("interrupted", None)
         self.touch(s["id"])
@@ -3134,6 +3136,14 @@ class Hub(Gtk.ApplicationWindow):
             for b in ev.get("message", {}).get("content", []):
                 if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in EDIT_TOOLS:
                     s.setdefault("edit_ids", set()).add(b.get("id"))
+                elif isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Monitor":
+                    s.setdefault("monitor_calls", set()).add(b.get("id"))  # pour la pastille
+        if t == "user":  # monitor lancé : la pastille ne le compte pas comme un shell
+            tid = monitor_started(ev.get("tool_use_result") or ev.get("toolUseResult"))
+            if tid:
+                mark_monitor(s, tid)
+                if self.current and self.current["id"] == s["id"]:
+                    self.update_activity()
         if t == "user" and s.get("edit_ids"):
             content = ev.get("message", {}).get("content")
             if any(isinstance(b, dict) and b.get("tool_use_id") in s["edit_ids"]
@@ -3450,7 +3460,9 @@ class Hub(Gtk.ApplicationWindow):
         live = s.setdefault("live_agents", {})  # id de l'appel Agent -> sous-agent vu dans le flux
         if sub == "task_started":
             s["tasks"].add(tid)
-            if ev.get("task_type") != "local_bash":  # un shell en arrière-plan n'est pas un sous-agent
+            if ev.get("task_type") == "local_bash" and tool in (s.get("monitor_calls") or ()):
+                mark_monitor(s, str(tid))
+            if ev.get("task_type") != "local_bash":  # un shell ou un monitor n'est pas un sous-agent
                 s["agents_stale"] = True  # nouveau sous-agent : relire la liste
                 if tool:  # pour le bandeau, avant que la liste relue sur l'hôte le connaisse
                     live[tool] = {"id": tid, "tool": tool, "type": ev.get("subagent_type"),
@@ -3472,15 +3484,17 @@ class Hub(Gtk.ApplicationWindow):
         self.update_activity()
 
     def on_background_tasks(self, ev, s):
-        """Liste des tâches en arrière-plan que claude -p tient à jour : ses shells
-        (task_type « local_bash ») alimentent la pastille de l'en-tête."""
+        """Liste des tâches en arrière-plan que claude -p tient à jour : ses shells et ses
+        monitors (task_type « local_bash » pour les deux) alimentent la pastille de l'en-tête."""
         known = {sh["id"]: sh for sh in s.get("bg_shells") or ()}
         shells = []
         for task in ev.get("tasks") or ():
             if isinstance(task, dict) and task.get("task_type") == "local_bash" and task.get("task_id"):
                 tid = str(task["task_id"])
-                shells.append(known.get(tid) or {"id": tid, "description": str(task.get("description") or ""),
-                                                 "command": "", "start": time.time()})
+                kind = "monitor" if tid in (s.get("monitors") or ()) else "shell"
+                shells.append(known.get(tid) or {"id": tid, "kind": kind, "start": time.time(),
+                                                 "description": str(task.get("description") or ""),
+                                                 "command": ""})
         s["bg_shells"] = shells
         if self.current and self.current["id"] == s["id"]:
             self.update_activity()

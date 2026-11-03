@@ -77,7 +77,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `notesview.py` | volet « Notes » : aperçu, édition, enregistrement automatique |
 | `tagui.py` | pastilles, éditeur de tags, menus de filtre |
 | `commands.py` | complétion des commandes « / » (liste demandée à `claude`, filtrage, suggestions) |
-| `shell.py` | commandes « ! » : lancement sur l'hôte, bloc du fil, texte joint au message suivant ; textes de la pastille des shells en arrière-plan |
+| `shell.py` | commandes « ! » : lancement sur l'hôte, bloc du fil, texte joint au message suivant ; textes de la pastille des shells et monitors en arrière-plan |
 | `rename.py` | renommage par `/rename` (commande sur l'hôte, popover) |
 | `window.py` | fenêtre principale |
 | `app.py` | application GTK et point d'entrée |

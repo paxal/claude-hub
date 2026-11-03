@@ -276,23 +276,29 @@ un workflow », suivi de l'avancement lu dans le journal du workflow : son nom, 
 agents finis sur les agents lancés, et celui qui tourne avec sa phase
 (« review · 151/152 agents · review_style #5 : r5 · pass1 · General Rust 1/2 »).
 
-## Shells en arrière-plan
+## Shells et monitors en arrière-plan
 
 Quand Claude laisse tourner une commande en arrière-plan (Bash avec
 `run_in_background`, commande passée en arrière-plan après son délai ou par
 Ctrl+B, commande « ! » renvoyée en arrière-plan dans le terminal), l'en-tête
 montre la pastille « 1 shell en cours », comme le « 1 shell » du terminal, même
-quand Claude a fini son tour. Son info-bulle donne, pour chaque shell, sa
-description, depuis quand il tourne et la première ligne de sa commande. La
-pastille disparaît quand le shell se termine, quand Claude l'arrête, ou quand
-claude est quitté (ses shells meurent avec lui). Pour une conversation lancée
-depuis le hub, le bandeau dit aussi « Claude attend un shell » une fois le tour
-fini.
+quand Claude a fini son tour. De même pour un monitor (outil Monitor, qui
+surveille une commande et prévient Claude à chaque ligne qu'elle écrit) :
+« 1 monitor en cours », ou « 1 shell et 1 monitor en cours ». L'info-bulle donne,
+pour chacun, sa description, depuis quand il tourne et la première ligne de sa
+commande ; pour un monitor, aussi son dernier événement. La pastille disparaît
+quand le shell ou le monitor se termine (un monitor expire au bout de son délai,
+30 minutes en général), quand Claude l'arrête, ou quand claude est quitté (ils
+meurent avec lui). Pour une conversation lancée depuis le hub, le bandeau dit
+aussi « Claude attend un shell » (ou « un monitor ») une fois le tour fini.
 
 Sous Linux, claude-hub vérifie que le shell tourne encore (sa sortie est encore
 ouverte par un processus lancé par claude) : un shell arrêté depuis le terminal
 ne laisse aucune trace dans la conversation. Ailleurs (macOS), la pastille reste
-alors affichée jusqu'à l'arrêt de claude.
+alors affichée jusqu'à l'arrêt de claude. Pour un monitor, claude-hub se fie à
+la conversation (sa fin y est notifiée) et au statut de la session : au repos,
+claude écrit `shell` tant qu'une tâche de fond tourne, puis `idle` ; à `idle`, la
+pastille disparaît.
 
 ## Fin des réponses
 

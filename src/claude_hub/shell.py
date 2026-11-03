@@ -6,7 +6,8 @@ l'affiche dans le fil. Comme dans le terminal, Claude ne répond pas tout de sui
 la commande et sa sortie partent avec le message suivant, dans les balises que
 Claude Code enregistre pour elles (<bash-input>, <bash-stdout>, <bash-stderr>).
 
-Aussi : textes de la pastille de l'en-tête pour les shells qui tournent en arrière-plan.
+Aussi : textes de la pastille de l'en-tête pour les shells et les monitors (outil Monitor)
+qui tournent en arrière-plan.
 """
 import os
 import re
@@ -36,11 +37,44 @@ def shell_command(text):
     return text[1:].strip() if text.startswith("!") else None
 
 
+def is_monitor(sh):
+    """Tâche de fond lancée par l'outil Monitor (sinon : un shell)."""
+    return sh.get("kind") == "monitor"
+
+
+def mark_monitor(s, tid):
+    """Flux de claude -p : la tâche tid de la conversation s est un monitor. Le flux le
+    décrit comme un shell (task_type « local_bash ») ; on le sait par l'appel de l'outil
+    Monitor (task_started) ou par son résultat (taskId et timeoutMs)."""
+    s.setdefault("monitors", set()).add(tid)
+    for sh in s.get("bg_shells") or ():
+        if sh["id"] == tid:
+            sh["kind"] = "monitor"
+
+
+def monitor_started(result):
+    """Id de la tâche lancée d'après le résultat d'un appel de l'outil Monitor, sinon None."""
+    if isinstance(result, dict) and result.get("taskId") and "timeoutMs" in result:
+        return str(result["taskId"])
+    return None
+
+
+def background_counts(shells, one="1"):
+    """« 1 shell », « 2 monitors », « 1 shell et 1 monitor »… (one : écriture de 1)."""
+    n = sum(1 for sh in shells or () if is_monitor(sh))
+    parts = [(len(shells or ()) - n, "shell"), (n, "monitor")]
+    return " et ".join(f"{one if k == 1 else k} {what}{'s' if k > 1 else ''}" for k, what in parts if k)
+
+
 def background_label(shells):
-    """Pastille de l'en-tête pour les shells qui tournent en arrière-plan (« 1 shell en
-    cours », le « 1 shell » du terminal) ; "" s'il n'y en a pas."""
-    n = len(shells or ())
-    return f"{n} shell{'s' if n > 1 else ''} en cours" if n else ""
+    """Pastille de l'en-tête pour les shells et monitors qui tournent en arrière-plan
+    (« 1 shell en cours », le « 1 shell » du terminal) ; "" s'il n'y en a pas."""
+    return f"{background_counts(shells)} en cours" if shells else ""
+
+
+def waiting_text(shells):
+    """Bandeau de la saisie quand Claude a fini son tour et attend ses tâches de fond."""
+    return f"Claude attend {background_counts(shells, 'un')}"
 
 
 def since_text(seconds):
@@ -52,20 +86,27 @@ def since_text(seconds):
 
 
 def background_tooltip(shells, now=None, limit=8):
-    """Info-bulle de la pastille : par shell, sa description (ou sa commande) et depuis
-    quand il tourne, puis la première ligne de sa commande."""
+    """Info-bulle de la pastille : par shell ou monitor, sa description (ou sa commande) et
+    depuis quand il tourne, puis la première ligne de sa commande, et pour un monitor son
+    dernier événement."""
     now = time.time() if now is None else now
     lines = []
     for sh in (shells or ())[:limit]:
         desc = " ".join(str(sh.get("description") or "").split())
         cmd = " ".join(str(sh.get("command") or "").strip().split("\n")[0].split())
         what = desc or cmd or str(sh.get("id") or "shell")
+        if is_monitor(sh):
+            what = f"Monitor : {what}"
         start = sh.get("start")
         if isinstance(start, (int, float)) and not isinstance(start, bool):
             what += f" · depuis {since_text(now - start)}"
         lines.append(what[:160])
         if desc and cmd:
             lines.append(f"  $ {cmd[:120]}{'…' if len(cmd) > 120 else ''}")
+        event = [line for line in str(sh.get("event") or "").split("\n") if line.strip()]
+        if is_monitor(sh) and event:
+            last = " ".join(event[-1].split())
+            lines.append(f"  → {last[:120]}{'…' if len(last) > 120 else ''}")
     if len(shells or ()) > limit:
         lines.append(f"… et {len(shells) - limit} autres")
     return "\n".join(lines)

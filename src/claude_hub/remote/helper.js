@@ -79,20 +79,25 @@ function userRecord(line) {
   return r && typeof r === "object" && r.type === "user" && !r.isSidechain ? r : null;
 }
 const isDict = v => !!v && typeof v === "object" && !Array.isArray(v);
-// Shell passé en arrière-plan ou arrêté d'après une ligne : ["start", id, appel Bash,
-// commande], ["stop", id] ou null ; et la dernière commande « ! » tapée. Arrière-plan :
-// run_in_background, délai dépassé, Ctrl+B (backgroundTaskId), ou commande « ! » renvoyée
-// en arrière-plan. Arrêt : résultat de TaskStop (ou de l'ancien KillShell), qui n'écrit
-// pas de <task-notification>.
+// Shell ou monitor lancé en arrière-plan, ou arrêté, d'après une ligne : ["start", id,
+// appel d'outil, commande, "shell" ou "monitor"], ["stop", id] ou null ; et la dernière
+// commande « ! » tapée. Shell : run_in_background, délai dépassé, Ctrl+B
+// (backgroundTaskId), ou commande « ! » renvoyée en arrière-plan. Monitor : résultat de
+// l'outil Monitor (taskId et timeoutMs). Arrêt : résultat de TaskStop (ou de l'ancien
+// KillShell), qui n'écrit pas de <task-notification>.
 function shellEvent(line, lastInput) {
-  if (!(line.includes('"backgroundTaskId"') || line.includes("<bash-") || line.includes("Successfully")))
+  if (!(line.includes('"backgroundTaskId"') || line.includes("<bash-") || line.includes("Successfully")
+        || line.includes('"timeoutMs"')))
     return [null, lastInput];
   const r = userRecord(line);
   if (!r) return [null, lastInput];
   const res = r.toolUseResult, content = (r.message || {}).content;
-  if (isDict(res) && res.backgroundTaskId) {
+  const shell = isDict(res) && res.backgroundTaskId;
+  if (shell || (isDict(res) && res.taskId && "timeoutMs" in res)) {
     const b = (Array.isArray(content) ? content : []).find(b => isDict(b) && b.type === "tool_result");
-    return [["start", String(res.backgroundTaskId), b ? b.tool_use_id || null : null, null], lastInput];
+    const tool = b ? b.tool_use_id || null : null;
+    return [shell ? ["start", String(res.backgroundTaskId), tool, null, "shell"]
+                  : ["start", String(res.taskId), tool, null, "monitor"], lastInput];
   }
   if (isDict(res) && String(res.message || "").startsWith("Successfully")) {
     const tid = res.task_id || res.shell_id;
@@ -102,18 +107,41 @@ function shellEvent(line, lastInput) {
   let m = /<bash-input>([\s\S]*?)<\/bash-input>/.exec(t);
   if (m) lastInput = m[1].trim();
   m = /<bash-stdout>Command was manually backgrounded by user with ID: (\w+)/.exec(t);
-  return [m ? ["start", m[1], null, lastInput] : null, lastInput];
+  return [m ? ["start", m[1], null, lastInput, "shell"] : null, lastInput];
+}
+const EVENT_LIMIT = 500;  // caractères gardés du dernier événement d'un monitor
+// Texte d'un morceau de chaîne JSON pris tel quel dans une ligne (échappements décodés).
+function jsonText(raw) {
+  try { return JSON.parse('"' + raw + '"'); } catch (e) { return raw; }
+}
+// Tâches des <task-notification> d'une ligne : [[id, événement]], événement null quand la
+// notification dit la tâche finie. Un monitor en envoie une à chaque événement (<event>,
+// sans <status>) ; il finit sur un <status>, ou sur un message de Claude Code entre
+// crochets (« [Monitor expired …] », « [Monitor stopped] »…).
+function notified(line) {
+  const out = [];
+  for (let part of line.split("<task-notification>").slice(1)) {
+    part = part.split("</task-notification>")[0];
+    const m = /<task-id>([^<]+)<\/task-id>/.exec(part);
+    if (!m) continue;
+    const ev = part.includes("<status>") ? null : /<event>([\s\S]*?)<\/event>/.exec(part);
+    const text = ev ? jsonText(ev[1]) : null;
+    out.push([m[1], text === null || text.startsWith("[Monitor ") ? null : text]);
+  }
+  return out;
 }
 
 // Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
 // lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
 // plus ancien est mort avec son processus) et pas encore notifiés comme finis, lignes
 // écrites depuis la fin du dernier tour de Claude (null si aucun tour n'est fini), et
-// shells passés en arrière-plan depuis started, ni notifiés comme finis ni arrêtés
-// ({id, tool : appel Bash, command : commande « ! », start : epoch}).
+// shells et monitors lancés en arrière-plan depuis started, ni notifiés comme finis ni
+// arrêtés ({id, kind : shell ou monitor, tool : appel d'outil, command : commande « ! »,
+// start : epoch, event : dernier événement d'un monitor}).
 function scanMain(p, started) {
   let bridge = null, tail = null, lastInput = null;
   const launched = new Map(), ended = new Set(), shells = [];
+  const events = new Map();  // monitor -> son dernier événement
   for (const line of lines(p)) {
     if (!line) continue;
     if (line.includes('"bridge-session"')) { const r = parse(line); if (r && r.bridgeSessionId) bridge = r.bridgeSessionId; }
@@ -123,7 +151,7 @@ function scanMain(p, started) {
     else if (ev) {
       const t = msgTime(line);
       if (started === null || t === null || t * 1000 >= started)
-        shells.push({id: ev[1], tool: ev[2], command: ev[3], start: t});
+        shells.push({id: ev[1], kind: ev[4], tool: ev[2], command: ev[3], start: t});
     }
     if (line.includes('"local_workflow"')) {
       const r = parse(line), res = r && r.toolUseResult;
@@ -134,10 +162,14 @@ function scanMain(p, started) {
       }
     }
     if (line.includes("<task-notification>"))
-      for (const m of line.matchAll(/<task-id>([^<]+)<\/task-id>/g)) ended.add(m[1]);
+      for (const [tid, event] of notified(line)) {
+        if (event === null) ended.add(tid);
+        else events.set(tid, Array.from(event).slice(0, EVENT_LIMIT).join(""));
+      }
     if (line.includes('"subtype":"turn_duration"')) tail = [];
     else if (tail !== null) tail.push(line);
   }
+  for (const sh of shells) if (sh.kind === "monitor") sh.event = events.has(sh.id) ? events.get(sh.id) : null;
   return {bridge, pending: [...launched].filter(([tid]) => !ended.has(tid)).map(([, w]) => w), tail,
           shells: shells.filter(sh => !ended.has(sh.id))};
 }
@@ -169,8 +201,8 @@ function taskOutputs(pid) {
   }
   return out;
 }
-// Description et commande des appels Bash qui ont lancé les shells (seconde passe,
-// faite seulement quand un shell tourne).
+// Description et commande des appels Bash ou Monitor qui ont lancé les shells et les
+// monitors (seconde passe, faite seulement quand l'un d'eux tourne).
 function shellInputs(p, shells) {
   const want = new Map(shells.filter(sh => sh.tool).map(sh => [sh.tool, sh]));
   if (!want.size) return;
@@ -185,15 +217,19 @@ function shellInputs(p, shells) {
     }
   }
 }
-// Shells en arrière-plan qui tournent encore : ceux de la transcription dont la sortie
-// est encore ouverte (un shell arrêté depuis le terminal ne laisse aucune trace dans la
-// transcription), ou tous si /proc ne le dit pas. {id, description, command, start}.
-function runningShells(p, shells, pid) {
-  const alive = shells.length ? taskOutputs(pid) : null;
-  shells = shells.filter(sh => alive === null || alive.has(sh.id));
+// Shells et monitors en arrière-plan qui tournent encore. Shell : sa sortie est encore
+// ouverte (un shell arrêté depuis le terminal ne laisse aucune trace dans la transcription),
+// ou tous si /proc ne le dit pas. Monitor : claude lit sa sortie et l'écrit lui-même, mais
+// sa fin est notifiée ; et la session (status) ne repasse à « idle » qu'une fois ses shells
+// et monitors finis (« shell » d'ici là). {id, kind, description, command, start}, plus
+// event pour un monitor.
+function runningShells(p, shells, pid, status) {
+  const alive = shells.some(sh => sh.kind === "shell") ? taskOutputs(pid) : null;
+  shells = shells.filter(sh => sh.kind === "monitor" ? status !== "idle" : alive === null || alive.has(sh.id));
   shellInputs(p, shells);
-  return shells.map(sh => ({id: sh.id, description: sh.description || "", command: sh.command || "",
-                            start: sh.start}));
+  return shells.map(sh => Object.assign(
+    {id: sh.id, kind: sh.kind, description: sh.description || "", command: sh.command || "", start: sh.start},
+    sh.kind === "monitor" ? {event: sh.event} : {}));
 }
 // Vrai si la ligne montre Claude au travail : sa réponse, un résultat d'outil, ou un
 // message qui lance un tour (pas une commande locale comme /workflows).
@@ -750,8 +786,8 @@ if (a[0] === "list") {
   const workflows = sess ? scan.pending.map(w => workflowProgress(w, p)) : [];
   out = {size: p ? fs.statSync(p).size : 0, live: sess ? sess.status || "idle" : null, bridge: scan.bridge,
          since: sess ? msOf(sess.statusUpdatedAt) : null, workflows,
-         // shells en arrière-plan (« 1 shell » du terminal)
-         shells: sess ? runningShells(p, scan.shells, sess.pid) : [],
+         // shells et monitors en arrière-plan (« 1 shell », « 1 monitor » du terminal)
+         shells: sess ? runningShells(p, scan.shells, sess.pid, sess.status) : [],
          // Claude a fini son tour et attend la fin des workflows
          waiting: workflows.length > 0 && scan.tail !== null && !scan.tail.some(startsTurn)};
 } else if (a[0] === "search") {
