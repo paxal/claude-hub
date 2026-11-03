@@ -1,5 +1,7 @@
 # claude-hub
 
+[![Tests](https://github.com/paxal/claude-hub/actions/workflows/tests.yml/badge.svg)](https://github.com/paxal/claude-hub/actions/workflows/tests.yml)
+
 Interface graphique (GTK 4) pour les sessions Claude Code.
 
 Liste les conversations de ce PC, d'hôtes SSH et du cloud (claude.ai/code,

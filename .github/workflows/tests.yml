@@ -1,0 +1,47 @@
+# Tests unitaires (make) à chaque push sur master et à chaque pull request.
+#
+# Ils tournent dans un conteneur Ubuntu 26.04, comme le PC de développement :
+# GTK 4 et PyGObject viennent des paquets de la distribution (les tests importent
+# les modules de l'interface sans ouvrir de fenêtre), et node sert à comparer
+# remote/helper.py et remote/helper.js.
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      LANG: C.UTF-8
+    steps:
+      - name: Paquets (GTK 4, PyGObject, node)
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-gi python3-pygments \
+            gir1.2-gtk-4.0 gir1.2-gdkpixbuf-2.0 gir1.2-graphene-1.0 gir1.2-pango-1.0 \
+            nodejs make git ca-certificates
+
+      - uses: actions/checkout@v5
+
+      - name: Versions
+        run: |
+          python3 --version
+          node --version
+          python3 -c "import gi; gi.require_version('Gtk', '4.0'); from gi.repository import Gtk; print('GTK', Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version())"
+
+      - name: Tests
+        run: make test V=1

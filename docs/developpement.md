@@ -20,6 +20,11 @@ make clean                  # supprime __pycache__, build/, *.egg-info
 `__pycache__`. Les tests qui comparent `helper.py` et `helper.js` demandent
 `node`.
 
+GitHub Actions lance les mêmes tests à chaque push sur `master` et à chaque pull
+request (`.github/workflows/tests.yml`), dans un conteneur Ubuntu 26.04 avec
+GTK 4, PyGObject et node pris dans les paquets de la distribution. Les tests
+d'interface (écran virtuel, `piloter.sh`) n'y tournent pas.
+
 Les tests d'interface tournent hors écran, sur une KWin virtuelle :
 `tests/ecran-virtuel.sh commande…` (captures avec `spectacle -b -n -f -o …`).
 
