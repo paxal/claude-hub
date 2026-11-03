@@ -329,6 +329,14 @@ claude-hub envoie une notification du bureau, sauf si la conversation est déjà
 affichée dans la fenêtre active. Un clic sur la notification ouvre la
 conversation.
 
+Tant qu'un shell ou un monitor tourne en arrière-plan, Claude n'a pas fini : un
+monitor relance un tour à chaque événement, et chaque tour fini ne donne pas de
+notification. Celle-ci arrive quand la session revient au repos (shells et
+monitors finis), ou quand Claude a répondu à un message envoyé depuis claude-hub
+pendant cette attente (« Claude a répondu »). Une question de Claude (plan,
+autorisation) est notifiée comme d'habitude. Un message tapé directement dans le
+terminal pendant l'attente n'est pas repéré : sa réponse n'est pas notifiée.
+
 Dans la liste, ces conversations restent marquées d'une pastille bleue (titre
 en gras, heure en bleu) tant qu'on ne les a pas ouvertes ; elles figurent aussi
 dans « À traiter ». Un clic droit sur une
