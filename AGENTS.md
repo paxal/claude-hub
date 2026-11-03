@@ -159,7 +159,10 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   sur toute sa largeur : choix de l'utilisateur, qui l'a préférée là plutôt qu'à
   droite. À droite, elle prenait la marge de la colonne et la saisie se décalait
   vers la gauche ; et la barre de la saisie (modèle, effort, mode, Envoyer)
-  demande environ 530 px.
+  demande environ 530 px. Les shells, monitors et tâches y sont **repliés par
+  défaut** derrière une ligne de résumé (autre choix de l'utilisateur : ils
+  restent là longtemps et prenaient la hauteur du fil). Ne pas y replier la ligne
+  de Claude (« Arrêter »), la demande en attente ni la file.
 
 ## Tester
 

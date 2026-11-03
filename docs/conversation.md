@@ -278,8 +278,10 @@ pas les notes.
 
 Quand Claude découpe son travail en tâches (outils `TaskCreate` et `TaskUpdate`,
 ou `TodoWrite` des versions plus anciennes), la liste s'affiche dans la liste
-d'activité, au-dessus de la saisie : « Tâches 1/3 », et la tâche en cours en
-dessous ; un clic déplie chaque tâche (✓ terminée, ▸ en cours, ○ à faire). Elle
+d'activité, au-dessus de la saisie, dans sa partie repliable (« tâches 1/3 »
+dans la ligne de résumé ; voir [Ce qui tourne, ce qui attend](#ce-qui-tourne-ce-qui-attend)).
+Dépliée : « Tâches 1/3 », et la tâche en cours en dessous ; un clic déplie
+chaque tâche (✓ terminée, ▸ en cours, ○ à faire). Elle
 disparaît quand toutes les tâches sont terminées. Dans le fil, ces appels sont résumés
 (« #2 → terminée »).
 
@@ -347,6 +349,13 @@ ce qui attend dans la conversation affichée, une ligne par élément :
 - **les tâches de Claude** (voir [Tâches de Claude](#tâches-de-claude)) ;
 - **les messages en file** (voir [Écrire pendant une réponse](#écrire-pendant-une-réponse)).
 
+Les shells, les monitors et les tâches, qui restent là longtemps, sont **repliés**
+derrière une seule ligne qui les résume : « ▸ 1 monitor · 1 shell · tâches 1/3 ».
+Un clic sur cette ligne les déplie (▾), un autre les replie. Ils sont repliés au
+lancement de claude-hub ; une fois dépliés, ils le restent dans toutes les
+conversations jusqu'au clic suivant. Claude, la demande en attente, les
+sous-agents et les messages en file ne se replient pas.
+
 La liste n'apparaît que si elle a quelque chose à montrer. Elle prend toute la
 largeur de la saisie, séparée du texte par un trait. Au-delà de 300 pixels de
 haut, elle défile.
@@ -375,8 +384,8 @@ agents finis sur les agents lancés, et celui qui tourne avec sa phase
 Quand Claude laisse tourner une commande en arrière-plan (Bash avec
 `run_in_background`, commande passée en arrière-plan après son délai ou par
 Ctrl+B, commande « ! » renvoyée en arrière-plan dans le terminal), une ligne
-« Shell » s'ajoute à la liste d'activité, au-dessus de la saisie, comme le « 1 shell »
-du terminal, même quand Claude a fini son tour : sa description (sinon sa
+« Shell » s'ajoute à la liste d'activité, au-dessus de la saisie (dans sa partie
+repliable : la ligne de résumé dit « 1 shell », comme le terminal), même quand Claude a fini son tour : sa description (sinon sa
 commande) et depuis quand il tourne. De même pour un monitor (outil Monitor, qui
 surveille une commande et prévient Claude à chaque ligne qu'elle écrit) : ligne
 « Monitor », avec son dernier événement en dessous. L'info-bulle donne aussi la

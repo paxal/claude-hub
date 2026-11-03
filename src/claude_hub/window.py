@@ -1810,7 +1810,7 @@ class Hub(Gtk.ApplicationWindow):
 
     def show_todos(self, todos):
         """Tâches de Claude (TodoList, ou None), dans la liste d'activité."""
-        self.todo_panel.show(todos)
+        self.activity_panel.show_todos(todos)
         self.show_activity_side()
 
     def show_activity_side(self):

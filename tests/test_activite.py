@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from claude_hub.activity import (MAX_AGENTS, MONITOR_ICON, TERMINAL_ICON, agent_specs,  # noqa: E402
-                                 claude_spec, minutes_text, queued_spec, request_spec, shell_spec)
+                                 claude_spec, grouped_summary, minutes_text, queued_spec,
+                                 request_spec, shell_spec)
 
 
 class TestLignes(unittest.TestCase):
@@ -69,6 +70,14 @@ class TestLignes(unittest.TestCase):
         self.assertEqual(set(spec["actions"]), {"edit", "remove"})
         self.assertEqual(queued_spec(1, "", [{}, {}])["detail"], "(image seule)  ·  2 images")
         self.assertNotEqual(queued_spec(0, "a", [])["key"], queued_spec(0, "b", [])["key"])
+
+    def test_resume_replie(self):
+        kinds = [shell_spec({"id": i, "kind": k})["kind"] for i, k in
+                 (("m1", "monitor"), ("b1", None), ("b2", None))]
+        self.assertEqual(grouped_summary(kinds, "tâches 3/7"), "1 monitor · 2 shells · tâches 3/7")
+        self.assertEqual(grouped_summary([], "tâches 0/2"), "Tâches 0/2")
+        self.assertEqual(grouped_summary(["shell"]), "1 shell")
+        self.assertEqual(grouped_summary([]), "")  # rien à replier : pas de ligne de résumé
 
     def test_durees(self):
         self.assertEqual([minutes_text(s) for s in (0, 59, 60, 359, 3600, 3725)],

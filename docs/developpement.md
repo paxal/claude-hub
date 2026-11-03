@@ -73,7 +73,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `agentsview.py` | volet « Sous-agents » : arbre des sous-agents, agents des workflows groupés par workflow et par phase, état et transcription suivie |
 | `toolcall.py` | appels d'outils dépliables sur leur sortie (en direct, ou lue à la demande), suites repliées en « N étapes » |
 | `todos.py` | liste de tâches de Claude (TodoWrite, TaskCreate, TaskUpdate) et son volet repliable, dans la liste d'activité |
-| `activity.py` | ce qui tourne et ce qui attend, au-dessus de la saisie : Claude (étape, durée, « Arrêter ») ou la demande en attente, sous-agents, shells et monitors, tâches, messages en file ; lignes mises à jour sur place d'après leur clé |
+| `activity.py` | ce qui tourne et ce qui attend, au-dessus de la saisie : Claude (étape, durée, « Arrêter ») ou la demande en attente, sous-agents, shells et monitors, tâches, messages en file ; shells, monitors et tâches repliés derrière une ligne de résumé ; lignes mises à jour sur place d'après leur clé |
 | `dirpicker.py` | sélecteur de dossier sur un hôte SSH |
 | `tags.py` | stockage des tags, analyse de la recherche (`#tag`, `dir:`) |
 | `notes.py` | notes Markdown : lecture et écriture sur l'hôte de la conversation (ce PC pour le cloud), index, file d'enregistrement, extraits pour la recherche |
