@@ -387,10 +387,48 @@ affichée : sa boîte de dialogue prend la saisie (« /remote-control » puis
 Entrée choisit la première réponse). Il faut d'abord y répondre.
 
 Dans claude-hub : la pastille « Sans Remote Control » de l'en-tête
-(`RcChip`) s'affiche pour un `claude` en cours sans `bridgeSessionId`
+(`HeadChip.show_for`) s'affiche pour un `claude` en cours sans `bridgeSessionId`
 (`Hub.without_remote_control`, d'après le dernier `stat`) ; un clic ouvre
 l'explication. Les sessions de test reliées à Remote Control sont archivées sur
 claude.ai à la fermeture de leur `claude`.
+
+## `claude -p` qui survit à claude-hub (vérifié, claude 2.1.316 et 2.1.317)
+
+Un `claude -p` écrit lui aussi `~/.claude/sessions/<pid>.json`, avec
+`"kind":"interactive"` mais `"entrypoint":"sdk-cli"` (`"cli"` pour un terminal),
+et jamais de `bridgeSessionId`. Vu de l'extérieur, c'est donc un « terminal sans
+Remote Control » : un claude-hub relancé pendant qu'un `claude -p` qu'il avait
+lancé tournait encore lui mettait la pastille « Sans Remote Control » et
+proposait une copie.
+
+**Ce que devient ce `claude` quand claude-hub se ferme pendant la réponse** :
+
+- En local (essai : parent tué juste après l'envoi du message) : il finit sa
+  réponse, la fin de son entrée lui parvient, il s'arrête et son fichier de
+  session disparaît.
+- Par SSH (`ControlMaster`, vu sur cerberus) : la fin de l'entrée ne lui parvient
+  jamais (sshd garde l'autre bout ouvert, le client `ssh` reste en vie, rattaché
+  à `systemd --user`). Il finit sa réponse puis attend indéfiniment, et son
+  fichier de session reste à `"status":"busy"` (réponse finie à 16:49, encore
+  là et « busy » à 16:55).
+- En mode `-p`, la transcription n'a pas de `turn_duration` : la fin d'une
+  réponse est le dernier message `assistant` dont `stop_reason` n'est pas
+  `tool_use` (`end_turn`…), sans rien après qui relance un tour.
+- `SIGTERM` l'arrête aussitôt, avec ses shells en arrière-plan, et retire son
+  fichier de session.
+
+**Dans claude-hub** : les `claude -p` lancés sont retenus dans
+`settings["launched"]` (id -> hôte) jusqu'à leur fin (`on_finished`). Après un
+redémarrage, une conversation retenue dont le `claude` tourne encore est un
+orphelin (`Hub.orphan`) : pastille « Lancée avant le redémarrage »
+(`HeadChip.show_orphan`), message mis en file. À chaque relevé des états,
+`follow_orphans` oublie ceux qui se sont arrêtés et relit les autres
+(`check_orphan`) : `stat` dit `headless` (`entrypoint` `sdk-cli`) et `finished`
+(réponse finie, sans shell, monitor, workflow ni sous-agent en arrière-plan,
+lancé en arrière-plan avec `"status":"async_launched"` et un `agentId`, fini à
+la `<task-notification>` de même `<task-id>`). Fini : la commande `stop` des
+scripts distants l'arrête (`SIGTERM`, seulement pour `sdk-cli`), puis
+`orphan_ended` envoie la file.
 
 ## Ce que fait l'extension VS Code (doc officielle)
 

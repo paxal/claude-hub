@@ -29,7 +29,7 @@ from .dirpicker import RemoteDirDialog
 from .tags import TagStore, dir_matches, dir_token, parse_query, tag_matches, toggle_token
 from .tagui import TAG_ICON, TagPopover, filter_popover, tag_chips
 from .viewer import FileViewer, ViewerWindow, follow_link, resolve
-from .remotecontrol import PERMISSION, RcChip, WaitCard
+from .remotecontrol import PERMISSION, HeadChip, WaitCard
 from .permissions import EXEC_MODES, PLAN_REFUSAL, RequestCard, control_response, plan_allow, plan_deny
 from .planview import PlanPanel
 from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
@@ -145,6 +145,7 @@ class Hub(Gtk.ApplicationWindow):
         self.notified = {}       # id de session -> conversation à ouvrir depuis sa notification
         self.kept_unread = None  # conversation affichée marquée non lue à la main : le reste jusqu'à la quitter
         self.hub_done = {}       # id de session -> fin du dernier claude -p lancé d'ici
+        self.orphan_checks = set()  # orphelins (claude -p d'avant un redémarrage) en cours de relevé
         self.held = set()        # sessions de terminal dont la fin attend leurs shells et monitors
         self.asked = set()       # sessions de terminal à qui l'on a écrit pendant cette attente
         self.content_hits = {}   # id -> {"role", "snippet"} trouvés dans les transcriptions
@@ -427,7 +428,8 @@ class Hub(Gtk.ApplicationWindow):
         # hôte · modèle et effort de la dernière réponse · dossier · id · tags
         self.head_meta = Gtk.Box(spacing=8, css_classes=["head-meta"])
         self.head_host = Gtk.Box()
-        self.rc_chip = RcChip()  # terminal sans Remote Control (remotecontrol.py)
+        # terminal sans Remote Control, claude -p d'avant un redémarrage (remotecontrol.py)
+        self.head_chip = HeadChip()
         self.head_model = Gtk.Label()
         self.head_cwd = Gtk.Label(css_classes=["mono"], ellipsize=Pango.EllipsizeMode.MIDDLE,
                                   selectable=True)
@@ -435,7 +437,7 @@ class Hub(Gtk.ApplicationWindow):
         self.head_tags = Gtk.Box(spacing=4, visible=False)
         self.head_usage = UsageBox()  # contexte rempli, coût de la dernière réponse
         self.head_seps = [Gtk.Label(label="·") for _ in range(2)]
-        for w in (self.head_host, self.rc_chip, self.head_model, self.head_usage, self.head_seps[0],
+        for w in (self.head_host, self.head_chip, self.head_model, self.head_usage, self.head_seps[0],
                   self.head_cwd, self.head_seps[1], self.head_id, self.head_tags):
             self.head_meta.append(w)
         head.append(self.head_meta)
@@ -1311,6 +1313,7 @@ class Hub(Gtk.ApplicationWindow):
                 if s["id"] in self.state_rows:
                     # un claude -p lancé d'ici tourne aussi en arrière-plan
                     self.paint_row(self.state_rows[s["id"]], self.list_state(s["id"], s["live"]))
+            self.follow_orphans(live, polled)
             today = local_date(time.time())
             if today != self.list_day:  # minuit : « Aujourd'hui » devient « Hier »
                 self.list_day = today
@@ -1359,6 +1362,104 @@ class Hub(Gtk.ApplicationWindow):
         if row:
             row.update_time()
             row.changed()  # le tri de la liste la replace
+
+    # -- claude -p lancés d'ici avant un redémarrage (orphelins) --
+    def mark_launched(self, sid, host):
+        """Retient le claude -p lancé d'ici pour sid, jusqu'à sa fin (on_finished)."""
+        if self.settings["launched"].get(sid) != host:
+            self.settings["launched"][sid] = host
+            save_settings(self.settings)
+
+    def unmark_launched(self, sid):
+        if self.settings["launched"].pop(sid, None) is not None:
+            save_settings(self.settings)
+
+    def orphan(self, s):
+        """Vrai si s a encore le claude -p qu'un Claude Hub précédent avait lancé (fermé ou
+        planté depuis) : il finit sa réponse, mais plus personne ne lit sa sortie ni n'écrit
+        sur son entrée. Par SSH, il ne s'arrête même pas une fois la réponse finie (la fin de
+        son entrée ne lui parvient pas) : follow_orphans s'en charge."""
+        return (bool(s) and s.get("source") is None and s["id"] in self.settings["launched"]
+                and s["id"] not in self.streams and bool(s.get("live")))
+
+    def follow_orphans(self, live, polled):
+        """Après un relevé des états : oublie les claude -p lancés d'ici qui se sont arrêtés,
+        et arrête ceux d'avant un redémarrage dont la réponse est finie (check_orphan)."""
+        for sid, host in list(self.settings["launched"].items()):
+            if sid in self.streams or host not in polled:
+                continue
+            if live.get(sid) is None:
+                self.orphan_ended(sid)
+            else:
+                self.check_orphan(sid, host)
+
+    def check_orphan(self, sid, host):
+        """Relit l'orphelin sid ; s'il a fini sa réponse et n'attend plus rien en arrière-plan,
+        l'arrête (rien n'est perdu) : la conversation redevient normale."""
+        if sid in self.orphan_checks:
+            return
+        self.orphan_checks.add(sid)
+
+        def work():
+            res = run_helper(host, "stat", sid)
+            if res.get("finished"):
+                res["stopped"] = run_helper(host, "stop", sid).get("stopped")
+            return res
+
+        def done(res):
+            self.orphan_checks.discard(sid)
+            if sid in self.streams:
+                return
+            if res.get("live") and not res.get("headless"):
+                self.unmark_launched(sid)  # reprise dans un terminal : ce n'est plus le nôtre
+            elif res.get("stopped") or not res.get("live"):
+                self.orphan_ended(sid)
+
+        def fail(_e):
+            self.orphan_checks.discard(sid)
+        in_thread(work, done, fail)
+
+    def stop_orphan(self, s):
+        """« Arrêter » sur la ligne de l'orphelin : arrêté même au milieu de sa réponse (ce
+        qu'il a déjà écrit reste dans la conversation)."""
+        sid, host = s["id"], s["host"]
+        self.status.set_text("Arrêt du Claude lancé avant le redémarrage…")
+
+        def work():
+            if run_helper(host, "stop", sid).get("stopped"):
+                return True
+            return not run_helper(host, "stat", sid).get("live")  # déjà arrêté
+
+        def done(stopped):
+            shown = self.current is not None and self.current["id"] == sid
+            if stopped:
+                self.orphan_ended(sid)
+                if shown and not self.proc:
+                    self.status.set_text("Claude arrêté.")
+            elif shown:
+                self.status.set_text("Ce Claude ne s'est pas arrêté.")
+
+        def fail(e):
+            if self.current is not None and self.current["id"] == sid:
+                self.status.set_text(f"Arrêt impossible : {e}")
+        in_thread(work, done, fail)
+
+    def orphan_ended(self, sid):
+        """L'orphelin de sid s'est arrêté : la conversation redevient normale, et le premier
+        message en file part (send_queued)."""
+        if sid in self.streams:  # un nouveau claude -p d'ici a déjà pris le relais
+            return
+        self.unmark_launched(sid)
+        found =[s for s in self.sessions if s["id"] == sid]
+        cur = self.current if self.current is not None and self.current["id"] == sid else None
+        for s in found + ([cur] if cur is not None else []):
+            s["live"] = None
+        self.refresh_state(sid)
+        if cur is not None:
+            self.update_status()
+        target = cur if cur is not None else found[0] if found else None
+        if target is not None and self.queues.get(sid):
+            self.send_queued(target)
 
     def follow_turn(self, s):
         """Fin d'un tour dans un terminal ou Cursor, d'après l'état relevé (s["live"]) et le
@@ -1871,7 +1972,8 @@ class Hub(Gtk.ApplicationWindow):
         """s tourne dans un terminal sans être reliée à Remote Control (selon le dernier
         « stat ») : Claude Hub ne peut ni lui écrire ni répondre à ses demandes."""
         return (bool(s) and s.get("source") is None and s["host"] != CLOUD and not s.get("new")
-                and not self.is_streaming(s) and bool(s.get("live")) and s.get("linked") is False)
+                and not self.is_streaming(s) and bool(s.get("live")) and s.get("linked") is False
+                and not self.orphan(s))
 
     def wait_in_terminal(self, s, shown):
         """Carte « Claude attend ta réponse dans son terminal » à la fin du fil, quand s attend
@@ -1879,7 +1981,8 @@ class Hub(Gtk.ApplicationWindow):
         refaite d'après son état, ou retirée."""
         had = self.drop_wait_card()
         if (s is not self.current or s.get("source") is not None or s["host"] == CLOUD
-                or s.get("live") not in ACTION_STATES or self.pending.get(s["id"])):
+                or s.get("live") not in ACTION_STATES or self.pending.get(s["id"])
+                or self.orphan(s)):  # pas de terminal où répondre
             return
         self.wait_card = WaitCard(s.get("waiting_for"), s.get("linked") is not False, shown)
         self.append_item(self.wait_card)
@@ -2285,12 +2388,16 @@ class Hub(Gtk.ApplicationWindow):
             rows.append(claude_spec(step, detail, since, stop=self.stop))
         elif s and s.get("live") == "busy":  # dans un terminal ou Cursor (et ses workflows)
             busy = True
+            orphan = self.orphan(s)  # claude -p lancé avant le redémarrage : on peut l'arrêter
             n = len(s.get("workflows") or ()) if s.get("workflows_waiting") else 0
             text = ("Cursor génère" if s.get("source") == "cursor"
                     else "Claude attend un workflow" if n == 1
                     else f"Claude attend {n} workflows" if n
+                    else "Claude travaille (lancé avant le redémarrage)" if orphan
                     else "Claude travaille (dans un terminal)")
-            rows.append(claude_spec(text, workflow_text(s.get("workflows")), self.busy_start(s)))
+            rows.append(claude_spec(text, workflow_text(s.get("workflows")), self.busy_start(s),
+                                    stop=(lambda: self.stop_orphan(s)) if orphan else None,
+                                    stop_tip="Arrêter ce Claude (ce qu'il a déjà écrit est gardé)"))
         elif s and s.get("live") in ACTION_STATES:  # on y répond là où tourne claude
             rows.append(request_spec(self.request_entry(s)))
         if s and not busy:
@@ -2338,10 +2445,12 @@ class Hub(Gtk.ApplicationWindow):
     def update_status(self):
         s = self.current
         self.update_activity()
-        if self.without_remote_control(s):
-            self.rc_chip.show_for(s["host"])
+        if self.orphan(s):
+            self.head_chip.show_orphan()
+        elif self.without_remote_control(s):
+            self.head_chip.show_for(s["host"])
         else:
-            self.rc_chip.set_visible(False)
+            self.head_chip.set_visible(False)
         if self.proc:
             return
         if s is None:
@@ -2359,6 +2468,9 @@ class Hub(Gtk.ApplicationWindow):
         elif s and s.get("source") == "cursor":
             self.status.set_text("Conversation Cursor (lecture seule) : ton message démarre une "
                                  "session Claude sur le même hôte, avec cette conversation en contexte.")
+        elif self.orphan(s):
+            self.status.set_text("Lancée avant le redémarrage : ton message partira quand "
+                                 "son Claude aura fini.")
         elif s and s.get("live") and not s.get("new") and s.get("linked") is False:
             self.status.set_text("Ouverte dans un terminal sans Remote Control : Claude Hub te "
                                  "proposera une copie (voir « Sans Remote Control » en haut).")
@@ -2760,6 +2872,21 @@ class Hub(Gtk.ApplicationWindow):
             elif (text or self.attachments or ready) and not self.proc:
                 self.launch_fork(s, text)
             return
+        # claude -p lancé avant le redémarrage : on ne peut plus lui écrire, et en lancer un
+        # second mêlerait leurs réponses. Le message attend en file qu'il ait fini (il est
+        # alors arrêté, et orphan_ended envoie la file) ; « tout de suite » l'arrête aussitôt.
+        if self.orphan(s):
+            if text or self.attachments:
+                msg = (text, self.take_input())
+                if mode == "now":
+                    self.queues.setdefault(s["id"], []).insert(0, msg)
+                    self.stop_orphan(s)
+                else:
+                    self.queues.setdefault(s["id"], []).append(msg)
+                    self.status.set_text("En file : ton message partira quand le Claude lancé "
+                                         "avant le redémarrage aura fini.")
+                self.show_queue()
+            return
         # Un plan attend : claude ne lirait le message qu'une fois le plan tranché. « Envoyer »
         # en fait donc la remarque de « Continuer à planifier », et Claude y répond aussitôt
         # (« tout de suite » et « en file » gardent leur sens : interrompre, attendre).
@@ -2866,6 +2993,9 @@ class Hub(Gtk.ApplicationWindow):
         relance claude sur la même conversation, arrêtée juste avant ce message : pas de
         copie, la suite est abandonnée. Une réponse en cours n'est arrêtée qu'à l'envoi."""
         s = self.current
+        if self.orphan(s):
+            return self.status.set_text("Modification possible une fois fini le Claude lancé "
+                                        "avant le redémarrage.")
         if self.in_terminal(s):  # ce claude-là garderait l'ancienne suite en mémoire
             return self.status.set_text("Conversation ouverte dans un terminal : modifie le "
                                         "message là-bas (Échap deux fois).")
@@ -3071,6 +3201,8 @@ class Hub(Gtk.ApplicationWindow):
             return "Conversation claude.ai : pas de machine où lancer la commande."
         if s.get("source") == "cursor" or s.get("cursor_cloud"):
             return "Conversation Cursor : les commandes « ! » n'y sont pas prises en charge."
+        if self.orphan(s):
+            return "Claude lancé avant le redémarrage : lance la commande une fois qu'il a fini."
         if (s.get("source") is None and not s.get("new") and s.get("live")
                 and not self.is_streaming(s) and not self.queues.get(s["id"])):
             return "Conversation ouverte dans un terminal : tape la commande là-bas."
@@ -3300,6 +3432,8 @@ class Hub(Gtk.ApplicationWindow):
         except OSError as e:
             return self.error(str(e)) if shown else None
         self.streams[s["id"]] = (proc, s)
+        if not fork:  # une copie a son propre id, connu à son démarrage (on_event)
+            self.mark_launched(s["id"], s["host"])
         s["mode"] = argv[argv.index("--permission-mode") + 1]
         self.keep_mode(s["id"], s["mode"])
         self.unsent.pop(s["id"], None)  # envoyée : n'est plus un brouillon
@@ -3357,6 +3491,7 @@ class Hub(Gtk.ApplicationWindow):
                 if s["id"] in self.sides:
                     self.sides[ev["session_id"]] = self.sides.pop(s["id"])
                 s["id"] = ev["session_id"]
+                self.mark_launched(s["id"], s["host"])
                 self.keep_mode(s["id"], s.get("mode"))
                 if s is self.current:
                     self.show_subtitle(s)
@@ -3510,6 +3645,7 @@ class Hub(Gtk.ApplicationWindow):
         if self.streams.get(s["id"], (None,))[0] is not proc:
             return
         del self.streams[s["id"]]
+        self.unmark_launched(s["id"])
         self.pending.pop(s["id"], None)
         self.injected.pop(s["id"], None)  # lus, ou perdus avec claude : la relecture le dira
         s.pop("bg_shells", None)  # morts avec claude

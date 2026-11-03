@@ -71,6 +71,8 @@ function liveIds() {
   for (const [sid, s] of Object.entries(liveSessions())) out[sid] = s.status || "idle";
   return out;
 }
+// Vrai pour un claude lancé sans terminal (claude -p, celui de Claude Hub).
+const headless = s => !!s && s.entrypoint === "sdk-cli";
 const msOf = v => typeof v === "number" ? v : null;  // date (ms) du fichier de session
 const textOrNull = v => typeof v === "string" && v ? v : null;  // texte non vide du fichier de session
 
@@ -111,6 +113,7 @@ function shellEvent(line, lastInput) {
   return [m ? ["start", m[1], null, lastInput, "shell"] : null, lastInput];
 }
 const EVENT_LIMIT = 500;  // caractères gardés du dernier événement d'un monitor
+const TURN_LINES = 20;  // dernières lignes « user » ou « assistant » gardées pour trouver la fin de la réponse
 // Texte d'un morceau de chaîne JSON pris tel quel dans une ligne (échappements décodés).
 function jsonText(raw) {
   try { return JSON.parse('"' + raw + '"'); } catch (e) { return raw; }
@@ -138,10 +141,12 @@ function notified(line) {
 // écrites depuis la fin du dernier tour de Claude (null si aucun tour n'est fini), et
 // shells et monitors lancés en arrière-plan depuis started, ni notifiés comme finis ni
 // arrêtés ({id, kind : shell ou monitor, tool : appel d'outil, command : commande « ! »,
-// start : epoch, event : dernier événement d'un monitor}).
+// start : epoch, event : dernier événement d'un monitor}). Aussi : sous-agents lancés en
+// arrière-plan depuis started et pas encore notifiés comme finis (ids), et si la réponse de
+// Claude est finie (answered : son dernier message clôt le tour).
 function scanMain(p, started) {
-  let bridge = null, tail = null, lastInput = null;
-  const launched = new Map(), ended = new Set(), shells = [];
+  let bridge = null, tail = null, lastInput = null, turns = [];
+  const launched = new Map(), ended = new Set(), shells = [], agents = [];
   const events = new Map();  // monitor -> son dernier événement
   for (const line of lines(p)) {
     if (!line) continue;
@@ -162,6 +167,18 @@ function scanMain(p, started) {
         if (started === null || t === null || t * 1000 >= started) launched.set(String(res.taskId), res);
       }
     }
+    if (line.includes('"async_launched"') && line.includes('"agentId"')) {
+      const r = parse(line), res = r && r.toolUseResult;
+      if (r && r.type === "user" && !r.isSidechain && isDict(res) && res.status === "async_launched"
+          && typeof res.agentId === "string" && res.agentId) {
+        const t = msgTime(line);
+        if (started === null || t === null || t * 1000 >= started) agents.push(res.agentId);
+      }
+    }
+    if (line.includes('"type":"assistant"') || line.includes('"type":"user"')) {
+      turns.push(line);
+      if (turns.length > 2 * TURN_LINES) turns = turns.slice(-TURN_LINES);
+    }
     if (line.includes("<task-notification>"))
       for (const [tid, event] of notified(line)) {
         if (event === null) ended.add(tid);
@@ -171,8 +188,17 @@ function scanMain(p, started) {
     else if (tail !== null) tail.push(line);
   }
   for (const sh of shells) if (sh.kind === "monitor") sh.event = events.has(sh.id) ? events.get(sh.id) : null;
+  const last = turns.slice(-TURN_LINES).reverse().find(startsTurn);
   return {bridge, pending: [...launched].filter(([tid]) => !ended.has(tid)).map(([, w]) => w), tail,
-          shells: shells.filter(sh => !ended.has(sh.id))};
+          shells: shells.filter(sh => !ended.has(sh.id)), agents: agents.filter(a => !ended.has(a)),
+          answered: last !== undefined && endsTurn(last)};
+}
+// Vrai si la ligne est un message de Claude qui clôt son tour (pas un appel d'outil).
+function endsTurn(line) {
+  const r = parse(line);
+  if (!isDict(r) || r.type !== "assistant" || r.isSidechain) return false;
+  const stop = isDict(r.message) ? r.message.stop_reason : null;
+  return typeof stop === "string" && stop !== "" && stop !== "tool_use";
 }
 // Ids des tâches dont la sortie (…/tasks/<id>.output) est ouverte par un descendant du
 // processus claude pid : ses commandes Bash qui tournent, au premier plan comme en
@@ -873,19 +899,45 @@ if (a[0] === "list") {
   out = notesIndex();
 } else if (a[0] === "stat") {
   const p = find(a[1]), sess = liveSessions()[a[1]] || null;
-  const scan = p ? scanMain(p, msOf((sess || {}).startedAt)) : {bridge: null, pending: [], tail: null, shells: []};
+  const scan = p ? scanMain(p, msOf((sess || {}).startedAt))
+    : {bridge: null, pending: [], tail: null, shells: [], agents: [], answered: false};
   const workflows = sess ? scan.pending.map(w => workflowProgress(w, p)) : [];
   // claude en cours : sa session Remote Control est notée dans son fichier de session
   // (la transcription garde celles des lancements précédents)
   const bridge = sess ? textOrNull(sess.bridgeSessionId) : scan.bridge;
+  const shells = sess ? runningShells(p, scan.shells, sess.pid, sess.status) : [];
   out = {size: p ? fs.statSync(p).size : 0, live: sess ? sess.status || "idle" : null, bridge,
          // ce qu'attend claude : « input needed » (question, plan), « permission prompt »
          waiting_for: sess ? textOrNull(sess.waitingFor) : null,
          since: sess ? msOf(sess.statusUpdatedAt) : null, workflows,
          // shells et monitors en arrière-plan (« 1 shell », « 1 monitor » du terminal)
-         shells: sess ? runningShells(p, scan.shells, sess.pid, sess.status) : [],
+         shells,
          // Claude a fini son tour et attend la fin des workflows
-         waiting: workflows.length > 0 && scan.tail !== null && !scan.tail.some(startsTurn)};
+         waiting: workflows.length > 0 && scan.tail !== null && !scan.tail.some(startsTurn),
+         // claude sans terminal (claude -p) : son fichier de session reste à « busy » une
+         // fois la réponse finie
+         headless: headless(sess),
+         // … dont la réponse est finie et qui n'attend plus rien en arrière-plan : l'arrêter
+         // ne perd rien
+         finished: headless(sess) && scan.answered && !workflows.length && !shells.length
+           && !scan.agents.length};
+} else if (a[0] === "stop") {
+  // Arrête le claude sans terminal (claude -p) de la session, que Claude Hub avait lancé
+  // avant de redémarrer ; jamais celui d'un terminal. Attend sa fin (5 s au plus).
+  const sess = liveSessions()[a[1]] || null;
+  const pid = headless(sess) ? Number(sess.pid) : 0;
+  let stopped = false;
+  if (Number.isInteger(pid) && pid > 1) {  // 0 ou -1 viseraient tout un groupe de processus
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    try {
+      process.kill(pid, "SIGTERM");
+      for (let i = 0; i < 50; i++) {
+        Atomics.wait(pause, 0, 0, 100);
+        process.kill(pid, 0);
+      }
+    } catch (e) { stopped = true; }
+  }
+  out = {stopped};
 } else if (a[0] === "search") {
   out = search(a[1], Number(a[2]));
 } else if (a[0] === "exists") {

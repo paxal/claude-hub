@@ -1,4 +1,4 @@
-import base64, calendar, json, os, re, stat, subprocess, sys, time
+import base64, calendar, json, os, re, signal, stat, subprocess, sys, time
 from pathlib import Path
 C = Path.home() / ".claude"
 
@@ -290,6 +290,7 @@ def cmd_note(sid):
 TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
 EVENT = re.compile(r"<event>(.*?)</event>", re.S)
 EVENT_LIMIT = 500  # caractères gardés du dernier événement d'un monitor
+TURN_LINES = 20  # dernières lignes « user » ou « assistant » gardées pour trouver la fin de la réponse
 BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.S)
 USER_BACKGROUNDED = re.compile(r"<bash-stdout>Command was manually backgrounded by user with ID: (\w+)")
 
@@ -364,8 +365,11 @@ def scan_main(p, started):
     écrites depuis la fin du dernier tour de Claude (None si aucun tour n'est fini), et
     shells et monitors lancés en arrière-plan depuis started, ni notifiés comme finis ni
     arrêtés ({"id", "kind" : shell ou monitor, "tool" : appel d'outil, "command" : commande
-    « ! », "start" : epoch, "event" : dernier événement d'un monitor})."""
+    « ! », "start" : epoch, "event" : dernier événement d'un monitor}). Aussi : sous-agents
+    lancés en arrière-plan depuis started et pas encore notifiés comme finis (ids), et si la
+    réponse de Claude est finie (« answered » : son dernier message clôt le tour)."""
     bridge, launched, ended, tail, shells, last_input = None, {}, set(), None, [], None
+    agents, turns = [], []
     events = {}  # monitor -> son dernier événement
     with open(str(p), encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -393,6 +397,22 @@ def scan_main(p, started):
                             launched[str(res["taskId"])] = res
                 except (ValueError, AttributeError):
                     pass
+            if '"async_launched"' in line and '"agentId"' in line:
+                try:
+                    r = json.loads(line)
+                    res = r.get("toolUseResult")
+                    if (r.get("type") == "user" and not r.get("isSidechain") and isinstance(res, dict)
+                            and res.get("status") == "async_launched"
+                            and isinstance(res.get("agentId"), str) and res["agentId"]):
+                        t = msg_time(line)
+                        if started is None or t is None or t * 1000 >= started:
+                            agents.append(res["agentId"])
+                except (ValueError, AttributeError):
+                    pass
+            if '"type":"assistant"' in line or '"type":"user"' in line:
+                turns.append(line)
+                if len(turns) > 2 * TURN_LINES:
+                    del turns[:-TURN_LINES]
             if "<task-notification>" in line:
                 for tid, event in notified(line):
                     if event is None:
@@ -407,7 +427,11 @@ def scan_main(p, started):
     for sh in shells:
         if sh["kind"] == "monitor":
             sh["event"] = events.get(sh["id"])
-    return bridge, pending, tail, [sh for sh in shells if sh["id"] not in ended]
+    last = next((l for l in reversed(turns[-TURN_LINES:]) if starts_turn(l)), None)
+    return {"bridge": bridge, "pending": pending, "tail": tail,
+            "shells": [sh for sh in shells if sh["id"] not in ended],
+            "agents": [a for a in agents if a not in ended],
+            "answered": last is not None and ends_turn(last)}
 
 def task_outputs(pid):
     """Ids des tâches dont la sortie (…/tasks/<id>.output) est ouverte par un descendant du
@@ -503,6 +527,18 @@ def starts_turn(line):
     t = text_of(content).lstrip()
     return bool(t) and not t.startswith(("<command-", "<local-command-"))
 
+def ends_turn(line):
+    """Vrai si la ligne est un message de Claude qui clôt son tour (pas un appel d'outil)."""
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return False
+    if not isinstance(r, dict) or r.get("type") != "assistant" or r.get("isSidechain"):
+        return False
+    m = r.get("message")
+    stop = m.get("stop_reason") if isinstance(m, dict) else None
+    return isinstance(stop, str) and stop not in ("", "tool_use")
+
 def workflow_progress(w, p):
     """Avancement d'un workflow d'après son journal (une ligne « started » puis « result »
     par agent) : nom, agents lancés et finis, et ceux qui tournent (libellé, phase)."""
@@ -532,17 +568,23 @@ def workflow_progress(w, p):
     return {"name": name if isinstance(name, str) else "", "total": len(started),
             "done": len(started) - len(running), "running": running}
 
+def headless(sess):
+    """Vrai pour un claude lancé sans terminal (claude -p, celui de Claude Hub)."""
+    return bool(sess) and sess.get("entrypoint") == "sdk-cli"
+
 def cmd_stat(sid):
     p = find(sid)
     st = p.stat() if p else None
     sess = live_sessions().get(sid)
-    bridge, pending, tail, shells = (scan_main(p, ms_of((sess or {}).get("startedAt"))) if p
-                                     else (None, [], None, []))
-    workflows = [workflow_progress(w, p) for w in pending] if sess else []
+    scan = (scan_main(p, ms_of((sess or {}).get("startedAt"))) if p else
+            {"bridge": None, "pending": [], "tail": None, "shells": [], "agents": [], "answered": False})
+    workflows = [workflow_progress(w, p) for w in scan["pending"]] if sess else []
+    bridge, tail = scan["bridge"], scan["tail"]
     if sess:
         # claude en cours : sa session Remote Control est notée dans son fichier de session
         # (la transcription garde celles des lancements précédents)
         bridge = text_or_none(sess.get("bridgeSessionId"))
+    shells = running_shells(p, scan["shells"], sess.get("pid"), sess.get("status")) if sess else []
     print(json.dumps({"size": st.st_size if st else 0,
                       "live": (sess.get("status") or "idle") if sess else None, "bridge": bridge,
                       # ce qu'attend claude : « input needed » (question, plan), « permission prompt »
@@ -550,11 +592,36 @@ def cmd_stat(sid):
                       "since": ms_of(sess.get("statusUpdatedAt")) if sess else None,
                       "workflows": workflows,
                       # shells et monitors en arrière-plan (« 1 shell », « 1 monitor » du terminal)
-                      "shells": running_shells(p, shells, sess.get("pid"), sess.get("status"))
-                      if sess else [],
+                      "shells": shells,
                       # Claude a fini son tour et attend la fin des workflows
                       "waiting": bool(workflows) and tail is not None
-                      and not any(starts_turn(l) for l in tail)}))
+                      and not any(starts_turn(l) for l in tail),
+                      # claude sans terminal (claude -p) : son fichier de session reste à
+                      # « busy » une fois la réponse finie
+                      "headless": headless(sess),
+                      # … dont la réponse est finie et qui n'attend plus rien en arrière-plan :
+                      # l'arrêter ne perd rien
+                      "finished": headless(sess) and scan["answered"] and not workflows
+                      and not shells and not scan["agents"]}))
+
+def cmd_stop(sid):
+    """Arrête le claude sans terminal (claude -p) de la session sid, que Claude Hub avait
+    lancé avant de redémarrer ; jamais celui d'un terminal. Attend sa fin (5 s au plus)."""
+    sess = live_sessions().get(sid)
+    stopped = False
+    try:
+        pid = int(sess["pid"]) if headless(sess) else 0
+    except (KeyError, TypeError, ValueError):
+        pid = 0
+    if pid > 1:  # 0 ou -1 viseraient tout un groupe de processus
+        try:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(50):
+                time.sleep(0.1)
+                os.kill(pid, 0)
+        except OSError:
+            stopped = True
+    print(json.dumps({"stopped": stopped}))
 
 TODO_TOOLS = ("TodoWrite", "TaskCreate", "TaskUpdate")
 
@@ -1114,6 +1181,7 @@ a = sys.argv[1:]
  "exists": lambda: print(json.dumps({d: os.path.isdir(d) for d in json.loads(a[1])})),
  "search": lambda: cmd_search(a[1], int(a[2])),
  "live": lambda: cmd_live(),
+ "stop": lambda: cmd_stop(a[1]),
  "dirs": lambda: cmd_dirs(a[1]),
  "defaults": lambda: cmd_defaults(),
  "read": lambda: cmd_read(a[1]),

@@ -749,8 +749,11 @@ textview.md, textview.md > text { background: none; }
 .card-title { font-weight: bold; }
 .card-question { margin-top: 4px; }
 .card-hint { font-size: 0.92em; opacity: 0.8; }
-/* Terminal sans Remote Control (remotecontrol.py) : pastille de l'en-tête, carte du fil */
-menubutton.rc-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; color: #d4860b; }
+/* Pastilles de l'en-tête (remotecontrol.py) : terminal sans Remote Control, en orange comme
+   sa carte du fil ; claude -p lancé avant le redémarrage, en gris (rien à corriger) */
+menubutton.rc-chip > button, menubutton.orphan-chip > button { min-height: 0; padding: 0 6px; margin: -1px 0; }
+menubutton.rc-chip > button { color: #d4860b; }
+menubutton.orphan-chip > button { opacity: 0.7; }
 .wait-icon { color: #d4860b; }
 .questions { margin-bottom: 4px; }
 .question-option { margin-left: 8px; }

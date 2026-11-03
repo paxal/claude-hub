@@ -99,6 +99,9 @@ def load_settings():
     data.setdefault("views", [])            # recherches enregistrées : [{"query"}]
     data.setdefault("costs", {})            # id de session -> coût ($) de la dernière réponse lancée d'ici
     data.setdefault("context_windows", {})  # modèle -> taille de sa fenêtre de contexte (apprise de claude)
+    # id de session -> hôte des claude -p lancés d'ici et pas encore finis : après un
+    # redémarrage, ceux qui tournent encore sont des orphelins (Hub.orphan)
+    data.setdefault("launched", {})
     return data
 
 

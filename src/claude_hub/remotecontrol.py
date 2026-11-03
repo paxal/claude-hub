@@ -1,15 +1,21 @@
-"""Conversation ouverte dans un terminal sans Remote Control : avertissement de l'en-tête
-(RcChip, avec son explication) et carte du fil quand Claude y attend une réponse (WaitCard).
+"""Conversation dont Claude Hub ne peut pas joindre le Claude : pastille de l'en-tête
+(HeadChip, avec son explication) et carte du fil quand Claude attend une réponse dans son
+terminal (WaitCard).
 
-Sans Remote Control, Claude Hub ne peut ni écrire au Claude du terminal ni répondre à ses
-demandes. Et Claude Code n'écrit souvent la question en attente dans la transcription
-qu'une fois répondue (en mode auto, ou dans un tour relancé par la fin d'une tâche de
-fond) : elle n'est alors visible que dans le terminal. « Remote Control » est lu par la
-commande « stat » des scripts distants (bridgeSessionId du fichier de session de claude).
+Terminal sans Remote Control : Claude Hub ne peut ni écrire au Claude du terminal ni
+répondre à ses demandes. Et Claude Code n'écrit souvent la question en attente dans la
+transcription qu'une fois répondue (en mode auto, ou dans un tour relancé par la fin d'une
+tâche de fond) : elle n'est alors visible que dans le terminal. « Remote Control » est lu
+par la commande « stat » des scripts distants (bridgeSessionId du fichier de session de
+claude).
+
+Lancée avant le redémarrage : le claude -p qu'un Claude Hub précédent avait lancé tourne
+encore, mais plus personne ne lit sa sortie ni n'écrit sur son entrée (Hub.orphan).
 """
 from .gtk import Gtk
 
 WARNING_ICON = "dialog-warning-symbolic"
+ORPHAN_ICON = "view-refresh-symbolic"
 PERMISSION = "permission prompt"  # waitingFor de claude pour une autorisation
 
 
@@ -30,6 +36,19 @@ def help_texts(host):
         "question y est affichée, car elle prend la saisie : réponds-y d'abord.",
         f"Pour les suivantes : ajoute \"remoteControlAtStartup\": true à ~/.claude/settings.json "
         f"sur {where(host)}.",
+    ]
+
+
+def orphan_texts():
+    """(titre, paragraphes) de l'explication de la pastille « Lancée avant le redémarrage »."""
+    return "Lancée avant le redémarrage", [
+        "Claude Hub a lancé ce Claude avant de redémarrer. Il continue sa réponse, qui "
+        "s'affiche ici au fur et à mesure, mais Claude Hub n'est plus relié à lui : il ne "
+        "peut ni lui écrire, ni répondre à ses questions, plans et autorisations.",
+        "Dès qu'il a fini, Claude Hub l'arrête et la conversation reprend normalement. Un "
+        "message écrit d'ici là attend dans la file et part à ce moment-là.",
+        "S'il reste bloqué sur une question ou une autorisation, arrête-le avec le bouton "
+        "d'arrêt au-dessus de la saisie : ce qu'il a déjà écrit est gardé.",
     ]
 
 
@@ -58,31 +77,49 @@ def text_label(text, css=None):
     return label
 
 
-class RcChip(Gtk.MenuButton):
-    """Pastille « Sans Remote Control » de l'en-tête ; un clic ouvre l'explication."""
+CHIP_CLASSES = ("rc-chip", "orphan-chip")
+
+
+class HeadChip(Gtk.MenuButton):
+    """Pastille de l'en-tête, « Sans Remote Control » (show_for) ou « Lancée avant le
+    redémarrage » (show_orphan) ; un clic ouvre son explication."""
 
     def __init__(self):
-        super().__init__(visible=False, valign=Gtk.Align.CENTER,
-                         tooltip_text="Ce Claude tourne dans un terminal sans Remote Control : "
-                                      "Claude Hub ne peut ni lui écrire ni répondre à ses demandes")
+        super().__init__(visible=False, valign=Gtk.Align.CENTER)
         self.add_css_class("flat")
-        self.add_css_class("rc-chip")
         inner = Gtk.Box(spacing=4)
-        inner.append(Gtk.Image(icon_name=WARNING_ICON, pixel_size=12))
-        inner.append(Gtk.Label(label="Sans Remote Control"))
+        self.icon = Gtk.Image(pixel_size=12)
+        self.label = Gtk.Label()
+        inner.append(self.icon)
+        inner.append(self.label)
         self.set_child(inner)
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=8,
                            margin_bottom=8, margin_start=10, margin_end=10)
         self.set_popover(Gtk.Popover(child=self.box))
-        self.host = None
+        self.key = None  # pastille affichée : ("rc", hôte) ou ("orphan",)
 
     def show_for(self, host):
-        """Visible, avec l'explication propre à host (où mettre le réglage)."""
-        if host != self.host:
-            self.host = host
+        """« Sans Remote Control », avec l'explication propre à host (où mettre le réglage)."""
+        self.show_chip(("rc", host), WARNING_ICON, "rc-chip",
+                       "Ce Claude tourne dans un terminal sans Remote Control : Claude Hub ne "
+                       "peut ni lui écrire ni répondre à ses demandes", *help_texts(host))
+
+    def show_orphan(self):
+        """« Lancée avant le redémarrage » : le claude -p d'un Claude Hub précédent tourne encore."""
+        self.show_chip(("orphan",), ORPHAN_ICON, "orphan-chip",
+                       "Claude Hub a lancé ce Claude avant de redémarrer et n'est plus relié à "
+                       "lui : ton message partira quand il aura fini", *orphan_texts())
+
+    def show_chip(self, key, icon, css, tooltip, title, paragraphs):
+        if key != self.key:
+            self.key = key
+            self.icon.set_from_icon_name(icon)
+            self.label.set_label(title)
+            self.set_tooltip_text(tooltip)
+            for c in CHIP_CLASSES:
+                (self.add_css_class if c == css else self.remove_css_class)(c)
             while (child := self.box.get_first_child()):
                 self.box.remove(child)
-            title, paragraphs = help_texts(host)
             self.box.append(text_label(title, "card-title"))
             for p in paragraphs:
                 self.box.append(text_label(p))
