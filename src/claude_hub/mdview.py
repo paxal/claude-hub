@@ -11,9 +11,9 @@ code, les filets des citations et les séparateurs sont dessinés sous le texte
 import html
 import re
 
-from .gtk import Gdk, GLib, Graphene, Gsk, Gtk, Pango
-from .render import (FILE_SCHEME, copy_button, esc, highlight, is_dark, make_label, md_inline,
-                     parse_file_href)
+from .gtk import Gdk, Gio, GLib, Graphene, Gsk, Gtk, Pango
+from .render import (FILE_SCHEME, copied_link, copy_button, esc, highlight, is_dark, make_label,
+                     md_inline, parse_file_href)
 from .widgets import weak_handler
 
 RE_FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+#.-]*)")
@@ -153,6 +153,10 @@ class MdView(Gtk.TextView):
         click.connect("pressed", weak_handler(self, MdView.on_pressed))
         click.connect("released", weak_handler(self, MdView.on_released))
         self.add_controller(click)
+        menu = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        menu.connect("pressed", weak_handler(self, MdView.on_menu))
+        self.add_controller(menu)
+        self.link_actions = None  # actions du menu d'un lien, créées au premier clic droit
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", weak_handler(self, MdView.on_motion))
         self.add_controller(motion)
@@ -503,20 +507,58 @@ class MdView(Gtk.TextView):
 
     def on_pressed(self, _gesture, _n, x, y):
         self.press = (x, y)
+        if self.get_extra_menu() is not None:
+            self.set_extra_menu(None)  # (le menu ouvert au clavier ne montrerait plus ce lien)
 
     def on_released(self, _gesture, n, x, y):
         px, py = getattr(self, "press", (x, y))
         if n != 1 or abs(x - px) > 4 or abs(y - py) > 4 or self.buf.get_has_selection():
             return  # glissé (sélection) plutôt que clic
         uri = self.link_at(x, y)
-        if not uri:
-            return
+        if uri:
+            self.open_link(uri)
+
+    def open_link(self, uri):
+        """Les liens hub-file: vont à la fenêtre (open_file_link), les autres au navigateur."""
         if uri.startswith(FILE_SCHEME):
             opener = getattr(self.get_root(), "open_file_link", None)
             if opener:
                 opener(self, *parse_file_href(uri))
         else:
             Gtk.UriLauncher(uri=uri).launch(self.get_root(), None, None, None)
+
+    def on_menu(self, _gesture, _n, x, y):
+        """Clic droit : sur un lien, « Ouvrir le lien » et « Copier l'adresse du lien »
+        au menu du texte, comme dans un Gtk.Label (le TextView n'en a pas). Le TextView
+        ouvre son menu après ce geste (phase de capture), et le reconstruit quand
+        extra_menu change."""
+        uri = self.link_at(x, y)
+        if not uri:
+            self.set_extra_menu(None)
+            return
+        if self.link_actions is None:
+            self.link_actions = Gio.SimpleActionGroup()
+            for name, fn in (("open-link", MdView.on_open_link), ("copy-link", MdView.on_copy_link)):
+                action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
+                action.connect("activate", weak_handler(self, fn))
+                self.link_actions.add_action(action)
+            self.insert_action_group("md", self.link_actions)
+        copy = "Copier le chemin" if uri.startswith(FILE_SCHEME) else "Copier l'adresse du lien"
+        section = Gio.Menu()
+        for label, action, value in (("Ouvrir le lien", "md.open-link", uri),
+                                     (copy, "md.copy-link", copied_link(uri))):
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value(action, GLib.Variant.new_string(value))
+            section.append_item(item)
+        menu = Gio.Menu()
+        menu.append_section(None, section)  # (sinon pas de séparateur avant)
+        self.set_extra_menu(menu)
+
+    def on_open_link(self, _action, uri):
+        self.open_link(uri.get_string())
+
+    def on_copy_link(self, _action, text):
+        self.get_clipboard().set(text.get_string())
 
     def on_motion(self, _ctrl, x, y):
         self.set_cursor_from_name("pointer" if self.link_at(x, y) else "text")

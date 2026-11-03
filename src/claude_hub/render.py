@@ -58,6 +58,15 @@ def parse_file_href(uri):
             int(m.group(2)) if m and m.group(2) else None)
 
 
+def copied_link(uri):
+    """Texte copié par « Copier l'adresse du lien » : l'adresse, ou pour un fichier
+    son chemin tel qu'il est cité (chemin:12, chemin:12-20)."""
+    if not uri.startswith(FILE_SCHEME):
+        return uri
+    path, line, end = parse_file_href(uri)
+    return path + (f":{line}" if line else "") + (f"-{end}" if line and end else "")
+
+
 def path_link(text, code=False):
     """Lien hub-file: si tout `text` est un chemin (suffixe de ligne compris), sinon None."""
     m = RE_PATH.fullmatch(text)

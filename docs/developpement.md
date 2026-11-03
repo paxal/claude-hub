@@ -63,7 +63,7 @@ restent sur `master`. Marche à suivre pour les agents :
 | `usage.py` | contexte rempli (jauge) et coût de la dernière réponse, dans l'en-tête |
 | `launcher.py` | nombre de conversations à traiter sur l'icône de la barre des tâches (D-Bus) |
 | `home.py` | accueil (à traiter, en cours) et choix du dossier d'une nouvelle conversation |
-| `mdview.py` | Markdown d'un message dans un seul `TextView`, pour que la sélection traverse paragraphes, listes et code (tableaux copiés en Markdown) |
+| `mdview.py` | Markdown d'un message dans un seul `TextView`, pour que la sélection traverse paragraphes, listes et code (tableaux copiés en Markdown), menu du clic droit sur un lien |
 | `attachments.py` | conversion des images jointes |
 | `viewer.py` | volet et fenêtre d'affichage des fichiers cités |
 | `permissions.py` | cartes des demandes de Claude (plan, questions, autorisations) et réponses |
