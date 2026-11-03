@@ -132,20 +132,25 @@ class TodoList:
 
 
 class TodoPanel(Gtk.Revealer):
-    """Volet repliable « Tâches 3/7 · tâche en cours », au-dessus de la saisie."""
+    """Volet repliable « Tâches 3/7 », avec la tâche en cours en dessous, dans la liste
+    d'activité à côté de la saisie (activity.py)."""
 
     def __init__(self):
-        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
+        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
                          transition_duration=200)
-        self.title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
-        self.expander = Gtk.Expander(label_widget=self.title)
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True)
+        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["act-label"])
+        self.current = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, visible=False,
+                                 css_classes=["act-detail"])
+        head.append(self.title)
+        head.append(self.current)
+        self.expander = Gtk.Expander(label_widget=head)
         self.rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
                             css_classes=["todo-list"])
         self.expander.set_child(Gtk.ScrolledWindow(
             child=self.rows, max_content_height=180, propagate_natural_height=True,
             hscrollbar_policy=Gtk.PolicyType.NEVER))
-        self.set_child(Gtk.Box(css_classes=["todos"], margin_start=8, margin_end=8,
-                               margin_top=6))
+        self.set_child(Gtk.Box(css_classes=["todos"]))
         self.get_child().append(self.expander)
         self.shown = None
 
@@ -159,9 +164,11 @@ class TodoPanel(Gtk.Revealer):
             self.shown = tasks
             cur = todos.current()
             title = f"Tâches {todos.done()}/{len(tasks)}"
-            if cur:
-                title += f" · {cur['active'] or cur['subject']}"
             self.title.set_text(title)
+            current = (cur["active"] or cur["subject"]) if cur else ""
+            self.current.set_text(current)
+            self.current.set_visible(bool(current))
+            self.expander.set_tooltip_text(f"{title} · {current}" if current else title)
             while (child := self.rows.get_first_child()):
                 self.rows.remove(child)
             for t in tasks:

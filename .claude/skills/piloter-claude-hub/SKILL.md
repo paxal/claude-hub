@@ -62,9 +62,10 @@ scénario lève une exception).
 `FAUX_CLAUDE_SCENARIO` : `simple` (défaut), `long` (texte, code, tableau, outils,
 TodoWrite, Edit), `plan`, `build` (plan puis exécution : tâches, Edit, Write, autorisation
 Bash, réponse finale), `autorisation`, `question`, `sous-agent`, `erreur`, `lent`
-(10 étapes d'une seconde : bandeau, « Arrêter », file d'attente), `shell` (Bash laissé
-en arrière-plan 6 s : pastille « 1 shell en cours »), ou le chemin d'un
-JSON avec ses propres étapes (format en tête de `tests/faux-claude`).
+(10 étapes d'une seconde : ligne de Claude, « Arrêter », file d'attente), `shell` (Bash
+laissé en arrière-plan 6 s : ligne « Shell » à côté de la saisie), ou le chemin d'un
+JSON avec ses propres étapes (format en tête de `tests/faux-claude`, monitor compris).
+La liste d'activité se lit avec `w.activity_panel.labels()` (« libellé · détail »).
 `FAUX_CLAUDE_VITESSE=0` supprime les pauses, `2` les double.
 
 Ce que le hub lui a envoyé : `pilote.journal_claude()` (un `{"argv", "cwd"}` par
@@ -122,7 +123,9 @@ requêtes de contrôle).
 - Pas de vrais clics, survol, glisser-déposer, raccourcis clavier ni dialogues
   natifs : appeler la fonction qu'ils déclenchent, et le dire dans le compte rendu.
 - `spectacle` capture ce que le compositeur affiche : laisser GTK redessiner
-  (`yield 0.5`) après un changement.
+  (`yield 0.5`) après un changement. S'il ne répond pas en 15 s (vu le 3 novembre
+  2026 sur l'écran virtuel), `capture` se rabat sur un rendu GTK de la fenêtre, et
+  le dit : bon pour la mise en page, pas pour les défauts de rafraîchissement.
 - Si piloter.sh signale que `~/.config/claude-hub` a changé, c'est en général
   l'instance ouverte de l'utilisateur (le message le dit) ; vérifier que les id du
   test n'y sont pas.

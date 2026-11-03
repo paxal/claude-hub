@@ -52,22 +52,14 @@ def running_agents(agents, alive, now=None):
 
 
 def agent_line(a):
-    """Un sous-agent en une ligne, pour le bandeau : « Review fix › Bash cargo test… »."""
+    """Un sous-agent en une ligne (info-bulle de sa ligne d'activité) : « Review fix › Bash cargo test… »."""
     name = " ".join(str(a.get("description") or a.get("type") or "Agent").split())
     step = " ".join(last_step(a).split())
     return f"{name} › {step}" if step else name
 
 
-def agents_tooltip(agents, limit=8):
-    """Info-bulle de la pastille du bandeau : un sous-agent par ligne (type · ligne)."""
-    lines = [f"{a.get('type') or 'Agent'} · {agent_line(a)}"[:160] for a in agents[:limit]]
-    if len(agents) > limit:
-        lines.append(f"… et {len(agents) - limit} autres")
-    return "\n".join(lines + ["Clic : volet des sous-agents"])
-
-
 def workflow_text(workflows):
-    """Avancement des workflows en arrière-plan (commande « stat »), pour le bandeau :
+    """Avancement des workflows en arrière-plan (commande « stat »), pour la ligne de Claude :
     « review · 151/152 agents · review_style #5 : r5 · pass1 · General Rust 1/2 »."""
     parts = []
     for w in workflows or ():
