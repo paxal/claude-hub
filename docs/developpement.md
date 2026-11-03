@@ -10,8 +10,15 @@ permissions, sous-agents), essais à l'appui :
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests
+make                        # tous les tests unitaires
+make test T=test_tags.py    # un seul fichier (motif accepté : T='test_t*.py')
+make test V=1               # nom de chaque test
+make clean                  # supprime __pycache__, build/, *.egg-info
 ```
+
+`make test` revient à `python3 -m unittest discover -s tests`, sans écrire de
+`__pycache__`. Les tests qui comparent `helper.py` et `helper.js` demandent
+`node`.
 
 Les tests d'interface tournent hors écran, sur une KWin virtuelle :
 `tests/ecran-virtuel.sh commande…` (captures avec `spectacle -b -n -f -o …`).

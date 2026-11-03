@@ -114,10 +114,11 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `eu-stack -p PID -1` à une seconde d'écart pour voir où il est. Ne pas y
   injecter de code (gdb) : reproduire ensuite dans une instance séparée
   (`tests/piloter.sh`, avec `pilote.orphelins()` et `pilote.cpu()`).
-- Tests unitaires : `python3 -m unittest discover -s tests`. node n'est pas
-  installé sur ce PC : une quinzaine de tests échouent alors (`FileNotFoundError:
-  'node'`), sans rapport avec le changement. Comparer `helper.py` et
-  `helper.js` sur cerberus (node), dans un dossier temporaire supprimé ensuite.
+- Tests unitaires : `make` (un seul fichier : `make test T=test_tags.py`), qui
+  n'écrit pas de `__pycache__`. node est installé sur ce PC : les tests qui
+  comparent `helper.py` et `helper.js` tournent en local. Sans node, une
+  quinzaine échouent (`FileNotFoundError: 'node'`) : comparer alors sur
+  cerberus, dans un dossier temporaire supprimé ensuite.
 - **Hors écran** : tout test d'interface passe par `tests/ecran-virtuel.sh`,
   qui lance la commande sur une KWin virtuelle (`kwin_wayland --virtual`) avec
   son propre bus D-Bus. Rien ne s'affiche chez l'utilisateur, et le
