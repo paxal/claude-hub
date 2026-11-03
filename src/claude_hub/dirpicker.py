@@ -3,6 +3,7 @@ import posixpath
 
 from .gtk import Gdk, Gtk, Pango, in_thread
 from .hosts import run_helper
+from .widgets import weak_handler
 
 
 class RemoteDirDialog(Gtk.Window):
@@ -22,37 +23,37 @@ class RemoteDirDialog(Gtk.Window):
 
         row = Gtk.Box(spacing=4)
         up = Gtk.Button(icon_name="go-up-symbolic", tooltip_text="Dossier parent")
-        up.connect("clicked", lambda _b: self.path and self.load(posixpath.dirname(self.path)))
+        up.connect("clicked", weak_handler(self, lambda d, _b: d.path and d.load(posixpath.dirname(d.path))))
         home = Gtk.Button(icon_name="go-home-symbolic", tooltip_text="Dossier personnel")
-        home.connect("clicked", lambda _b: self.load("~"))
+        home.connect("clicked", weak_handler(self, lambda d, _b: d.load("~")))
         self.entry = Gtk.Entry(hexpand=True, placeholder_text="chemin, ~ accepté")
-        self.entry.connect("activate", lambda e: self.load(e.get_text().strip() or "~"))
+        self.entry.connect("activate", weak_handler(self, lambda d, e: d.load(e.get_text().strip() or "~")))
         for w in (up, home, self.entry):
             row.append(w)
         box.append(row)
 
         self.listbox = Gtk.ListBox()
-        self.listbox.connect("row-activated", lambda _l, r: self.load(
-            posixpath.join(self.path, r.dir_name)))
+        self.listbox.connect("row-activated", weak_handler(self, lambda d, _l, r: d.load(
+            posixpath.join(d.path, r.dir_name))))
         box.append(Gtk.ScrolledWindow(child=self.listbox, vexpand=True))
 
         row = Gtk.Box(spacing=8)
         self.hidden = Gtk.CheckButton(label="Dossiers cachés")
-        self.hidden.connect("toggled", lambda _b: self.fill())
+        self.hidden.connect("toggled", weak_handler(self, lambda d, _b: d.fill()))
         row.append(self.hidden)
         self.status = Gtk.Label(xalign=0, hexpand=True, css_classes=["sid"],
                                 ellipsize=Pango.EllipsizeMode.END)
         row.append(self.status)
         cancel = Gtk.Button(label="Annuler")
-        cancel.connect("clicked", lambda _b: self.close())
+        cancel.connect("clicked", weak_handler(self, lambda d, _b: d.close()))
         self.choose = Gtk.Button(label="Choisir", css_classes=["suggested-action"], sensitive=False)
-        self.choose.connect("clicked", self.on_choose)
+        self.choose.connect("clicked", weak_handler(self, RemoteDirDialog.on_choose))
         row.append(cancel)
         row.append(self.choose)
         box.append(row)
 
         keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", self.on_key)
+        keys.connect("key-pressed", weak_handler(self, RemoteDirDialog.on_key))
         self.add_controller(keys)
 
         self.load(start or "~")

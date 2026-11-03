@@ -6,6 +6,7 @@ import subprocess
 
 from .gtk import Gtk
 from .hosts import SSH_OPTS
+from .widgets import weak_handler
 
 RENAMED = "Session renamed to: "
 
@@ -60,12 +61,16 @@ class RenamePopover(Gtk.Popover):
         row.append(ok)
         box.append(row)
 
-        def done(name):
-            self.popdown()
+        def done(pop, name):
+            pop.popdown()
             on_rename(name)
-        self.entry.connect("activate", lambda e: e.get_text().strip() and done(e.get_text()))
-        ok.connect("clicked", lambda _b: self.entry.get_text().strip() and done(self.entry.get_text()))
-        auto.connect("clicked", lambda _b: done(""))
-        self.entry.connect("changed", lambda e: ok.set_sensitive(bool(e.get_text().strip())))
+        self.entry.connect("activate", weak_handler(
+            self, lambda pop, e: e.get_text().strip() and done(pop, e.get_text())))
+        ok.connect("clicked", weak_handler(
+            self, lambda pop, _b: pop.entry.get_text().strip() and done(pop, pop.entry.get_text())))
+        auto.connect("clicked", weak_handler(self, lambda pop, _b: done(pop, "")))
+        self.entry.connect("changed", weak_handler(
+            self, lambda pop, e: pop.ok.set_sensitive(bool(e.get_text().strip()))))
+        self.ok = ok
         ok.set_sensitive(bool(self.entry.get_text().strip()))
         self.connect("map", lambda _p: self.entry.grab_focus())

@@ -1,6 +1,7 @@
 """Widgets des tags : pastilles, éditeur et menus de filtre (tags, dossiers)."""
 from .gtk import Gtk, Pango
 from .tags import normalize
+from .widgets import weak_handler
 
 TAG_ICON = "claude-hub-tag-symbolic"
 
@@ -31,11 +32,11 @@ class TagPopover(Gtk.Popover):
                                  column_spacing=4, row_spacing=4)
         box.append(self.chips)
         self.entry = Gtk.Entry(placeholder_text="tag, ou dossier/tag — Entrée pour ajouter")
-        self.entry.connect("activate", lambda e: self.add(e.get_text()))
-        self.entry.connect("changed", lambda _e: self.fill_suggestions())
+        self.entry.connect("activate", weak_handler(self, lambda pop, e: pop.add(e.get_text())))
+        self.entry.connect("changed", weak_handler(self, lambda pop, _e: pop.fill_suggestions()))
         box.append(self.entry)
         self.suggest = Gtk.ListBox(css_classes=["navigation-sidebar"])
-        self.suggest.connect("row-activated", lambda _l, r: self.add(r.tag))
+        self.suggest.connect("row-activated", weak_handler(self, lambda pop, _l, r: pop.add(r.tag)))
         self.suggest_scroll = Gtk.ScrolledWindow(child=self.suggest, max_content_height=220,
                                                  propagate_natural_height=True,
                                                  hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -66,7 +67,7 @@ class TagPopover(Gtk.Popover):
             chip.append(Gtk.Label(label=f"#{t}", ellipsize=Pango.EllipsizeMode.MIDDLE))
             rm = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat", "chip-close"],
                             tooltip_text="Retirer")
-            rm.connect("clicked", lambda _b, t=t: self.remove_tag(t))
+            rm.connect("clicked", weak_handler(self, lambda pop, _b, t=t: pop.remove_tag(t)))
             chip.append(rm)
             self.chips.append(chip)
         self.chips.set_visible(bool(self.tags))

@@ -6,6 +6,7 @@ est lue à la demande (commande « agent » des scripts distants).
 """
 from .gtk import Gtk, Pango, in_thread
 from .render import message_widget
+from .widgets import weak_handler
 
 AGENT_TOOLS = ("Agent", "Task")
 
@@ -60,7 +61,7 @@ class SubagentBlock(Gtk.Box):
         if self.prompt:
             self.body.append(message_widget({"role": "user", "text": self.prompt}))
         self.expander.set_child(self.body)
-        self.expander.connect("notify::expanded", self.on_expanded)
+        self.expander.connect("notify::expanded", weak_handler(self, SubagentBlock.on_expanded))
         self.steps = 0
         if not on_open:
             return self.append(self.expander)

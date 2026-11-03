@@ -392,7 +392,7 @@ def image_widget(texture, max_size=IMG_MAX):
     pic.set_halign(Gtk.Align.START)
     pic.set_valign(Gtk.Align.START)
     click = Gtk.GestureClick()
-    click.connect("released", lambda *_: pic.get_clipboard().set(texture))
+    click.connect("released", lambda g, *_: g.get_widget().get_clipboard().set(texture))
     pic.add_controller(click)
     pic.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
     # Sans cette boîte, GTK élargit l'image à la hauteur de sa voisine la plus haute.
@@ -529,7 +529,8 @@ def message_widget(item, on_fork=None):
         fork = Gtk.Button(icon_name="claude-hub-fork-symbolic", css_classes=["flat", "copy", "copy-md"],
                           tooltip_text="Reprendre ce message dans une copie de la conversation"
                           if role == "user" else "Continuer dans une copie de la conversation, arrêtée ici")
-        fork.connect("clicked", lambda _b: on_fork(item, role == "user", ov))
+        # ov retrouvé depuis le bouton : le capturer empêcherait sa libération (widgets.weak_handler)
+        fork.connect("clicked", lambda b: on_fork(item, role == "user", b.get_ancestor(Gtk.Overlay)))
         actions.append(fork)
     btn = copy_button(item["text"], "Copier le message (Markdown)")
     btn.add_css_class("copy-md")

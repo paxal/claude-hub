@@ -32,6 +32,25 @@ def host_chip(host):
     return chip
 
 
+def weak_handler(obj, fn):
+    """Gestionnaire de signal qui appelle fn(obj, *arguments du signal) sans garder obj en
+    vie (et ne fait rien si obj a été libéré).
+
+    À utiliser pour un signal d'un enfant ou d'un contrôleur de obj : self.methode, ou un
+    lambda qui utilise self, formerait un cycle obj → enfant → gestionnaire → obj qui passe
+    par GTK. Le ramasse-miettes de Python ne le voit pas, et obj n'est jamais libéré une
+    fois retiré de l'affichage (voir AGENTS.md). Une référence faible de Python ne convient
+    pas : PyGObject libère et recrée l'objet Python d'un widget toujours affiché ; celle de
+    GObject suit le widget lui-même.
+    """
+    ref = obj.weak_ref()
+
+    def handler(*args):
+        target = ref()
+        return None if target is None else fn(target, *args)
+    return handler
+
+
 def menu_popover(child):
     """Popover de menu sans flèche. (Sa classe « background » doit rester : passer
     css_classes au constructeur la retirerait, et le menu n'aurait plus de fond.)"""
@@ -178,7 +197,7 @@ class ChoiceButton(Gtk.MenuButton):
         box.append(Gtk.Image(icon_name="pan-down-symbolic", css_classes=["chevron"]))
         self.set_child(box)
         self.list = Gtk.ListBox(css_classes=["choices"], selection_mode=Gtk.SelectionMode.NONE)
-        self.list.connect("row-activated", self.on_row)
+        self.list.connect("row-activated", weak_handler(self, ChoiceButton.on_row))
         self.set_popover(menu_popover(self.list))
         self.fill()
 

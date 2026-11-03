@@ -99,6 +99,24 @@ def cpu(secondes=5):
     return pct
 
 
+def orphelins():
+    """Widgets encore en vie hors de toute fenêtre : ceux qu'un cycle retient après leur
+    retrait (voir widgets.weak_handler). Le contenu des sections repliées affichées n'en
+    fait pas partie (GTK le détache tant qu'elles sont fermées). Le nombre doit rester
+    stable quand on refait le fil ou la liste (changer de conversation, relire
+    l'historique, taper dans la recherche)."""
+    import gc
+    replie, a_voir = set(), list(app.get_windows())
+    while a_voir:
+        for x in descendants(a_voir.pop()):
+            if isinstance(x, Gtk.Expander) and not x.get_expanded() and x.get_child() is not None:
+                replie.add(id(x.get_child()))
+                a_voir.append(x.get_child())
+    gc.collect()
+    return [x for x in gc.get_objects() if isinstance(x, Gtk.Widget) and x.get_parent() is None
+            and not isinstance(x, Gtk.Root) and id(x) not in replie]
+
+
 # -- actions --
 def conversation(sid=None, titre=None, hote=None, condition=None):
     """Première conversation de la liste qui correspond (titre : morceau du titre ou du

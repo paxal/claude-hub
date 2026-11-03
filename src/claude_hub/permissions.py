@@ -10,6 +10,7 @@ import json
 from .gtk import Gtk, Pango
 from .hosts import MODE_LABELS
 from .render import code_block, esc, file_href, lang_for, make_label, plan_widget
+from .widgets import weak_handler
 
 # Modes proposés pour exécuter un plan validé (le premier est le choix par défaut).
 EXEC_MODES = [(m, MODE_LABELS[m]) for m in ("acceptEdits", "auto", "default", "bypassPermissions")]
@@ -114,11 +115,12 @@ class RequestCard(Gtk.Box):
         self.append(row)
 
     def buttons(self, *specs):
-        """specs : (libellé, infobulle, action, css) ; renvoie la rangée."""
+        """specs : (libellé, infobulle, action, css), action étant une méthode de la carte ;
+        renvoie la rangée."""
         row = Gtk.Box(spacing=6, halign=Gtk.Align.END)
         for label, tip, action, css in specs:
             b = Gtk.Button(label=label, tooltip_text=tip, css_classes=[css] if css else [])
-            b.connect("clicked", lambda _b, a=action: a())
+            b.connect("clicked", weak_handler(self, lambda card, _b, f=action.__func__: f(card)))
             row.append(b)
         self.append(row)
         return row
@@ -187,7 +189,7 @@ class RequestCard(Gtk.Box):
                 self.append(box)
                 btns.append(b)
             other = Gtk.Entry(placeholder_text="Autre réponse…")
-            other.connect("activate", lambda _e: self.answer())
+            other.connect("activate", weak_handler(self, lambda card, _e: card.answer()))
             self.append(other)
             self.answers.append((text, btns, other))
         self.buttons(("Ne pas répondre", "Refuser la question : le texte de la saisie est "

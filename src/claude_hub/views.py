@@ -7,7 +7,7 @@ n'est pas déjà une vue. Les vues sont gardées dans settings.json (« views »
 """
 from .gtk import GLib, Gtk, Pango
 from .tagui import TAG_ICON
-from .widgets import WrapBox, menu_popover, themed_icon
+from .widgets import WrapBox, menu_popover, themed_icon, weak_handler
 
 
 def same_query(a, b):
@@ -75,7 +75,7 @@ class ViewsBar(WrapBox):
         btn.connect("clicked", lambda _b: self.apply("" if active else query))
         menu = Gtk.GestureClick(button=3)
         menu.connect("pressed", lambda g, *_a: (g.set_state(Gtk.EventSequenceState.CLAIMED),
-                                                self.ask_remove(btn, query)))
+                                                self.ask_remove(g.get_widget(), query)))
         btn.add_controller(menu)
         return btn
 
@@ -94,6 +94,6 @@ class ViewsBar(WrapBox):
                     self.remove(query)
                 return False
             GLib.idle_add(later)
-        remove.connect("clicked", lambda _b: (setattr(pop, "removing", True), pop.popdown()))
+        remove.connect("clicked", weak_handler(pop, lambda p, _b: (setattr(p, "removing", True), p.popdown())))
         pop.connect("closed", closed)
         pop.popup()

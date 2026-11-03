@@ -53,6 +53,26 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   d'état global « le processus en cours » : c'était la cause du bug où le
   bandeau « Claude utilise Read… » et l'historique restaient bloqués après un
   changement de conversation.
+- **Widgets jamais libérés** : un gestionnaire branché sur un enfant ou un
+  contrôleur d'un widget (`self.expander.connect(…, self.on_x)`, `GestureClick`
+  avec `self.methode`, lambda qui capture le widget parent), ou un attribut d'un
+  enfant qui désigne un ancêtre, forme un cycle qui passe par GTK. PyGObject ne
+  le montre pas au ramasse-miettes : le widget reste en mémoire une fois retiré.
+  Tout ce qui est recréé (fil, liste, cartes, popovers) fuyait ainsi : 4,5 Go et
+  le CPU saturé après une journée. Passer par `widgets.weak_handler(self, fn)`, ou
+  retrouver le widget depuis l'émetteur (`geste.get_widget()`,
+  `bouton.get_ancestor(…)`). Pas de `weakref` de Python : PyGObject recrée
+  l'objet Python d'un widget toujours affiché. `self.connect(…, self.methode)` sur
+  le widget lui-même, ou un gestionnaire qui ne retient que la fenêtre, ne posent
+  pas de problème. Vérifier avec `pilote.orphelins()`. Un widget hors fenêtre
+  n'est pas forcément une fuite : un `Gtk.Expander` replié détache son contenu
+  (`orphelins()` en tient compte). À la fermeture de l'appli, l'avertissement
+  « Finalizing …Fit, but it still has children left » est sans conséquence
+  (Python s'arrête avant le `do_dispose` du tableau).
+- **Feuilles de style** : installées une seule fois, dans `do_startup`.
+  `do_activate` est rappelé à chaque clic sur une notification et à chaque
+  relance de `claude-hub` ; chaque feuille ajoutée fait recalculer le style de
+  tous les widgets.
 - **Rendu** : `GSK_RENDERER=cairo` par défaut (`gtk.py`). Les moteurs `gl` et
   `vulkan` de GTK 4.20 laissent des restes quand un texte change (pixels blancs
   ou orange dans le bandeau d'activité). Ne pas revenir dessus sans le vérifier
@@ -88,6 +108,12 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 
 ## Tester
 
+- **CPU ou mémoire anormaux sur l'instance ouverte** : l'observer sans la
+  modifier. `/proc/PID/status` (`VmRSS`, et `VmSwap` : une fuite finit dans le
+  swap), `top -H -p PID` (c'est le fil principal qui tourne ?), et quelques
+  `eu-stack -p PID -1` à une seconde d'écart pour voir où il est. Ne pas y
+  injecter de code (gdb) : reproduire ensuite dans une instance séparée
+  (`tests/piloter.sh`, avec `pilote.orphelins()` et `pilote.cpu()`).
 - Tests unitaires : `python3 -m unittest discover -s tests`. node n'est pas
   installé sur ce PC : une quinzaine de tests échouent alors (`FileNotFoundError:
   'node'`), sans rapport avec le changement. Comparer `helper.py` et
@@ -96,7 +122,11 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   qui lance la commande sur une KWin virtuelle (`kwin_wayland --virtual`) avec
   son propre bus D-Bus. Rien ne s'affiche chez l'utilisateur, et le
   presse-papier est isolé du sien. Ne lancer l'appli sur le vrai écran que si
-  l'utilisateur le demande.
+  l'utilisateur le demande. Défaut connu : chaque lancement laisse un
+  `ksecretd` démarré par ce bus (variable `ECRAN_VIRTUEL_BUS=1` dans son
+  environnement), qui recrée `home/.local/share/kwalletd` dans le dossier
+  `/tmp/claude-hub-pilote.*` après son nettoyage (« rm : … n'est pas vide »).
+  Les arrêter à la fin, sans toucher au `ksecretd --pam-login` de la session.
 - Lancer l'appli **dans une instance séparée**, pour ne pas toucher à celle que
   l'utilisateur a ouverte, avec `tests/piloter.sh script.py` : config
   temporaire (qui garde le thème du bureau), faux `claude` dans le PATH, écran
@@ -124,9 +154,12 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 - **Gros volumes** : passer les vraies conversations (locales, cerberus,
   Cursor) dans le rendu Markdown a révélé plusieurs plantages ; refaire ce test
   après une modification de `render.py`.
-- Supprimer les `__pycache__` créés par les tests.
+- Supprimer les `__pycache__` créés par les tests (`python3 -B` n'empêche pas
+  `py_compile` d'en écrire un).
 - Dire précisément ce qui a été testé et ce qui ne l'a pas été (dialogues
-  natifs, glisser-déposer, survol : non simulables).
+  natifs, glisser-déposer, vrai pointeur : non simulables). Les contrôleurs
+  (survol, clic droit, clic sur une image) se déclenchent en émettant leur
+  signal, ce qui teste le gestionnaire mais pas le geste.
 
 ## Façon de travailler avec l'utilisateur
 

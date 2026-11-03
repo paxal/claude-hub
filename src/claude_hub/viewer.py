@@ -11,6 +11,7 @@ import subprocess
 from .gtk import Gdk, Gio, GLib, Gtk, Pango, in_thread
 from .hosts import CLOUD, run_helper
 from .render import copy_button, esc, highlight, lang_for, render_md, texture_from
+from .widgets import weak_handler
 
 MD_EXTS = (".md", ".markdown")
 HIGHLIGHT_LIMIT = 300000  # au-delà, texte brut (pygments serait trop lent)
@@ -79,26 +80,26 @@ class FileViewer(Gtk.Box):
         head.append(names)
         reload = Gtk.Button(icon_name="view-refresh-symbolic", css_classes=["flat"],
                             tooltip_text="Recharger", valign=Gtk.Align.CENTER)
-        reload.connect("clicked", lambda _b: self.reload())
+        reload.connect("clicked", weak_handler(self, lambda v, _b: v.reload()))
         head.append(reload)
         self.copy_box = Gtk.Box(valign=Gtk.Align.CENTER)
         head.append(self.copy_box)
         self.launch_btn = Gtk.Button(icon_name="document-open-symbolic", css_classes=["flat"],
                                      tooltip_text="Ouvrir avec l'application par défaut",
                                      valign=Gtk.Align.CENTER)
-        self.launch_btn.connect("clicked", lambda _b: Gtk.FileLauncher.new(
-            Gio.File.new_for_path(self.path)).launch(self.get_root(), None, None))
+        self.launch_btn.connect("clicked", weak_handler(self, lambda v, _b: Gtk.FileLauncher.new(
+            Gio.File.new_for_path(v.path)).launch(v.get_root(), None, None)))
         head.append(self.launch_btn)
         if on_detach:
             detach = Gtk.Button(icon_name="window-new-symbolic", css_classes=["flat"],
                                 tooltip_text="Ouvrir dans une fenêtre à part",
                                 valign=Gtk.Align.CENTER)
-            detach.connect("clicked", lambda _b: on_detach(self))
+            detach.connect("clicked", weak_handler(self, lambda v, _b: on_detach(v)))
             head.append(detach)
         if on_close:
             close = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat"],
                                tooltip_text="Fermer", valign=Gtk.Align.CENTER)
-            close.connect("clicked", lambda _b: on_close(self))
+            close.connect("clicked", weak_handler(self, lambda v, _b: on_close(v)))
             head.append(close)
         self.append(head)
         self.status = Gtk.Label(xalign=0, wrap=True, css_classes=["notice"], visible=False)
@@ -169,17 +170,19 @@ class FileViewer(Gtk.Box):
                           valign=Gtk.Align.START, tooltip_text=f"{w} × {h} px — clic : taille réelle / ajustée")
         pic.set_cursor(Gdk.Cursor.new_from_name("zoom-in", None))
 
-        def fit(full):
+        def fit(viewer, pic, full):
             # Ajustée : la vue n'a pas de défilement, l'image est réduite pour tenir.
             pic.set_can_shrink(not full)
             pic.set_cursor(Gdk.Cursor.new_from_name("zoom-out" if full else "zoom-in", None))
             policy = Gtk.PolicyType.AUTOMATIC if full else Gtk.PolicyType.NEVER
-            self.scroll.set_policy(policy, policy)
+            viewer.scroll.set_policy(policy, policy)
         click = Gtk.GestureClick()
-        click.connect("released", lambda *_a: fit(pic.get_can_shrink()))
+        # image et visionneuse retrouvées depuis le contrôleur (widgets.weak_handler)
+        click.connect("released", weak_handler(
+            self, lambda v, g, *_a: fit(v, g.get_widget(), g.get_widget().get_can_shrink())))
         pic.add_controller(click)
         self.scroll.set_child(pic)
-        fit(False)
+        fit(self, pic, False)
         self.where.set_text(f"{self.where.get_text()} · {w} × {h}")
 
     def show_text(self, text, lang, markup):
@@ -214,7 +217,7 @@ class ViewerWindow(Gtk.ApplicationWindow):
         self.viewer = FileViewer()
         self.set_child(self.viewer)
         self.viewer.load(host, path, line, end)
-        self.viewer.title.connect("notify::label", lambda *_a: self.update_title())
+        self.viewer.title.connect("notify::label", weak_handler(self, lambda win, *_a: win.update_title()))
         self.update_title()
 
     def update_title(self):

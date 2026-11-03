@@ -18,6 +18,7 @@ import time
 
 from .gtk import GLib, Gtk, Pango
 from .hosts import SSH_OPTS
+from .widgets import weak_handler
 from .listrow import BUSY_ICON
 from .render import copy_button
 
@@ -145,7 +146,7 @@ class ShellBlock(Gtk.Box):
         head.append(self.note)
         self.stop_btn = Gtk.Button(icon_name="media-playback-stop-symbolic", visible=False,
                                    css_classes=["flat", "copy"], tooltip_text="Arrêter la commande")
-        self.stop_btn.connect("clicked", lambda _b: self.stop())
+        self.stop_btn.connect("clicked", weak_handler(self, lambda block, _b: block.stop()))
         head.append(self.stop_btn)
         self.copy_box = Gtk.Box()
         head.append(self.copy_box)
@@ -162,7 +163,7 @@ class ShellBlock(Gtk.Box):
         self.label = Gtk.Label(xalign=0, yalign=0, selectable=True, wrap=True,
                                wrap_mode=Pango.WrapMode.WORD_CHAR, css_classes=["code"])
         self.scroll = Gtk.ScrolledWindow(child=self.label, hscrollbar_policy=Gtk.PolicyType.NEVER)
-        self.scroll.get_vadjustment().connect("changed", self.follow)
+        self.scroll.get_vadjustment().connect("changed", weak_handler(self, ShellBlock.follow))
         box.append(self.scroll)
         self.append(box)
         self.show_output()
@@ -246,7 +247,7 @@ class ShellBlock(Gtk.Box):
     # -- envoi à Claude --
     def set_pending(self, on_drop):
         """Commande en attente du prochain message ; on_drop(bloc) : bouton « retirer »."""
-        self.drop_btn.connect("clicked", lambda _b: on_drop(self))
+        self.drop_btn.connect("clicked", weak_handler(self, lambda block, _b: on_drop(block)))
         self.drop_btn.set_visible(True)
         self.show_state()
 

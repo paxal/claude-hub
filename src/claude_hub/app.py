@@ -18,7 +18,11 @@ class App(Gtk.Application):
         self.activate()
         self.get_active_window().open_notified(sid.get_string())
 
-    def do_activate(self):
+    def do_startup(self):
+        """Une seule fois : chaque feuille de style ajoutée fait recalculer le style de tous
+        les widgets, et l'application est réactivée à chaque clic sur une notification et à
+        chaque relance de claude-hub."""
+        Gtk.Application.do_startup(self)
         css = Gtk.CssProvider()
         theme = Gtk.Settings.get_default().get_property("gtk-theme-name") or ""
         text = CSS + (BREEZE_CSS if theme.lower().startswith("breeze") else "")
@@ -31,6 +35,8 @@ class App(Gtk.Application):
         Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(
             str(Path(__file__).parent / "icons"))  # icônes propres à claude-hub
         Gtk.Window.set_default_icon_name(self.get_application_id())  # installée par install.sh
+
+    def do_activate(self):
         win = self.get_active_window() or Hub(self)
         win.present()
         detect_dark(win)

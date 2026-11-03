@@ -80,7 +80,12 @@ requêtes de contrôle).
   `envoyer(texte, mode="auto"|"now"|"queue")`.
 - Lecture : `chercher(type=Gtk.Button, texte="Autoriser", css=…)`, `textes(widget)`,
   `texte_de(widget)`, `descendants(widget)`, `defilement()`, `notifications`.
-- `capture(nom)`, `verifier(condition, message)`, `pct = yield from pilote.cpu(5)`.
+- `capture(nom)`, `verifier(condition, message)`, `pct = yield from pilote.cpu(5)`,
+  `orphelins()` (widgets retenus hors de la fenêtre).
+- Un contrôleur (survol d'une ligne, clic droit sur une vue, clic sur une image) se
+  trouve avec `widget.observe_controllers()` (liste à parcourir par `get_item(i)`)
+  et se déclenche en émettant son signal : `motion.emit("enter", 1.0, 1.0)`,
+  `clic.emit("pressed", 1, 2.0, 2.0)`. Ça teste le gestionnaire, pas le geste.
 - Un bouton se « clique » avec `bouton.emit("clicked")` : la carte d'autorisation
   (« Autoriser », « Pour la session », « Refuser ») et celle du plan (« Lancer »,
   « Continuer à planifier », remarque prise dans la saisie) se testent ainsi.
@@ -93,6 +98,11 @@ requêtes de contrôle).
 - **CPU au repos** : `yield 4` après la dernière action (la remise en page compte
   sinon), puis `yield from pilote.cpu(5)`. Repère : ~10–15 % avec une conversation
   ouverte et le rendu cairo.
+- **Fuite de widgets** (après un changement du fil, de la liste, d'une carte ou
+  d'un popover) : `len(pilote.orphelins())` avant et après avoir refait plusieurs
+  fois l'affichage (`ouvrir` d'autres conversations, `w.size = -2; w.load_history()`,
+  `w.search.set_text(…)`). Le nombre doit rester stable ; sinon, chercher qui retient
+  ces widgets avec `gc.get_referrers` (voir `widgets.weak_handler`).
 - **Défilement** : `pilote.defilement()["en_bas"]` ; mesurer plusieurs fois pendant
   la réponse avec le scénario `long`.
 - **Rendu sur de vraies conversations** (après un changement de `render.py` ou

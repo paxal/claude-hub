@@ -14,6 +14,7 @@ import re
 from .gtk import Gdk, GLib, Graphene, Gsk, Gtk, Pango
 from .render import (FILE_SCHEME, copy_button, esc, highlight, is_dark, make_label, md_inline,
                      parse_file_href)
+from .widgets import weak_handler
 
 RE_FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+#.-]*)")
 RE_HEAD = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
@@ -81,11 +82,14 @@ class Fit(Gtk.Widget):
 
     Cette largeur ne remonte pas comme minimum du texte (MdView.do_measure) : sinon le
     texte ne pourrait pas être plus étroit que le tableau, qui ne se règle que sur la
-    largeur précédente du texte, et tous deux ne perdraient que 4 pixels par image."""
+    largeur précédente du texte, et tous deux ne perdraient que 4 pixels par image.
 
-    def __init__(self, child, view, left):
+    Le texte est retrouvé comme ancêtre : un attribut qui le désignerait empêcherait sa
+    libération (voir widgets.weak_handler)."""
+
+    def __init__(self, child, left):
         super().__init__()
-        self.child, self.view, self.left = child, view, left
+        self.child, self.left = child, left
         child.set_parent(self)
 
     def do_measure(self, orientation, for_size):
@@ -93,7 +97,9 @@ class Fit(Gtk.Widget):
             for_size = self.measure(Gtk.Orientation.HORIZONTAL, -1)[1]  # (le TextView ne la donne pas)
         mini, nat, _mb, _nb = self.child.measure(orientation, for_size)
         if orientation == Gtk.Orientation.HORIZONTAL:
-            avail = self.view.last_width - self.left - 4  # celle qu'on est en train de lui donner
+            view = self.get_ancestor(MdView)
+            # celle qu'on est en train de lui donner
+            avail = view.last_width - self.left - 4 if view is not None else 0
             mini = nat = max(mini, min(nat, avail)) if avail > 0 else nat
         return mini, nat, -1, -1
 
@@ -144,11 +150,11 @@ class MdView(Gtk.TextView):
         self.connect("copy-clipboard", self.on_copy)
         self.connect("realize", lambda v: v.restyle())
         click = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
-        click.connect("pressed", self.on_pressed)
-        click.connect("released", self.on_released)
+        click.connect("pressed", weak_handler(self, MdView.on_pressed))
+        click.connect("released", weak_handler(self, MdView.on_released))
         self.add_controller(click)
         motion = Gtk.EventControllerMotion()
-        motion.connect("motion", self.on_motion)
+        motion.connect("motion", weak_handler(self, MdView.on_motion))
         self.add_controller(motion)
 
     def restyle(self, dark=None):
@@ -287,7 +293,7 @@ class MdView(Gtk.TextView):
                     rows.append(split_row(lines[i]))
                     i += 1
                 self.gap()
-                fit = Fit(table(rows), self, left)
+                fit = Fit(table(rows), left)
                 self.fits.append((fit, self.offset()))
                 self.widget(fit, "\n".join(l.strip() for l in raw), left, base)
             elif line.lstrip().startswith(">"):

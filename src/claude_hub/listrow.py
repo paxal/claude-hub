@@ -11,7 +11,7 @@ import time
 
 from .gtk import Gtk, Pango
 from .tagui import TAG_ICON, tag_chips
-from .widgets import host_chip
+from .widgets import host_chip, weak_handler
 
 DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
@@ -145,8 +145,8 @@ class SessionRow(Gtk.ListBoxRow):
         self.on_tags, self.on_archive, self.archive_btn = on_tags, on_archive, None
         if on_tags:  # boutons créés au premier survol (des centaines de lignes)
             hover = Gtk.EventControllerMotion()
-            hover.connect("enter", lambda *_: self.show_actions(True))
-            hover.connect("leave", lambda *_: self.show_actions(False))
+            hover.connect("enter", weak_handler(self, lambda row, *_: row.show_actions(True)))
+            hover.connect("leave", weak_handler(self, lambda row, *_: row.show_actions(False)))
             self.add_controller(hover)
         line.append(self.right)
         self.set_child(line)
@@ -159,15 +159,15 @@ class SessionRow(Gtk.ListBoxRow):
             actions = Gtk.Box(spacing=2, css_classes=["row-actions"])
             tag_btn = Gtk.Button(icon_name=TAG_ICON, tooltip_text="Tags", css_classes=["flat", "row-btn"])
             # menu accroché à la ligne : le bouton disparaît quand la souris la quitte
-            tag_btn.connect("clicked", lambda _b: self.on_tags(self))
+            tag_btn.connect("clicked", weak_handler(self, lambda row, _b: row.on_tags(row)))
             actions.append(tag_btn)
             if self.on_pin:
                 self.pin_btn = Gtk.ToggleButton(icon_name=PIN_ICON, css_classes=["flat", "row-btn"])
-                self.pin_btn.connect("clicked", lambda _b: self.on_pin(self))
+                self.pin_btn.connect("clicked", weak_handler(self, lambda row, _b: row.on_pin(row)))
                 actions.append(self.pin_btn)
                 self.set_pinned(self.pinned)
             self.archive_btn = Gtk.Button(css_classes=["flat", "row-btn"])
-            self.archive_btn.connect("clicked", lambda _b: self.on_archive(self))
+            self.archive_btn.connect("clicked", weak_handler(self, lambda row, _b: row.on_archive(row)))
             actions.append(self.archive_btn)
             self.right.add_named(actions, "actions")
             self.set_archived(self.has_css_class("archived"))

@@ -13,6 +13,7 @@ from .render import code_block, copy_button, esc, make_label, tool_detail, tool_
 from .feedtime import Timed, time_label
 from .listrow import BUSY_ICON
 from .todos import TODO_TOOLS, todo_detail
+from .widgets import weak_handler
 
 RESULT_LIMIT = 100000  # comme les scripts distants
 
@@ -79,7 +80,7 @@ class ToolCall(Gtk.Box):
         self.state = Gtk.Label(label="Pas encore de sortie.", xalign=0, css_classes=["notice"])
         self.body.append(self.state)
         self.expander.set_child(self.body)
-        self.expander.connect("notify::expanded", self.on_expanded)
+        self.expander.connect("notify::expanded", weak_handler(self, ToolCall.on_expanded))
         self.append(self.expander)
 
     def on_expanded(self, exp, _pspec):
