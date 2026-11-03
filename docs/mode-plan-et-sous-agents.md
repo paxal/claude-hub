@@ -209,7 +209,9 @@ message qui lance un tour depuis le dernier `turn_duration`).
 ## Shells en arrière-plan (observé, claude 2.1.304 à 2.1.316)
 
 Le « 1 shell » du terminal. Le fichier de session (`~/.claude/sessions/<pid>.json`)
-n'en dit rien : il passe à `idle` à la fin du tour, shell ou pas.
+ne dit pas lesquels tournent ; à la fin du tour, il passe à `shell` au lieu de
+`idle` tant qu'un shell ou un monitor (tâche `local_bash`) tourne (vu sur une
+session de terminal, claude 2.1.316 ; même code en 2.1.308).
 
 - **Lancement**, dans la transcription (lignes `user` de la conversation principale) :
   - outil Bash avec `run_in_background`, commande passée en arrière-plan après son
@@ -243,6 +245,39 @@ Avec `claude -p` (stream-json), le flux le dit directement :
 `task_notification`, comme pour un sous-agent. claude-hub garde l'entrée de claude
 ouverte jusqu'à la notification (la tâche compte dans `tasks`), puis claude relance
 un tour pour en rendre compte.
+
+## Monitors (observé, claude 2.1.316)
+
+Le « 1 monitor » du terminal : l'outil `Monitor` lance une commande et transmet
+chaque ligne de sa sortie à Claude, comme un événement.
+
+- **Lancement** : `tool_result` avec `toolUseResult: {"taskId":…,"timeoutMs":1800000,"persistent":false}`
+  (`timeoutMs` à 0 pour un monitor `persistent`) ; la description et la commande
+  sont dans le `tool_use` (`name: "Monitor"`).
+- **Événements** : une `<task-notification>` par événement, avec `<task-id>`,
+  `<summary>Monitor event: "<description>"</summary>` et `<event>…</event>`, mais
+  **sans `<status>`** : le monitor tourne toujours. Écrite aussitôt
+  (`queue-operation` `enqueue`), puis dans la conversation.
+- **Fin** : `<task-notification>` avec `<status>` (`completed` quand la commande
+  se termine, `failed`…), ou événement de Claude Code entre crochets :
+  `[Monitor expired after 30m with 3 events delivered. …]` à l'échéance (écrit
+  dès l'échéance), `[Monitor timed out …]`, `[Monitor stopped]`,
+  `[Monitor stopped — too much output …]`. Arrêt par Claude : résultat de
+  `TaskStop`, comme pour un shell (`task_type: "local_bash"`).
+- **Processus** : `bash -c` fils du processus claude, comme un shell, mais sa
+  sortie est un socket lu par claude, qui écrit lui-même `tasks/<id>.output` :
+  `/proc` ne permet pas de le relier à sa tâche.
+
+La commande `stat` renvoie les monitors dans `shells`, avec `"kind": "monitor"`
+(`"shell"` pour les autres) et `event` (le dernier événement) : ceux lancés depuis
+le démarrage du processus claude, pas encore finis d'après la transcription, et
+seulement si la session n'est pas `idle`.
+
+Avec `claude -p`, le flux ne les distingue pas des shells : `task_started` et
+`background_tasks_changed` disent `task_type: "local_bash"`, avec la description du
+monitor. claude-hub les reconnaît à l'appel de l'outil `Monitor` (`tool_use_id` de
+`task_started`) ou à son résultat (`taskId` et `timeoutMs`). Les événements
+arrivent comme des messages ; `task_notification` n'est émis qu'à la vraie fin.
 
 ## Demandes d'un terminal relié à Remote Control (vérifié, claude 2.1.312)
 

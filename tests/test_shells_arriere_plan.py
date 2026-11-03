@@ -1,5 +1,6 @@
-"""Shells que Claude laisse tourner en arrière-plan (« 1 shell » du terminal) : commande
-« stat » des scripts distants, flux de claude -p et textes de la pastille de l'en-tête."""
+"""Shells et monitors que Claude laisse tourner en arrière-plan (« 1 shell », « 1 monitor » du
+terminal) : commande « stat » des scripts distants, flux de claude -p et textes de la pastille
+de l'en-tête."""
 import calendar
 import json
 import os
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REMOTE = ROOT / "src/claude_hub/remote"
 sys.path.insert(0, str(ROOT / "src"))
 
-from claude_hub.shell import background_label, background_tooltip, since_text  # noqa: E402
+from claude_hub.shell import background_label, background_tooltip, since_text, waiting_text  # noqa: E402
 from claude_hub.window import Hub  # noqa: E402
 
 PROJ = "-tmp-x"
@@ -57,6 +58,25 @@ def notification(task, hms="08:40:00"):
                         "<summary>Background command completed (exit code 0)</summary>\n</task-notification>")
 
 
+def monitor(tool, task, command, description, hms="08:31:05", res_hms="08:31:06"):
+    """Appel de l'outil Monitor et son résultat (comme claude 2.1.316)."""
+    inp = {"command": command, "description": description, "timeout_ms": 1800000}
+    return (line(type="assistant", isSidechain=False, timestamp=ts(hms), message={
+        "role": "assistant", "content": [{"type": "tool_use", "id": tool, "name": "Monitor", "input": inp}]})
+        + user([{"type": "tool_result", "tool_use_id": tool,
+                 "content": f"Monitor started (task {task}, expires in 30m unless the source ends first)."}],
+               res_hms, toolUseResult={"taskId": task, "timeoutMs": 1800000, "persistent": False}))
+
+
+def event(task, text, hms="08:32:00"):
+    """Événement d'un monitor : une notification sans <status>, écrite dans la file d'attente
+    puis dans la conversation."""
+    body = (f"<task-notification>\n<task-id>{task}</task-id>\n<summary>Monitor event: \"deploy\"</summary>\n"
+            f"<event>{text}</event>\n</task-notification>")
+    return (line(type="queue-operation", operation="enqueue", timestamp=ts(hms), content=body)
+            + user(body, hms))
+
+
 def stopped(task, hms="08:35:00"):
     return user([{"type": "tool_result", "tool_use_id": "toolu_stop",
                   "content": json.dumps({"message": f"Successfully stopped task: {task} (sleep 60)"})}],
@@ -81,13 +101,13 @@ class TestStat(unittest.TestCase):
                 cls.procs.append(subprocess.Popen(["sleep", "60"], stdout=out, stderr=out))
         cls.sids = {}
 
-        def session(name, body, live=True):
+        def session(name, body, live=True, status="idle"):
             sid = f"{len(cls.sids) + 1:08d}-0000-0000-0000-000000000000"
             cls.sids[name] = sid
             (cls.proj / f"{sid}.jsonl").write_text(user("vas-y", "08:31:00") + body)
             if live:
                 Path(cls.home, f".claude/sessions/{len(cls.sids)}.json").write_text(json.dumps(
-                    {"pid": os.getpid(), "sessionId": sid, "startedAt": STARTED, "status": "idle"}))
+                    {"pid": os.getpid(), "sessionId": sid, "startedAt": STARTED, "status": status}))
 
         start = bash("toolu_1", "N=27605; for _ in $(seq 40); do\n\tgh api …\ndone",
                      "Poll for cubic's review") + launched("toolu_1", "bt1")
@@ -115,6 +135,20 @@ class TestStat(unittest.TestCase):
                 + user([{"type": "tool_result", "tool_use_id": "toolu_4",
                          "content": "<bash-stdout>Command was manually backgrounded by user with ID: bt1."}],
                        "08:32:00"))
+        # Monitors : chaque événement arrive en <task-notification>, sans <status> ; la session
+        # est « shell » (au repos, une tâche de fond tourne) ou « busy ».
+        watch = monitor("toolu_m", "bm1", "python3 watch.py --pr 27724 2>&1", "deploy of PR #27724")
+        session("monitor", watch + event("bm1", "WATCHING pr=#27724")
+                + event("bm1", 'STAGE stage="Build"\nBUILD build=#9230', "08:40:00"), status="shell")
+        session("monitor_occupe", watch, status="busy")
+        session("monitor_expire", watch + event("bm1", "WATCHING pr=#27724") + event(
+            "bm1", "[Monitor expired after 30m with 1 event delivered. Re-arm it if you still need the watch.]",
+            "09:01:06"), status="shell")
+        session("monitor_fini", watch + event("bm1", "WATCHING pr=#27724") + notification("bm1"), status="shell")
+        session("monitor_arrete", watch + stopped("bm1"), status="shell")
+        session("monitor_idle", watch + event("bm1", "WATCHING pr=#27724"))  # claude : plus rien ne tourne
+        session("monitor_ancien", monitor("toolu_m", "bm0", "sleep 99", "Vieux", "08:00:00", "08:00:01"),
+                status="shell")
 
     @classmethod
     def tearDownClass(cls):
@@ -136,7 +170,7 @@ class TestStat(unittest.TestCase):
 
     def test_tourne(self):
         self.assertEqual(self.stat("tourne"), [{
-            "id": "bt1", "description": "Poll for cubic's review",
+            "id": "bt1", "kind": "shell", "description": "Poll for cubic's review",
             "command": "N=27605; for _ in $(seq 40); do\n\tgh api …\ndone", "start": LAUNCH}])
 
     def test_finis(self):
@@ -144,12 +178,29 @@ class TestStat(unittest.TestCase):
             self.assertEqual(self.stat(name), [], name)
 
     def test_ctrl_b(self):
-        self.assertEqual(self.stat("ctrl_b"), [{"id": "bt_ctrlb", "description": "Tests",
+        self.assertEqual(self.stat("ctrl_b"), [{"id": "bt_ctrlb", "kind": "shell", "description": "Tests",
                                                 "command": "cargo test", "start": LAUNCH}])
 
     def test_commande_bang(self):
-        self.assertEqual(self.stat("bang"), [{"id": "bt_bang", "description": "",
+        self.assertEqual(self.stat("bang"), [{"id": "bt_bang", "kind": "shell", "description": "",
                                               "command": "cargo build --release", "start": LAUNCH}])
+
+    def test_monitor(self):
+        """Ses événements ne le disent pas fini ; le dernier est gardé, échappements décodés.
+        Sa sortie n'est pas ouverte par un fils de claude (c'est claude qui l'écrit)."""
+        self.assertEqual(self.stat("monitor"), [{
+            "id": "bm1", "kind": "monitor", "description": "deploy of PR #27724",
+            "command": "python3 watch.py --pr 27724 2>&1", "start": LAUNCH,
+            "event": 'STAGE stage="Build"\nBUILD build=#9230'}])
+        self.assertEqual(self.stat("monitor_occupe"), [{
+            "id": "bm1", "kind": "monitor", "description": "deploy of PR #27724",
+            "command": "python3 watch.py --pr 27724 2>&1", "start": LAUNCH, "event": None}])
+
+    def test_monitors_finis(self):
+        """Expiré, fini, arrêté par TaskStop, session revenue à « idle », ou lancé par un
+        processus claude précédent."""
+        for name in ("monitor_expire", "monitor_fini", "monitor_arrete", "monitor_idle", "monitor_ancien"):
+            self.assertEqual(self.stat(name), [], name)
 
 
 def fake_hub(**kw):
@@ -190,6 +241,31 @@ class TestFlux(unittest.TestCase):
         self.assertEqual((s["tasks"], s["live_agents"]), ({"b1"}, {}))
         self.assertNotIn("agents_stale", s)
 
+    def test_monitor(self):
+        """Le flux décrit un monitor comme un shell (local_bash) : task_started le relie à
+        l'appel de l'outil Monitor, ou son résultat le désigne (taskId et timeoutMs)."""
+        s = {"id": "s1", "tasks": set(), "idle": False}
+        hub = fake_hub(step=lambda *a: None, track_todos=lambda *a: False)
+        Hub.on_event(hub, {"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
+            {"type": "tool_use", "id": "toolu_m", "name": "Monitor",
+             "input": {"command": "watch.sh", "description": "deploy"}}]}}, s)
+        changed = {"type": "system", "subtype": "background_tasks_changed", "tasks": [
+            {"task_id": "bm1", "task_type": "local_bash", "description": "deploy"},
+            {"task_id": "bs1", "task_type": "local_bash", "description": "Sleep"}]}
+        Hub.on_background_tasks(hub, changed, s)  # avant task_started : pas encore reconnu
+        Hub.on_task(hub, {"type": "system", "subtype": "task_started", "task_id": "bm1",
+                          "tool_use_id": "toolu_m", "task_type": "local_bash", "description": "deploy"}, s)
+        self.assertEqual([(sh["id"], sh["kind"]) for sh in s["bg_shells"]], [("bm1", "monitor"), ("bs1", "shell")])
+        Hub.on_background_tasks(hub, changed, s)
+        self.assertEqual(background_label(s["bg_shells"]), "1 shell et 1 monitor en cours")
+        # sans task_started (claude plus ancien) : le résultat de l'outil
+        s = {"id": "s2", "tasks": set(), "idle": False}
+        Hub.on_background_tasks(hub, dict(changed, tasks=changed["tasks"][:1]), s)
+        Hub.on_event(hub, {"type": "user", "parent_tool_use_id": None, "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_m", "content": "Monitor started (task bm1…)"}]},
+            "tool_use_result": {"taskId": "bm1", "timeoutMs": 1800000, "persistent": False}}, s)
+        self.assertEqual(background_label(s["bg_shells"]), "1 monitor en cours")
+
     def test_shells_oublies_a_l_arret(self):
         s = {"live": "idle", "shells": [{"id": "b"}]}
         Hub.set_live_since(None, s, None)
@@ -204,6 +280,16 @@ class TestTextes(unittest.TestCase):
         self.assertEqual(background_label([]), "")
         self.assertEqual(background_label([{}]), "1 shell en cours")
         self.assertEqual(background_label([{}, {}]), "2 shells en cours")
+        m = {"kind": "monitor"}
+        self.assertEqual(background_label([m]), "1 monitor en cours")
+        self.assertEqual(background_label([{}, m, m]), "1 shell et 2 monitors en cours")
+
+    def test_bandeau(self):
+        self.assertEqual(waiting_text([{}]), "Claude attend un shell")
+        self.assertEqual(waiting_text([{}, {}]), "Claude attend 2 shells")
+        self.assertEqual(waiting_text([{"kind": "monitor"}]), "Claude attend un monitor")
+        self.assertEqual(waiting_text([{"kind": "shell"}, {"kind": "monitor"}]),
+                         "Claude attend un shell et un monitor")
 
     def test_duree(self):
         self.assertEqual(since_text(30), "moins d'une minute")
@@ -221,6 +307,18 @@ class TestTextes(unittest.TestCase):
                          "  $ N=1; for _ in $(seq 40); do\n"
                          "cargo build\n"
                          "b3")
+
+    def test_info_bulle_monitor(self):
+        now = time.time()
+        shells = [{"id": "bm1", "kind": "monitor", "description": "deploy of PR #27724",
+                   "command": "python3 watch.py --pr 27724", "start": now - 180,
+                   "event": "STAGE stage=Build\nBUILD   build=#9230\n"},
+                  {"id": "bm2", "kind": "monitor", "description": "", "command": "tail -f log", "event": None}]
+        self.assertEqual(background_tooltip(shells, now),
+                         "Monitor : deploy of PR #27724 · depuis 3 min\n"
+                         "  $ python3 watch.py --pr 27724\n"
+                         "  → BUILD build=#9230\n"
+                         "Monitor : tail -f log")
 
 
 if __name__ == "__main__":
