@@ -47,7 +47,7 @@ restent sur `master`. Marche à suivre pour les agents :
 
 | Module | Rôle |
 |---|---|
-| `gtk.py` | initialisation de GTK 4, `in_thread`, modificateur des raccourcis (Ctrl, ou Cmd sous macOS) |
+| `gtk.py` | initialisation de GTK 4, threads dont les fonctions sont lâchées dans la boucle GTK (`in_thread`, `start_thread`), ramasse-miettes lancé depuis la boucle GTK (`collect_in_main_loop`), modificateur des raccourcis (Ctrl, ou Cmd sous macOS) |
 | `hosts.py` | configuration, hôtes local/SSH, exécution des scripts distants |
 | `remote/helper.py`, `remote/helper.js` | scripts envoyés aux hôtes (`python3 -` ou `node -`) pour lire `~/.claude` (historique : la branche que claude reprendra) et les notes ; bibliothèque standard uniquement |
 | `cursor.py` | conversations Cursor (base `state.vscdb`, Linux ou macOS ; recherche) |

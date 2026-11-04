@@ -14,10 +14,9 @@ import re
 import shlex
 import signal
 import subprocess
-import threading
 import time
 
-from .gtk import GLib, Gtk, Pango
+from .gtk import GLib, Gtk, Pango, start_thread
 from .hosts import SSH_OPTS
 from .widgets import weak_handler
 from .listrow import BUSY_ICON
@@ -226,14 +225,15 @@ class ShellBlock(Gtk.Box):
         self.proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, errors="replace",
                                      start_new_session=True)  # Arrêter tue aussi ses enfants
-        err = threading.Thread(target=self.read, args=(self.proc.stderr, self.err), daemon=True)
-        err.start()
+        # start_thread : le bloc peut quitter le fil pendant la commande, et le dernier à le
+        # lâcher ne doit pas être un de ces threads
+        err = start_thread(self.read, self.proc.stderr, self.err)
 
         def run():
             self.read(self.proc.stdout, self.out)
             err.join()
             GLib.idle_add(self.finish, self.proc.wait())
-        threading.Thread(target=run, daemon=True).start()
+        start_thread(run)
 
     def read(self, stream, capture):
         for line in stream:
