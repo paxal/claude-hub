@@ -152,31 +152,46 @@ class CollecteTest(unittest.TestCase):
             else:
                 collect.assert_called_once_with(gen)
 
-    def abandon_cycle_then_allocate_in_thread(self):
-        """Cycle abandonné par la boucle, puis un thread qui alloue de quoi dépasser le
-        seuil de la génération 0 ; renvoie (libérations, allocations gardées)."""
-        gc.collect()
-        freed, junk = [], []
+    def allocate_in_thread(self, until=lambda: False):
+        """Thread qui alloue (et garde) jusqu'à 100 fois le seuil de la génération 0, en
+        Python : la collecte demandée part entre deux instructions. Renvoie les objets."""
+        junk = []
 
-        def abandon():
-            p = Probe(freed)
-            p.cycle = p
-        abandon()
-        thread = threading.Thread(target=lambda: junk.extend([] for _ in range(3 * gc.get_threshold()[0])))
+        def allocate():
+            for _ in range(100 * gc.get_threshold()[0]):
+                junk.append([])
+                if until():
+                    break
+        thread = threading.Thread(target=allocate)
         thread.start()
         thread.join()
-        return freed, junk
+        return junk
 
-    def test_sans_correction_le_thread_libere_le_cycle(self):
-        """La cause du plantage : la collecte part dans le thread qui alloue."""
-        freed, _junk = self.abandon_cycle_then_allocate_in_thread()
-        self.assertEqual(freed, [False])
+    def test_sans_correction_la_collecte_part_dans_le_thread(self):
+        """La cause du plantage : la collecte automatique part dans le thread qui alloue."""
+        gc.collect()
+        mains = []  # une collecte commencée : dans la boucle GTK ?
+
+        def note(phase, _info):
+            if phase == "start":
+                mains.append(threading.current_thread() is threading.main_thread())
+        gc.callbacks.append(note)
+        self.addCleanup(gc.callbacks.remove, note)
+        self.allocate_in_thread(lambda: False in mains)
+        self.assertIn(False, mains)
 
     def test_cycle_libere_dans_la_boucle_pas_dans_le_thread(self):
         self.addCleanup(gc.enable)
         with mock.patch.object(GLib, "timeout_add_seconds"):
             gtk.collect_in_main_loop()
-        freed, _junk = self.abandon_cycle_then_allocate_in_thread()
+        gc.collect()
+        freed = []
+
+        def abandon():
+            p = Probe(freed)
+            p.cycle = p
+        abandon()
+        _junk = self.allocate_in_thread()
         self.assertEqual(freed, [])
         self.assertTrue(gtk.collect_if_due())
         self.assertEqual(freed, [True])
