@@ -1,7 +1,7 @@
 """Application GTK."""
 from pathlib import Path
 
-from .gtk import Gdk, Gio, GLib, Gtk
+from .gtk import Gdk, Gio, GLib, Gtk, collect_in_main_loop
 from .render import BREEZE_CSS, CSS, DARK_CSS, detect_dark, is_dark
 from .window import Hub
 
@@ -23,6 +23,7 @@ class App(Gtk.Application):
         les widgets, et l'application est réactivée à chaque clic sur une notification et à
         chaque relance de claude-hub."""
         Gtk.Application.do_startup(self)
+        collect_in_main_loop()  # avant le premier thread
         css = Gtk.CssProvider()
         theme = Gtk.Settings.get_default().get_property("gtk-theme-name") or ""
         text = CSS + (BREEZE_CSS if theme.lower().startswith("breeze") else "")

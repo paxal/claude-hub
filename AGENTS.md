@@ -120,6 +120,18 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   (`orphelins()` en tient compte). À la fermeture de l'appli, l'avertissement
   « Finalizing …Fit, but it still has children left » est sans conséquence
   (Python s'arrête avant le `do_dispose` du tableau).
+- **Widgets libérés dans la boucle GTK seulement** : libéré dans un thread, un
+  widget y fait son `dispose` pendant que la boucle peut s'en servir. Plantage du
+  4 novembre 2026 (SIGSEGV) : un `MdView` sorti du fil, libéré par le
+  ramasse-miettes dans le thread de `Hub.poll` ; son `dispose` retirait le tampon
+  et reprogrammait la validation du texte, que la boucle a lancée aussitôt, sur un
+  texte sans tampon. Le ramasse-miettes de Python part dans le thread qui alloue :
+  il est coupé au démarrage et relancé depuis la boucle
+  (`gtk.collect_in_main_loop`, mêmes seuils, au plus une collecte par seconde ;
+  ne pas le réactiver). Un thread ne doit pas non plus garder la dernière
+  référence à un widget (une de ses méthodes, une fermeture qui le capture) :
+  `in_thread` et `start_thread` lâchent fonctions, arguments et résultat dans la
+  boucle ; pas de `threading.Thread` nu quand la cible touche à un widget.
 - **Feuilles de style** : installées une seule fois, dans `do_startup`.
   `do_activate` est rappelé à chaque clic sur une notification et à chaque
   relance de `claude-hub` ; chaque feuille ajoutée fait recalculer le style de
@@ -193,6 +205,14 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `eu-stack -p PID -1` à une seconde d'écart pour voir où il est. Ne pas y
   injecter de code (gdb) : reproduire ensuite dans une instance séparée
   (`tests/piloter.sh`, avec `pilote.orphelins()` et `pilote.cpu()`).
+- **Plantage (core)** : `coredumpctl list`, puis `coredumpctl dump PID -o
+  fichier` et gdb sur ce fichier (`thread apply all bt` : regarder aussi les
+  autres threads). GTK n'a pas de symboles : les sources de la version installée
+  sont dans `/var/cache/distfiles` (l'appel d'une fonction voisine exportée, et
+  les constantes, situent le code). Les piles Python se lisent dans le core sans
+  outil (ni pystack ni py-spy installés) : `_PyRuntime` commence par
+  `_Py_DebugOffsets` (cookie `xdebugpy`), qui donne la place des threads, des
+  frames et des objets code.
 - Tests unitaires : `make` (un seul fichier : `make test T=test_tags.py`), qui
   n'écrit pas de `__pycache__`. node est installé sur ce PC : les tests qui
   comparent `helper.py` et `helper.js` tournent en local. Sans node, une
