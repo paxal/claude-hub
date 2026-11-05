@@ -9,6 +9,9 @@ rafraîchit la liste tant qu'un sous-agent travaille.
 Les agents d'un workflow (subagents/workflows/<run>/) forment un groupe, à la place de son
 premier agent : en-tête repliable (nom et résumé du workflow, agents finis sur total), puis
 ses agents par phase. Déplié tant qu'il tourne, replié une fois fini, sauf choix contraire.
+
+Tout est rangé par heure de début ; ce qui tourne (un agent et ceux qu'il a lancés, ou un
+workflow) vient en tête, sous « En cours », le reste sous « Terminés ».
 """
 import re
 import time
@@ -43,45 +46,106 @@ def duration(sec):
     return f"{sec // 3600} h {sec % 3600 // 60:02d}"
 
 
+def one_line(text):
+    return " ".join(str(text or "").split())
+
+
+def step_of(a):
+    """Dernière étape d'un agent en une ligne, et vrai si c'est un appel d'outil écrit tel
+    quel (police fixe) : la description donnée à l'appel, comme le terminal (« Run the
+    parser tests » plutôt que la commande), sinon « Bash  cargo test… », ou le début de
+    son texte. Celle d'un appel Agent est la description du sous-agent qu'il lance : on
+    garde « Agent  … »."""
+    last = a.get("last") or {}
+    if last.get("role") != "tool":
+        return one_line(last.get("text")), False
+    inp = last.get("input") if isinstance(last.get("input"), dict) else {}
+    desc = inp.get("description")
+    if last.get("name") not in ("Agent", "Task") and isinstance(desc, str) and desc.strip():
+        return one_line(desc), False
+    return last_call(a), True
+
+
 def last_step(a):
-    """Dernière étape d'un agent en une ligne : « Bash  cargo test… » ou début de son texte."""
+    """Dernière étape d'un agent en une ligne (step_of)."""
+    return step_of(a)[0]
+
+
+def last_call(a):
+    """Dernière étape d'un agent telle quelle : « Bash  cargo test… » (info-bulles)."""
     last = a.get("last") or {}
     if last.get("role") == "tool":
         return f"{last.get('name')}  {tool_detail(last.get('input'))}"
-    return " ".join(str(last.get("text") or "").split())
+    return one_line(last.get("text"))
 
 
 def running_agents(agents, alive, now=None):
-    """Sous-agents qui travaillent, le plus récemment actif en premier."""
+    """Sous-agents qui travaillent, par heure de début (le plus ancien en premier) : un
+    ordre qui ne change pas à chaque étape de l'un d'eux."""
     run = [a for a in agents or () if agent_state(a, alive, now) == "running"]
-    return sorted(run, key=lambda a: -(a.get("end") or a.get("start") or 0))
+    return sorted(run, key=lambda a: (a.get("start") or 0, str(a.get("id") or a.get("tool") or "")))
 
 
 def agent_line(a):
-    """Un sous-agent en une ligne (info-bulle de sa ligne d'activité) : « Review fix › Bash cargo test… »."""
-    name = " ".join(str(a.get("description") or a.get("type") or "Agent").split())
-    step = " ".join(last_step(a).split())
+    """Un sous-agent en une ligne (info-bulle de sa ligne d'activité), avec son dernier
+    appel tel quel : « Review fix › Bash  cargo test… »."""
+    name = one_line(a.get("description") or a.get("type") or "Agent")
+    step = one_line(last_call(a))
     return f"{name} › {step}" if step else name
 
 
-def workflow_text(workflows):
-    """Avancement des workflows en arrière-plan (commande « stat »), pour la ligne de Claude :
-    « review · 151/152 agents · review_style #5 : r5 · pass1 · General Rust 1/2 »."""
-    parts = []
-    for w in workflows or ():
-        t = w.get("name") or "workflow"
-        if w.get("total"):
-            t += f" · {w.get('done', 0)}/{w['total']} agents"
-        run = w.get("running") or []
-        phases = {" ".join(str(r.get("phase") or "").lstrip("▸").split()) for r in run}
-        phase = phases.pop() if len(phases) == 1 else ""
-        labels = ", ".join(" ".join(str(r.get("label") or "").split()) or "?" for r in run)
-        if len(run) == 1:
-            t += " · " + (f"{phase} : " if phase else "") + labels
-        elif run:
-            t += f" · {len(run)} en cours" + (f" ({phase})" if phase else "") + " : " + labels
-        parts.append(t)
-    return " — ".join(parts)
+def workflow_running(w):
+    """Agents d'un workflow (commande « stat ») qui tournent, avec leur phase :
+    « review_style #5 : r5 · pass1 · General Rust 1/2 », « 2 en cours (Verify) : a, b »."""
+    run = w.get("running") or []
+    phases = {phase_label(r.get("phase")) for r in run}
+    phase = phases.pop() if len(phases) == 1 else ""
+    labels = ", ".join(one_line(r.get("label")) or "?" for r in run)
+    if len(run) == 1:
+        return (f"{phase} : " if phase else "") + labels
+    if run:
+        return f"{len(run)} en cours" + (f" ({phase})" if phase else "") + " : " + labels
+    return ""
+
+
+def workflow_detail(w):
+    """Avancement d'un workflow pour sa ligne d'activité : agents finis sur agents lancés
+    (le « 151/152 » du terminal), puis ceux qui tournent."""
+    count = f"{w.get('done', 0)}/{w['total']}" if w.get("total") else ""
+    return " · ".join(t for t in (count, workflow_running(w)) if t)
+
+
+def outside_workflows(running, agents):
+    """Agents de running qui n'appartiennent à aucun workflow (ni agent d'un workflow, ni
+    lancé par l'un d'eux) ; agents : la liste complète, pour remonter aux parents."""
+    by_id = {a.get("id"): a for a in agents or ()}
+    return [a for a in running if not workflow_of(a, by_id)]
+
+
+def agent_workflows(agents, alive, runs=(), now=None):
+    """Workflows dont un agent travaille, d'après la liste des sous-agents, sous la forme de
+    la commande « stat » (pour une conversation lancée d'ici, dont « stat » n'est pas
+    relu) : nom (workflow_runs), agents finis sur lancés, ceux qui tournent, début."""
+    info = {r.get("id"): r for r in runs or () if isinstance(r, dict)}
+    by_id = {a.get("id"): a for a in agents or ()}
+    groups = {}
+    for a in agents or ():
+        run = workflow_of(a, by_id)
+        if run:
+            groups.setdefault(run, []).append(a)
+    out = []
+    for run, members in groups.items():
+        own = [a for a in members if a.get("workflow")]  # pas ceux qu'ils ont lancés
+        states = {a.get("id"): agent_state(a, alive, now) for a in members}
+        if "running" not in states.values():
+            continue
+        starts = [a["start"] for a in members if a.get("start")]
+        out.append({"id": run, "name": (info.get(run) or {}).get("name") or "workflow",
+                    "total": len(own), "done": sum(states[a.get("id")] == "done" for a in own),
+                    "running": [{"label": a.get("description") or "", "phase": a.get("phase") or ""}
+                                for a in own if states[a.get("id")] == "running"],
+                    "start": min(starts) if starts else None})
+    return out
 
 
 def tree(agents):
@@ -149,6 +213,22 @@ def layout(agents, runs=()):
             of[a["id"]] = phase_label(a.get("phase")) or of.get(a.get("parent"), "")
             phases.setdefault(of[a["id"]], []).append(a)
         w["phases"] = list(phases.items())
+    return out
+
+
+def units(entries):
+    """Entrées de layout réunies en groupes qui restent ensemble dans le volet :
+    ("agents", [un agent et ceux qu'il a lancés]) ou ("workflow", w)."""
+    out, ids = [], set()
+    for kind, x in entries:
+        if kind == "workflow":
+            out.append(("workflow", x))
+        elif out and out[-1][0] == "agents" and x.get("parent") in ids:
+            out[-1][1].append(x)
+            ids.add(x["id"])
+        else:
+            out.append(("agents", [x]))
+            ids = {x["id"]}
     return out
 
 
@@ -251,22 +331,47 @@ class AgentsPanel(Gtk.Box):
             self.list.remove(row)
         self.empty.set_visible(not self.agents)
         now = time.time()
-        for kind, x in layout(self.agents, self.runs.values()):
-            if kind == "agent":
-                self.list.append(self.agent_row(x, now))
-                continue
-            st = workflow_state([self.state(a) for a in x["agents"]])
-            opened = self.expanded.get(x["id"], st == "running")
-            self.list.append(self.workflow_row(x, st, opened, now))
-            for phase, members in x["phases"] if opened else ():
-                if phase:
-                    done = sum(self.state(a) == "done" for a in members)
-                    count = f"{len(members)}" if done == len(members) else f"{done}/{len(members)}"
-                    title = section_title(f"{phase} · {count}")
-                    title.set_margin_start(24)
-                    self.list.append(Gtk.ListBoxRow(child=title, activatable=False, selectable=False))
-                for a in members:
-                    self.list.append(self.agent_row(a, now, in_workflow=True))
+        groups = units(layout(self.agents, self.runs.values()))
+        busy = [self.busy(g) for g in groups]
+        running = sum(agent_state(a, self.alive) == "running" for a in self.agents)
+        sections = ((f"En cours · {running}", [g for g, b in zip(groups, busy) if b]),
+                    ("Terminés", [g for g, b in zip(groups, busy) if not b]))
+        both = any(busy) and not all(busy)  # deux sections : leurs titres
+        for title, members in sections:
+            if both:
+                self.list.append(self.title_row(title, 6))
+            for group in members:
+                self.add_group(group, now)
+
+    def busy(self, group):
+        """Vrai si un agent du groupe (units) travaille, ou attend ceux qu'il a lancés."""
+        kind, x = group
+        agents = x["agents"] if kind == "workflow" else x
+        return any(self.state(a) in ("running", "waiting") for a in agents)
+
+    def title_row(self, text, margin):
+        title = section_title(text)
+        title.set_margin_start(margin)
+        return Gtk.ListBoxRow(child=title, activatable=False, selectable=False)
+
+    def add_group(self, group, now):
+        """Lignes d'un groupe (units) : un agent et ceux qu'il a lancés, ou un workflow
+        (en-tête, puis ses agents par phase s'il est déplié)."""
+        kind, x = group
+        if kind == "agents":
+            for a in x:
+                self.list.append(self.agent_row(a, now))
+            return
+        st = workflow_state([self.state(a) for a in x["agents"]])
+        opened = self.expanded.get(x["id"], st == "running")
+        self.list.append(self.workflow_row(x, st, opened, now))
+        for phase, members in x["phases"] if opened else ():
+            if phase:
+                done = sum(self.state(a) == "done" for a in members)
+                count = f"{len(members)}" if done == len(members) else f"{done}/{len(members)}"
+                self.list.append(self.title_row(f"{phase} · {count}", 24))
+            for a in members:
+                self.list.append(self.agent_row(a, now, in_workflow=True))
 
     def activate(self, row):
         """Clic sur une ligne : l'en-tête d'un workflow le replie ou le déplie, celle d'un
@@ -345,7 +450,7 @@ class AgentsPanel(Gtk.Box):
         box.append(Gtk.Label(label=took, valign=Gtk.Align.CENTER, css_classes=["sid"],
                              tooltip_text=f"{a.get('steps') or 0} appels d'outils"))
         row.set_child(box)
-        row.set_tooltip_text(last_step(a)[:300] or None)
+        row.set_tooltip_text(last_call(a)[:300] or None)  # l'appel tel quel
         return row
 
     def show_list(self):

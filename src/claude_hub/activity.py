@@ -1,6 +1,10 @@
 """Ce qui tourne et ce qui attend, au-dessus de la saisie : Claude (étape, durée, « Arrêter »),
-la demande qui attend une réponse, les sous-agents au travail, les shells et monitors en
-arrière-plan, les tâches de Claude et les messages en file.
+la demande qui attend une réponse, les sous-agents au travail, les workflows, les shells et
+monitors en arrière-plan, les tâches de Claude et les messages en file.
+
+Comme dans le terminal, un sous-agent tient sur une ligne (sa description, puis son étape),
+dans l'ordre où ils ont démarré ; un workflow aussi (nom, barre d'avancement, agents finis
+sur lancés), sans ses agents.
 
 Une ligne par élément (ActivityRow), décrite par un dictionnaire (« spec ») : clé, genre,
 libellé, détail… update_activity (window.py) est appelé à chaque événement du flux de
@@ -18,15 +22,18 @@ les sous-agents et la file restent toujours visibles.
 import time
 
 from .gtk import Gio, GLib, Gtk, Pango
-from .agentsview import agent_line, last_step
+from .agentsview import agent_line, step_of, workflow_detail
 from .listrow import elapsed_text
 from .shell import background_tooltip, is_monitor
 
 MAX_HEIGHT = 300    # au-delà, la liste défile
-MAX_AGENTS = 3      # sous-agents listés un par un ; les suivants en une ligne
+MAX_AGENTS = 5      # sous-agents listés un par un ; les suivants en une ligne
 GROUPED = ("monitor", "shell")  # genres repliés avec les tâches derrière la ligne de résumé
 
 AGENT_ICON = ("claude-hub-agents-symbolic",)
+WORKFLOW_ICON = ("view-process-tree-symbolic", "network-workgroup-symbolic", "claude-hub-agents-symbolic")
+# Libellé et étape d'une ligne inline alignés sur leur ligne de base (tailles différentes).
+BASELINE = getattr(Gtk.Align, "BASELINE_FILL", Gtk.Align.BASELINE)
 TERMINAL_ICON = ("utilities-terminal-symbolic", "terminal-symbolic")
 MONITOR_ICON = ("view-visible-symbolic", "view-reveal-symbolic", "eye-symbolic")
 WARNING_ICON = ("dialog-warning-symbolic",)
@@ -73,20 +80,50 @@ def request_spec(entry, jump=None):
 
 
 def agent_spec(a, indent=False, open_agent=None):
-    """Sous-agent au travail : sa description (ou son type) et sa dernière étape."""
-    step = one_line(last_step(a))
+    """Sous-agent au travail, sur une ligne : sa description (ou son type), puis sa dernière
+    étape (la description de l'appel, comme le terminal ; l'appel tel quel en info-bulle)."""
+    step, code = step_of(a)
+    step = one_line(step)
     return {"key": f"agent:{a.get('id') or a.get('tool')}", "kind": "agent", "icon": AGENT_ICON,
             "label": one_line(a.get("description") or a.get("type")) or "Sous-agent",
-            "detail": step, "mono": True, "indent": indent,
+            "detail": step, "mono": code, "indent": indent, "inline": True,
             "tooltip": f"{a.get('type') or 'Agent'} · {agent_line(a)}"[:300],
             "actions": {"open": ("Voir dans le volet des sous-agents", open_agent)} if open_agent else {}}
 
 
 def more_agents_spec(n, indent=False, open_panel=None):
     """Sous-agents au-delà de MAX_AGENTS, en une ligne."""
-    return {"key": "agents-more", "kind": "agent", "icon": AGENT_ICON, "indent": indent,
+    return {"key": "agents-more", "kind": "agent", "icon": AGENT_ICON, "indent": indent, "inline": True,
             "label": f"… et {n} autre{'s' if n > 1 else ''} sous-agent{'s' if n > 1 else ''}",
             "actions": {"open": ("Volet des sous-agents", open_panel)} if open_panel else {}}
+
+
+def workflow_spec(w, indent=False, open_panel=None):
+    """Workflow en arrière-plan (commande « stat », ou agent_workflows) : son nom, une barre
+    d'avancement, agents finis sur lancés et ceux qui tournent, depuis quand il tourne."""
+    total, done = w.get("total") or 0, w.get("done") or 0
+    start = w.get("start")
+    running = [one_line(r.get("label")) for r in w.get("running") or ()]
+    tip = [f"Workflow {one_line(w.get('name')) or ''}".strip(),
+           f"{done} agent{'s' if done > 1 else ''} fini{'s' if done > 1 else ''} sur {total}" if total else ""]
+    tip += [f"• {t}" for t in running[:10] if t]
+    return {"key": f"workflow:{w.get('id') or w.get('name')}", "kind": "workflow", "icon": WORKFLOW_ICON,
+            "label": one_line(w.get("name")) or "workflow", "detail": workflow_detail(w),
+            "indent": indent, "inline": True, "fraction": done / total if total else 0.0,
+            "start": start if isinstance(start, (int, float)) and not isinstance(start, bool) else None,
+            "tooltip": "\n".join(t for t in tip if t),
+            "actions": {"open": ("Volet des sous-agents", open_panel)} if open_panel else {}}
+
+
+def waiting_for(flows=0, agents=0):
+    """Ligne de Claude quand il a fini son tour et attend ce qui tourne en arrière-plan :
+    « Claude attend un workflow et 10 sous-agents » (None s'il n'attend ni l'un ni l'autre)."""
+    parts = []
+    if flows:
+        parts.append("un workflow" if flows == 1 else f"{flows} workflows")
+    if agents:
+        parts.append("un sous-agent" if agents == 1 else f"{agents} sous-agents")
+    return "Claude attend " + " et ".join(parts) if parts else None
 
 
 def agent_specs(agents, indent=False, open_agent=None, open_panel=None):
@@ -164,9 +201,11 @@ def set_text(label, text):
 
 
 class ActivityRow(Gtk.Box):
-    """Une ligne : icône (ou roue), libellé et durée, détail, deuxième détail, boutons."""
+    """Une ligne : icône (ou roue), libellé et durée, détail, deuxième détail, boutons.
+    Sur une seule ligne (inline : sous-agents, workflows) : libellé, barre d'avancement,
+    détail à côté, durée."""
 
-    def __init__(self, key):
+    def __init__(self, key, inline=False):
         super().__init__(spacing=8)
         self.add_css_class("act-row")
         self.key, self.actions, self.icon = key, {}, None
@@ -178,18 +217,28 @@ class ActivityRow(Gtk.Box):
         icon.append(self.image)
         self.append(icon)
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True)
-        top = Gtk.Box(spacing=6)
-        self.label = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, lines=2,
-                               ellipsize=Pango.EllipsizeMode.END, css_classes=["act-label"])
-        self.time = Gtk.Label(xalign=1, hexpand=True, valign=Gtk.Align.START, css_classes=["act-time"])
-        top.append(self.label)
-        top.append(self.time)
-        texts.append(top)
+        top = Gtk.Box(spacing=8 if inline else 6)
+        line = BASELINE if inline else Gtk.Align.START
+        if inline:  # le libellé laisse de la place à l'étape
+            self.label = Gtk.Label(xalign=0, max_width_chars=45, ellipsize=Pango.EllipsizeMode.END,
+                                   valign=line, css_classes=["act-label"])
+        else:
+            self.label = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, lines=2,
+                                   ellipsize=Pango.EllipsizeMode.END, css_classes=["act-label"])
+        self.time = Gtk.Label(xalign=1, hexpand=not inline, valign=line, css_classes=["act-time"])
         self.detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, visible=False,
-                                css_classes=["act-detail"])
+                                hexpand=inline, valign=line, css_classes=["act-detail"])
+        self.bar = Gtk.ProgressBar(visible=False, valign=Gtk.Align.CENTER) if inline else None
         self.sub = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, visible=False,
                              css_classes=["act-sub"])
-        texts.append(self.detail)
+        top.append(self.label)
+        if inline:
+            top.append(self.bar)
+            top.append(self.detail)
+        top.append(self.time)
+        texts.append(top)
+        if not inline:
+            texts.append(self.detail)
         texts.append(self.sub)
         self.append(texts)
         buttons = Gtk.Box(valign=Gtk.Align.START, css_classes=["act-btns"])
@@ -213,6 +262,11 @@ class ActivityRow(Gtk.Box):
         mono = bool(spec.get("mono"))
         if self.detail.has_css_class("mono") != mono:
             (self.detail.add_css_class if mono else self.detail.remove_css_class)("mono")
+        if self.bar is not None:
+            self.bar.set_visible("fraction" in spec)
+            fraction = min(1.0, max(0.0, float(spec.get("fraction") or 0.0)))
+            if abs(self.bar.get_fraction() - fraction) > 1e-6:
+                self.bar.set_fraction(fraction)
         tip = spec.get("tooltip")
         if self.get_tooltip_text() != tip:
             self.set_tooltip_text(tip)
@@ -262,7 +316,7 @@ def sync_rows(box, specs):
     for spec in specs:
         row = old.pop(spec["key"], None)
         if row is None:
-            row = ActivityRow(spec["key"])
+            row = ActivityRow(spec["key"], bool(spec.get("inline")))
             box.insert_child_after(row, prev)
         elif row.get_prev_sibling() is not prev:
             box.reorder_child_after(row, prev)

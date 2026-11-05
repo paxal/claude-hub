@@ -388,7 +388,8 @@ def notified(line):
 def scan_main(p, started):
     """Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
     lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
-    plus ancien est mort avec son processus) et pas encore notifiés comme finis, lignes
+    plus ancien est mort avec son processus) et pas encore notifiés comme finis (résultat
+    du lancement et heure, epoch), lignes
     écrites depuis la fin du dernier tour de Claude (None si aucun tour n'est fini), et
     shells et monitors lancés en arrière-plan depuis started, ni notifiés comme finis ni
     arrêtés ({"id", "kind" : shell ou monitor, "tool" : appel d'outil, "command" : commande
@@ -421,7 +422,7 @@ def scan_main(p, started):
                             and res.get("status") == "async_launched" and res.get("taskId")):
                         t = msg_time(line)
                         if started is None or t is None or t * 1000 >= started:
-                            launched[str(res["taskId"])] = res
+                            launched[str(res["taskId"])] = (res, t)
                 except (ValueError, AttributeError):
                     pass
             if '"async_launched"' in line and '"agentId"' in line:
@@ -566,9 +567,10 @@ def ends_turn(line):
     stop = m.get("stop_reason") if isinstance(m, dict) else None
     return isinstance(stop, str) and stop not in ("", "tool_use")
 
-def workflow_progress(w, p):
+def workflow_progress(w, p, start=None):
     """Avancement d'un workflow d'après son journal (une ligne « started » puis « result »
-    par agent) : nom, agents lancés et finis, et ceux qui tournent (libellé, phase)."""
+    par agent) : nom, agents lancés et finis, ceux qui tournent (libellé, phase), son run
+    (« id », nom de son dossier) et l'heure de son lancement (« start », epoch)."""
     d = w.get("transcriptDir")
     if not isinstance(d, str) or not d:
         d = os.path.join(str(p)[:-len(".jsonl")], "subagents", "workflows", str(w.get("runId")))
@@ -591,9 +593,10 @@ def workflow_progress(w, p):
     running = [{"label": r.get("label") if isinstance(r.get("label"), str) else "",
                 "phase": r.get("phase") if isinstance(r.get("phase"), str) else ""}
                for k, r in started.items() if k not in done]
-    name = w.get("workflowName")
+    name, run = w.get("workflowName"), w.get("runId")
     return {"name": name if isinstance(name, str) else "", "total": len(started),
-            "done": len(started) - len(running), "running": running}
+            "done": len(started) - len(running), "running": running,
+            "id": run if isinstance(run, str) else "", "start": start}
 
 def headless(sess):
     """Vrai pour un claude lancé sans terminal (claude -p, celui de Claude Hub)."""
@@ -605,7 +608,7 @@ def cmd_stat(sid):
     sess = live_sessions().get(sid)
     scan = (scan_main(p, ms_of((sess or {}).get("startedAt"))) if p else
             {"bridge": None, "pending": [], "tail": None, "shells": [], "agents": [], "answered": False})
-    workflows = [workflow_progress(w, p) for w in scan["pending"]] if sess else []
+    workflows = [workflow_progress(w, p, t) for w, t in scan["pending"]] if sess else []
     bridge, tail = scan["bridge"], scan["tail"]
     if sess:
         # claude en cours : sa session Remote Control est notée dans son fichier de session

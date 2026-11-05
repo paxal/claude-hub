@@ -68,21 +68,31 @@ avancement et jetons en direct, puis sa consigne et son travail. Dans
 l'historique, sa transcription est lue à l'ouverture du bloc.
 
 Tant que des sous-agents travaillent, chacun a sa ligne dans la liste d'activité,
-au-dessus de la saisie, sous celle de Claude : sa description et sa dernière étape
-(« Bash cargo test… »), le plus récemment actif en premier, trois au plus puis
-« … et 2 autres sous-agents ». L'info-bulle donne son type ; le bouton › ouvre
-l'agent dans le volet **Sous-agents**. Quand Claude a fini son tour mais attend
-ses sous-agents, sa ligne dit « Claude attend ses sous-agents ». Pour une réponse
-lancée d'ici, les lignes suivent le flux de claude en direct ; sinon, la liste
-relue sur l'hôte toutes les 4 s. Conversations Claude Code seulement (ce PC,
-SSH), pas le cloud ni Cursor.
+au-dessus de la saisie, sous celle de Claude : sa description, puis sur la même
+ligne sa dernière étape. Comme dans le terminal, l'étape est la description que
+Claude a donnée à l'appel (« Run the parser tests ») ; à
+défaut, l'appel lui-même en police fixe (« Grep set_sort_func »). Les agents sont
+rangés par heure de début, le plus ancien en premier (l'ordre ne change pas à
+chaque étape), cinq au plus puis « … et 2 autres sous-agents ». L'info-bulle
+donne son type et l'appel tel quel (la commande complète) ; le bouton › ouvre
+l'agent dans le volet **Sous-agents**. Un workflow a une seule ligne, sous les
+sous-agents : son nom, une barre d'avancement, ses agents finis sur lancés et
+ceux qui tournent (« review ▬▬▬ 11/13 · review_style : r1 · pass1 »), et depuis
+quand il tourne ; ses agents ne sont pas listés un par un. Quand Claude a fini
+son tour mais attend ses sous-agents ou ses workflows, sa ligne le dit
+(« Claude attend un workflow et 10 sous-agents »). Pour une réponse lancée
+d'ici, les lignes suivent le flux de claude en direct ; sinon, la liste relue
+sur l'hôte toutes les 4 s. Conversations Claude Code seulement (ce PC, SSH),
+pas le cloud ni Cursor.
 
 Le bouton « sous-agents » de l'en-tête (icône d'arbre et nombre ; conversations
 Claude Code, locales ou SSH)
 ouvre le volet **Sous-agents** : l'arbre de tous les sous-agents de la
 conversation, y compris ceux lancés par un sous-agent, avec leur état (en
 cours, terminé, interrompu, en attente de ses propres sous-agents), leur
-dernière étape et leur durée. Les agents d'un workflow forment un groupe, à la
+dernière étape et leur durée, par heure de début. Ce qui tourne vient en tête,
+dans une section « En cours » (un agent avec ceux qu'il a lancés, un workflow
+avec tous ses agents), le reste dessous, sous « Terminés ». Les agents d'un workflow forment un groupe, à la
 place de son premier agent : un en-tête avec le nom et le résumé du workflow, ses
 agents finis sur le total et sa durée, puis ses agents rangés par phase
 (« REVIEW · 3 », « VERIFY · 1/3 » tant qu'une phase tourne), sans leur type

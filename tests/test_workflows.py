@@ -15,12 +15,14 @@ ROOT = Path(__file__).resolve().parent.parent
 REMOTE = ROOT / "src/claude_hub/remote"
 sys.path.insert(0, str(ROOT / "src"))
 
-from claude_hub.agentsview import workflow_text  # noqa: E402
+from claude_hub.activity import waiting_for, workflow_spec  # noqa: E402
+from claude_hub.agentsview import agent_workflows, outside_workflows, workflow_detail  # noqa: E402
 from claude_hub.window import Hub  # noqa: E402
 
 PROJ = "-tmp-x"
 STARTED = calendar.timegm((2026, 10, 7, 8, 30, 0)) * 1000  # démarrage du processus claude (ms)
 SINCE = STARTED + 60000  # passage à « busy »
+LAUNCHED = calendar.timegm((2026, 10, 7, 8, 31, 6))  # lancement du workflow (epoch)
 
 
 def line(**r):
@@ -142,7 +144,7 @@ class TestWorkflows(unittest.TestCase):
         r = self.stat("attend")
         self.assertEqual((r["live"], r["since"], r["waiting"]), ("busy", SINCE, True))
         self.assertEqual(r["workflows"], [{"name": "review", "total": 3, "done": 2, "running": [
-            {"label": "r1 · Rust 1/2", "phase": "▸ review_style #1"}]}])
+            {"label": "r1 · Rust 1/2", "phase": "▸ review_style #1"}], "id": "wf_1", "start": LAUNCHED}])
 
     def test_travaille(self):
         r = self.stat("travaille")
@@ -160,7 +162,8 @@ class TestWorkflows(unittest.TestCase):
 
     def test_sans_journal(self):
         r = self.stat("sans_journal")
-        self.assertEqual(r["workflows"], [{"name": "review", "total": 0, "done": 0, "running": []}])
+        self.assertEqual(r["workflows"], [{"name": "review", "total": 0, "done": 0, "running": [],
+                                           "id": "wf_1", "start": LAUNCHED}])
         self.assertTrue(r["waiting"])
 
     def test_session_arretee(self):
@@ -174,21 +177,56 @@ class TestWorkflows(unittest.TestCase):
         self.assertNotIn(self.sids["arretee"], r)
 
 
-class TestWorkflowText(unittest.TestCase):
-    def test_texte(self):
+class TestLigneWorkflow(unittest.TestCase):
+    """Ligne d'un workflow au-dessus de la saisie (activity.workflow_spec)."""
+
+    def test_detail(self):
         a = {"label": "r1 · Rust 1/2", "phase": "▸ review_style #1"}
         b = {"label": "r1 · Rust 2/2", "phase": "▸ review_style #1"}
         c = {"label": "vérif", "phase": "▸ review_shared"}
-        self.assertEqual(workflow_text([{"name": "review", "total": 3, "done": 2, "running": [a]}]),
-                         "review · 2/3 agents · review_style #1 : r1 · Rust 1/2")
-        self.assertEqual(workflow_text([{"name": "review", "total": 3, "done": 1, "running": [a, b]}]),
-                         "review · 1/3 agents · 2 en cours (review_style #1) : r1 · Rust 1/2, r1 · Rust 2/2")
-        self.assertEqual(workflow_text([{"name": "review", "total": 3, "done": 1, "running": [a, c]}]),
-                         "review · 1/3 agents · 2 en cours : r1 · Rust 1/2, vérif")
-        self.assertEqual(workflow_text([{"name": "", "total": 0, "done": 0, "running": []},
-                                        {"name": "fix", "total": 1, "done": 1, "running": []}]),
-                         "workflow — fix · 1/1 agents")
-        self.assertEqual(workflow_text(None), "")
+        self.assertEqual(workflow_detail({"name": "review", "total": 3, "done": 2, "running": [a]}),
+                         "2/3 · review_style #1 : r1 · Rust 1/2")
+        self.assertEqual(workflow_detail({"name": "review", "total": 3, "done": 1, "running": [a, b]}),
+                         "1/3 · 2 en cours (review_style #1) : r1 · Rust 1/2, r1 · Rust 2/2")
+        self.assertEqual(workflow_detail({"name": "review", "total": 3, "done": 1, "running": [a, c]}),
+                         "1/3 · 2 en cours : r1 · Rust 1/2, vérif")
+        self.assertEqual(workflow_detail({"name": "", "total": 0, "done": 0, "running": []}), "")
+
+    def test_ligne(self):
+        w = {"name": "review", "total": 13, "done": 12, "id": "wf_1", "start": 1000.0,
+             "running": [{"label": "r1 · pass1", "phase": "▸ review_style"}]}
+        spec = workflow_spec(w, indent=True, open_panel=print)
+        self.assertEqual((spec["key"], spec["kind"], spec["label"]), ("workflow:wf_1", "workflow", "review"))
+        self.assertEqual((spec["detail"], spec["start"], spec["inline"]),
+                         ("12/13 · review_style : r1 · pass1", 1000.0, True))
+        self.assertAlmostEqual(spec["fraction"], 12 / 13)
+        self.assertIn("12 agents finis sur 13", spec["tooltip"])
+        self.assertIn("open", spec["actions"])
+        empty = workflow_spec({"name": "", "total": 0, "done": 0, "running": [], "start": True})
+        self.assertEqual((empty["label"], empty["fraction"], empty["start"]), ("workflow", 0.0, None))
+
+    def test_claude_attend(self):
+        self.assertEqual(waiting_for(1, 10), "Claude attend un workflow et 10 sous-agents")
+        self.assertEqual(waiting_for(2, 0), "Claude attend 2 workflows")
+        self.assertEqual(waiting_for(0, 1), "Claude attend un sous-agent")
+        self.assertIsNone(waiting_for(0, 0))
+
+    def test_d_apres_les_agents(self):
+        """claude -p lancé d'ici : workflows déduits de la liste des sous-agents ; leurs
+        agents, et ceux qu'ils ont lancés, ne sont pas listés comme sous-agents."""
+        agents = [
+            {"id": "a", "start": 1, "description": "Revue du parseur"},
+            {"id": "w1", "start": 2, "workflow": "wf_1", "phase": "▸ Review", "description": "r1", "done": True},
+            {"id": "w2", "start": 3, "workflow": "wf_1", "phase": "▸ Verify", "description": "v1"},
+            {"id": "n", "start": 4, "parent": "w2"},  # lancé par un agent du workflow
+            {"id": "x", "start": 5, "workflow": "wf_2", "done": True},  # workflow fini
+        ]
+        runs = [{"id": "wf_1", "name": "review-changes"}]
+        self.assertEqual(agent_workflows(agents, True, runs), [
+            {"id": "wf_1", "name": "review-changes", "total": 2, "done": 1,
+             "running": [{"label": "v1", "phase": "▸ Verify"}], "start": 2}])
+        self.assertEqual([a["id"] for a in outside_workflows(agents, agents)], ["a"])
+        self.assertEqual(agent_workflows([], True), [])
 
 
 class TestDuree(unittest.TestCase):

@@ -360,9 +360,12 @@ ce qui attend dans la conversation affichée, une ligne par élément :
   réponse » (autorisation, question, plan), avec un bouton qui fait défiler le fil
   jusqu'à sa carte ; « Action requise » si la conversation tourne dans un
   terminal ;
-- **les sous-agents au travail**, sous la ligne de Claude : leur description et
-  leur dernière étape, trois au plus puis « … et 2 autres sous-agents » ; le
-  bouton › ouvre l'agent dans le volet **Sous-agents** ;
+- **les sous-agents au travail**, sous la ligne de Claude, un par ligne : leur
+  description, puis leur dernière étape (la description de l'appel, comme dans
+  le terminal), par heure de début, cinq au plus puis « … et 2 autres
+  sous-agents » ; le bouton › ouvre l'agent dans le volet **Sous-agents** ;
+- **les workflows en arrière-plan**, une ligne chacun : nom, barre d'avancement,
+  agents finis sur lancés, ceux qui tournent avec leur phase, et la durée ;
 - **les shells et monitors en arrière-plan** (voir plus bas) ;
 - **les tâches de Claude** (voir [Tâches de Claude](#tâches-de-claude)) ;
 - **les messages en file** (voir [Écrire pendant une réponse](#écrire-pendant-une-réponse)).
@@ -393,9 +396,11 @@ travaille (dans un terminal) », avec la durée depuis que claude s'est mis au t
 son fichier `~/.claude/sessions/<pid>.json`, pas depuis l'ouverture dans le hub).
 Si Claude a fini son tour mais attend un workflow lancé en arrière-plan (outil
 Workflow, par exemple `/review`), la ligne de Claude dit « Claude attend
-un workflow », suivi de l'avancement lu dans le journal du workflow : son nom, les
-agents finis sur les agents lancés, et celui qui tourne avec sa phase
-(« review · 151/152 agents · review_style #5 : r5 · pass1 · General Rust 1/2 »).
+un workflow » (« … et 10 sous-agents » s'il en attend aussi). La ligne du
+workflow, en dessous, donne l'avancement lu dans son journal : son nom, une barre,
+les agents finis sur les agents lancés (le « 151/152 » du terminal), celui qui
+tourne avec sa phase (« review_style #5 : r5 · pass1 · General Rust 1/2 ») et
+le temps écoulé depuis son lancement.
 
 ## Shells et monitors en arrière-plan
 

@@ -137,7 +137,8 @@ function notified(line) {
 
 // Une passe sur la conversation p : dernière session Remote Control (cse_…), workflows
 // lancés en arrière-plan depuis started (ms, démarrage du processus claude ; un workflow
-// plus ancien est mort avec son processus) et pas encore notifiés comme finis, lignes
+// plus ancien est mort avec son processus) et pas encore notifiés comme finis ([résultat
+// du lancement, heure epoch]), lignes
 // écrites depuis la fin du dernier tour de Claude (null si aucun tour n'est fini), et
 // shells et monitors lancés en arrière-plan depuis started, ni notifiés comme finis ni
 // arrêtés ({id, kind : shell ou monitor, tool : appel d'outil, command : commande « ! »,
@@ -164,7 +165,7 @@ function scanMain(p, started) {
       if (r && r.type === "user" && !r.isSidechain && res && typeof res === "object" && !Array.isArray(res)
           && res.taskType === "local_workflow" && res.status === "async_launched" && res.taskId) {
         const t = msgTime(line);
-        if (started === null || t === null || t * 1000 >= started) launched.set(String(res.taskId), res);
+        if (started === null || t === null || t * 1000 >= started) launched.set(String(res.taskId), [res, t]);
       }
     }
     if (line.includes('"async_launched"') && line.includes('"agentId"')) {
@@ -271,8 +272,9 @@ function startsTurn(line) {
   return !!t && !t.startsWith("<command-") && !t.startsWith("<local-command-");
 }
 // Avancement d'un workflow d'après son journal (une ligne « started » puis « result »
-// par agent) : nom, agents lancés et finis, et ceux qui tournent (libellé, phase).
-function workflowProgress(w, p) {
+// par agent) : nom, agents lancés et finis, ceux qui tournent (libellé, phase), son run
+// (id, nom de son dossier) et l'heure de son lancement (start, epoch).
+function workflowProgress(w, p, start = null) {
   let d = w.transcriptDir;
   if (typeof d !== "string" || !d) d = path.join(p.slice(0, -".jsonl".length), "subagents", "workflows", String(w.runId));
   const started = new Map(), done = new Set();
@@ -287,7 +289,8 @@ function workflowProgress(w, p) {
   const running = [...started].filter(([k]) => !done.has(k)).map(([, r]) => ({
     label: typeof r.label === "string" ? r.label : "", phase: typeof r.phase === "string" ? r.phase : ""}));
   return {name: typeof w.workflowName === "string" ? w.workflowName : "", total: started.size,
-          done: started.size - running.length, running};
+          done: started.size - running.length, running,
+          id: typeof w.runId === "string" ? w.runId : "", start};
 }
 
 function allFiles() {
@@ -924,7 +927,7 @@ if (a[0] === "list") {
   const p = find(a[1]), sess = liveSessions()[a[1]] || null;
   const scan = p ? scanMain(p, msOf((sess || {}).startedAt))
     : {bridge: null, pending: [], tail: null, shells: [], agents: [], answered: false};
-  const workflows = sess ? scan.pending.map(w => workflowProgress(w, p)) : [];
+  const workflows = sess ? scan.pending.map(([w, t]) => workflowProgress(w, p, t)) : [];
   // claude en cours : sa session Remote Control est notée dans son fichier de session
   // (la transcription garde celles des lancements précédents)
   const bridge = sess ? textOrNull(sess.bridgeSessionId) : scan.bridge;
