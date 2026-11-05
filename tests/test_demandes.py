@@ -10,7 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from claude_hub.permissions import (  # noqa: E402
-    allow, control_response, decision_of, deny, plan_allow, plan_deny, session_only)
+    allow, answer_text, control_response, decision_of, deny, parse_questions, plan_allow, plan_deny,
+    session_only, tab_label)
 from claude_hub.render import lost_tip, plan_decision_text, plan_roles, request_lost  # noqa: E402
 
 REMOTE = Path(__file__).resolve().parent.parent / "src/claude_hub/remote"
@@ -139,6 +140,29 @@ class TestReponses(unittest.TestCase):
         self.assertIn("claude-hub a été fermé ou relancé", lost_tip(
             {"ok": False, "text": "Tool permission request failed: AbortError: Stream closed"}))
         self.assertFalse(request_lost({"ok": True, "text": ""}))
+
+    def test_questions(self):
+        """Questions d'un AskUserQuestion lues pour la carte : entrées mal formées écartées."""
+        inp = {"questions": [
+            {"question": "Quelle base ?", "header": "Base", "options": [
+                {"label": "SQLite", "description": "Un fichier"}, "PostgreSQL"]},
+            "pas une question",
+            {"question": "Formats ?", "multiSelect": True, "options": None}]}
+        self.assertEqual(parse_questions(inp), [
+            {"text": "Quelle base ?", "header": "Base", "multi": False,
+             "options": [("SQLite", "Un fichier"), ("PostgreSQL", "")]},
+            {"text": "Formats ?", "header": "", "multi": True, "options": []}])
+        self.assertEqual(parse_questions({"questions": "?"}), [])  # carte d'autorisation ordinaire
+        self.assertEqual(parse_questions({}), [])
+
+    def test_reponse_a_une_question(self):
+        """Comme Claude l'attend : choix, puis réponse libre, séparés par des virgules."""
+        self.assertEqual(answer_text(["HTML", "PDF"], "  ePub "), "HTML, PDF, ePub")
+        self.assertEqual(answer_text(["SQLite"], " "), "SQLite")
+        self.assertEqual(answer_text([], "Redis"), "Redis")
+        self.assertEqual(answer_text([], ""), "")  # pas encore de réponse
+        self.assertEqual(tab_label({"header": "Base"}, True, 1), "☑ Base")
+        self.assertEqual(tab_label({"header": ""}, False, 2), "☐ Question 2")
 
 
 class TestPlansDuFil(unittest.TestCase):

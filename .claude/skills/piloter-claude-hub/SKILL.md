@@ -61,7 +61,8 @@ scénario lève une exception).
 
 `FAUX_CLAUDE_SCENARIO` : `simple` (défaut), `long` (texte, code, tableau, outils,
 TodoWrite, Edit), `plan`, `build` (plan puis exécution : tâches, Edit, Write, autorisation
-Bash, réponse finale), `autorisation`, `question`, `sous-agent`, `erreur`, `lent`
+Bash, réponse finale), `autorisation`, `question`, `questions` (trois questions, dont une
+à choix multiples : onglets de la carte), `sous-agent`, `erreur`, `lent`
 (10 étapes d'une seconde : ligne de Claude, « Arrêter », file d'attente), `shell` (Bash
 laissé en arrière-plan 6 s : ligne « Shell » au-dessus de la saisie), ou le chemin d'un
 JSON avec ses propres étapes (format en tête de `tests/faux-claude`, monitor compris).
@@ -96,6 +97,9 @@ requêtes de contrôle).
 - Un bouton se « clique » avec `bouton.emit("clicked")` : la carte d'autorisation
   (« Autoriser », « Pour la session », « Refuser ») et celle du plan (« Lancer »,
   « Continuer à planifier », remarque prise dans la saisie) se testent ainsi.
+  Celle d'une question : `carte.qs[i]["buttons"]` (choix), `carte.qs[i]["other"]`
+  (réponse libre, `emit("activate")`), `carte.tabs`, `carte.send_button` ; ses
+  touches avec `carte.keys.emit("key-pressed", Gdk.KEY_1, 0, 0)`.
 
 ## Recettes
 
