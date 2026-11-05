@@ -53,11 +53,11 @@ class TestLignes(unittest.TestCase):
         self.assertEqual(more[-1]["label"], "… et 2 autres sous-agents")
         self.assertEqual(agent_specs([{"tool": "toolu_x", "type": "Plan"}])[0]["key"], "agent:toolu_x")
         # Bash avec une description : elle tient lieu d'étape, la commande va dans l'info-bulle
-        bash = agent_specs([{"id": "u", "description": "Audit UPS", "type": "general-purpose", "last": {
-            "role": "tool", "name": "Bash", "input": {"command": "git grep -n is_terminal",
-                                                      "description": "Find is_terminal uses"}}}])[0]
-        self.assertEqual((bash["detail"], bash["mono"]), ("Find is_terminal uses", False))
-        self.assertEqual(bash["tooltip"], "general-purpose · Audit UPS › Bash git grep -n is_terminal")
+        bash = agent_specs([{"id": "u", "description": "Revue du parseur", "type": "general-purpose", "last": {
+            "role": "tool", "name": "Bash", "input": {"command": "git grep -n parse_date",
+                                                      "description": "Find parse_date uses"}}}])[0]
+        self.assertEqual((bash["detail"], bash["mono"]), ("Find parse_date uses", False))
+        self.assertEqual(bash["tooltip"], "general-purpose · Revue du parseur › Bash git grep -n parse_date")
 
     def test_shells_et_monitors(self):
         shell = shell_spec({"id": "b1", "command": "make serve\nautre ligne", "start": 1000.0})

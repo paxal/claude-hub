@@ -238,10 +238,10 @@ class TestVolet(unittest.TestCase):
         """L'étape d'un agent est la description de son appel, s'il en a une (comme le
         terminal) ; l'appel tel quel reste dans l'info-bulle."""
         from claude_hub.agentsview import agent_line, last_step, step_of
-        bash = {"description": "Audit UPS", "last": {"role": "tool", "name": "Bash", "input": {
-            "command": "cd ~/Main; jq .fields fixture.json", "description": "Dump the  WEMYY\nfields"}}}
-        self.assertEqual(step_of(bash), ("Dump the WEMYY fields", False))
-        self.assertEqual(agent_line(bash), "Audit UPS › Bash cd ~/Main; jq .fields fixture.json")
+        bash = {"description": "Revue du parseur", "last": {"role": "tool", "name": "Bash", "input": {
+            "command": "cd ~/proj; cargo test -p parser", "description": "Run the  parser\ntests"}}}
+        self.assertEqual(step_of(bash), ("Run the parser tests", False))
+        self.assertEqual(agent_line(bash), "Revue du parseur › Bash cd ~/proj; cargo test -p parser")
         # la description d'un appel Agent est celle du sous-agent qu'il lance
         agent = {"last": {"role": "tool", "name": "Agent", "input": {"description": "Lire la doc",
                                                                      "prompt": "…"}}}

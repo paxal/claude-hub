@@ -70,7 +70,7 @@ l'historique, sa transcription est lue à l'ouverture du bloc.
 Tant que des sous-agents travaillent, chacun a sa ligne dans la liste d'activité,
 au-dessus de la saisie, sous celle de Claude : sa description, puis sur la même
 ligne sa dernière étape. Comme dans le terminal, l'étape est la description que
-Claude a donnée à l'appel (« Dump the WEMYY access point fixture fields ») ; à
+Claude a donnée à l'appel (« Run the parser tests ») ; à
 défaut, l'appel lui-même en police fixe (« Grep set_sort_func »). Les agents sont
 rangés par heure de début, le plus ancien en premier (l'ordre ne change pas à
 chaque étape), cinq au plus puis « … et 2 autres sous-agents ». L'info-bulle

@@ -215,7 +215,7 @@ class TestLigneWorkflow(unittest.TestCase):
         """claude -p lancé d'ici : workflows déduits de la liste des sous-agents ; leurs
         agents, et ceux qu'ils ont lancés, ne sont pas listés comme sous-agents."""
         agents = [
-            {"id": "a", "start": 1, "description": "Audit UPS"},
+            {"id": "a", "start": 1, "description": "Revue du parseur"},
             {"id": "w1", "start": 2, "workflow": "wf_1", "phase": "▸ Review", "description": "r1", "done": True},
             {"id": "w2", "start": 3, "workflow": "wf_1", "phase": "▸ Verify", "description": "v1"},
             {"id": "n", "start": 4, "parent": "w2"},  # lancé par un agent du workflow

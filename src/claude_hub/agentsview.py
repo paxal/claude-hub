@@ -52,10 +52,10 @@ def one_line(text):
 
 def step_of(a):
     """Dernière étape d'un agent en une ligne, et vrai si c'est un appel d'outil écrit tel
-    quel (police fixe) : la description donnée à l'appel, comme le terminal (« Dump the
-    WEMYY access point fixture fields » plutôt que la commande), sinon « Bash  cargo
-    test… », ou le début de son texte. Celle d'un appel Agent est la description du
-    sous-agent qu'il lance : on garde « Agent  … »."""
+    quel (police fixe) : la description donnée à l'appel, comme le terminal (« Run the
+    parser tests » plutôt que la commande), sinon « Bash  cargo test… », ou le début de
+    son texte. Celle d'un appel Agent est la description du sous-agent qu'il lance : on
+    garde « Agent  … »."""
     last = a.get("last") or {}
     if last.get("role") != "tool":
         return one_line(last.get("text")), False
