@@ -38,7 +38,16 @@ s'affichent dans le fil sous forme de cartes :
   plan révisé reste déplié. Une conversation rouverte pendant qu'un plan
   attend ne le montre qu'une fois : sa carte remplace l'élément relu dans la
   transcription ;
-- **question** : options à cocher, ou réponse libre ;
+- **question** : présentée comme dans le terminal de Claude Code. Un onglet par
+  question (son intitulé, coché ☑ et en vert une fois répondue), puis, s'il y a
+  plusieurs questions, « ✔ Envoyer », qui récapitule les réponses avant de les
+  envoyer. Les choix sont numérotés, avec leur description ; un clic sur un
+  choix répond et passe à la question suivante (une question seule part
+  aussitôt). Une question à choix multiples se coche, puis « Suivant ». Le
+  dernier numéro est la réponse libre (Entrée pour valider). Au clavier, une
+  fois la main dans la carte : les chiffres choisissent (en AZERTY aussi, sans
+  Maj), ← et → changent de question. « En discuter » ne répond pas : Claude
+  reçoit le texte de la saisie, ou, saisie vide, la demande d'en discuter ;
 - **autorisation** d'un outil (mode `default` surtout) : commande ou contenu
   du fichier, puis « Autoriser », « Pour la session » (la règle proposée par
   claude, pour la réponse en cours seulement) ou « Refuser » (la saisie sert de

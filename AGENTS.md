@@ -147,7 +147,13 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   restes quand un texte change (pixels blancs ou orange au-dessus d'une
   étiquette, ticket GTK #8340, encore ouvert) ; pas revus avec GTK 4.22 sur de
   vraies captures du compositeur. S'ils reviennent : `GSK_DEBUG=full-redraw`
-  (gl, 30 % pour la roue) plutôt que cairo. Pour voir ce qui est repeint :
+  (gl, 30 % pour la roue) plutôt que cairo. Revus le 5 novembre 2026 sur l'écran
+  virtuel (GTK 4.20.4 d'après `Gtk.get_minor_version()`) en changeant la page
+  d'un `Gtk.Stack` : le haut des lettres de l'ancienne page restait à l'écran, et
+  plus rien avec `full-redraw`. GTK ne repeint que ce qui diffère entre l'ancien
+  et le nouvel arbre de rendu (un fond identique sur les deux pages ne compte
+  pas) : un fond presque transparent qui alterne d'une page à l'autre le force à
+  repeindre toute la page (`.qpage`, `RequestCard.on_tab`). Pour voir ce qui est repeint :
   `WAYLAND_DEBUG=client` et les `wl_surface.damage_buffer` (en gl, GTK annonce
   toujours toute la fenêtre au compositeur, mais ne redessine que ce qui a
   changé). Sur l'écran virtuel, gl passe en rendu logiciel (llvmpipe) : le CPU
@@ -156,7 +162,10 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 - **Classes CSS** : `css_classes=[…]` passé au constructeur remplace les classes
   par défaut du widget : un `Gtk.Popover` perd `background` (menu sans fond),
   `MenuButton` `popup`, `ListBoxRow` `activatable`, `TextView` `view`. Utiliser
-  `add_css_class`, ou `widgets.menu_popover` pour un menu.
+  `add_css_class`, ou `widgets.menu_popover` pour un menu. Breeze stylise les
+  classes des barres d'info (`info`, `question`, `warning`, `error`) : une carte
+  de classe `question` avait ses boutons et ses textes en orange. Un
+  `Gtk.ToggleButton` est un nœud `button.toggle` en CSS, pas `togglebutton`.
 - **Animations** : un `Gtk.Spinner` qui tourne fait redessiner la fenêtre en
   continu (13 % de CPU en gl pour la seule roue de la liste d'activité, 80 à
   90 % en cairo ; 0 % figé). N'en animer que dans la ligne de Claude de la

@@ -17,7 +17,7 @@ Ce qu'il fait :
 - lit son entrée ligne à ligne, sans attendre qu'elle soit fermée (le hub la garde
   ouverte pendant la réponse) ; chaque message de l'utilisateur lance le scénario ;
 - répond à generate_session_title, set_permission_mode, interrupt et initialize ;
-- pour les étapes « autorisation », « plan » et « question », envoie une demande
+- pour les étapes « autorisation », « plan » et « question(s) », envoie une demande
   can_use_tool et attend la réponse du hub (allow ou deny) ;
 - se termine quand le hub ferme son entrée, comme le vrai ;
 - `/rename` en mode `--output-format json` : répond comme claude.
@@ -33,6 +33,8 @@ Transcription : si HOME n'est pas le vrai dossier personnel (tests/piloter.sh
   {"autorisation": "Bash", "entree": {…}}              demande de permission, puis l'outil
   {"plan": "# Plan…"}                                  validation du plan (ExitPlanMode)
   {"question": "…", "options": ["A", "B"]}             AskUserQuestion
+  {"questions": [{"question": …, "header": …, "options": […], "multiSelect": …}]}
+                                                       AskUserQuestion, questions telles quelles
   {"sous_agent": "Explore", "description": "…", "etapes": [{"texte"…}, {"outil"…}]}
   {"shell": "cargo build", "description": "…", "duree": 5}  Bash en arrière-plan, fini duree s après
   {"monitor": "gh run watch", "description": "…", "duree": 5}  outil Monitor, fini duree s après
@@ -139,6 +141,26 @@ SCENARIOS = {
     "question": [
         {"pause": 0.3},
         {"question": "Quelle base de données ?", "options": ["SQLite", "PostgreSQL"]},
+        {"texte": "Entendu."},
+    ],
+    # plusieurs questions, dont une à choix multiples : onglets de la carte
+    "questions": [
+        {"pause": 0.3},
+        {"questions": [
+            {"question": "Quelle base de données pour les sessions ?", "header": "Base",
+             "multiSelect": False, "options": [
+                 {"label": "SQLite", "description": "Un fichier à côté de l'appli, rien à installer."},
+                 {"label": "PostgreSQL", "description": "Le serveur de l'équipe : sauvegardes et accès "
+                  "partagé, mais une dépendance de plus au démarrage."},
+                 {"label": "Fichiers JSON", "description": "Comme aujourd'hui : un fichier par session."}]},
+            {"question": "Quels formats d'export proposer ?", "header": "Export", "multiSelect": True,
+             "options": [{"label": "Markdown", "description": "Lisible tel quel."},
+                         {"label": "HTML", "description": "Avec la coloration du code."},
+                         {"label": "PDF", "description": "Pour l'impression."}]},
+            {"question": "Faut-il garder l'ancien format en lecture ?", "header": "Migration",
+             "multiSelect": False, "options": [
+                 {"label": "Oui, six mois", "description": "Le temps que tout le monde migre."},
+                 {"label": "Non", "description": "Conversion au premier lancement."}]}]},
         {"texte": "Entendu."},
     ],
     "sous-agent": [
@@ -359,9 +381,11 @@ def play(steps, parent=None):
             assistant([{"type": "tool_use", "id": tid, "name": st["outil"], "input": st.get("entree", {})}], parent)
             pause(st.get("duree", 0.3))
             tool_result(tid, st.get("resultat", "ok"), parent)
-        elif "autorisation" in st or "plan" in st or "question" in st:
+        elif "autorisation" in st or "plan" in st or "question" in st or "questions" in st:
             if "plan" in st:
                 name, inp = "ExitPlanMode", {"plan": st["plan"], "planFilePath": "/tmp/faux-claude-plan.md"}
+            elif "questions" in st:
+                name, inp = "AskUserQuestion", {"questions": st["questions"]}
             elif "question" in st:
                 name, inp = "AskUserQuestion", {"questions": [{
                     "question": st["question"], "header": "Question", "multiSelect": False,

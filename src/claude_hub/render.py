@@ -757,6 +757,25 @@ menubutton.orphan-chip > button { opacity: 0.7; }
 .wait-icon { color: #d4860b; }
 .questions { margin-bottom: 4px; }
 .question-option { margin-left: 8px; }
+/* Carte d'une question en attente (permissions.py), comme dans le terminal : un onglet par
+   question, en bleu celui qui est affiché, coché une fois répondu ; choix numérotés */
+.qtabs > button.toggle { padding: 0 8px; min-height: 24px; font-weight: normal; }
+.qtabs > button.toggle:checked { background: rgba(61, 174, 233, 0.30); font-weight: bold; }
+.qtabs > button.toggle.answered { color: #3fb950; }
+button.qopt { padding: 3px 6px; }
+checkbutton.qopt { padding: 3px 0; }
+.qnum { opacity: 0.6; }
+.qother { margin: 4px 0 0 6px; }
+button.qopt.chosen { background: rgba(63, 185, 80, 0.12); }
+.qopt.chosen .qlabel { font-weight: bold; }
+.qmark { color: #3fb950; font-weight: bold; }
+.qanswer { margin-left: 16px; }
+.qanswer.missing { color: #d4860b; }
+/* Fond invisible, qui change d'une page à l'autre (RequestCard.on_tab) : en changeant
+   d'onglet, GTK ne repeignait que les textes, et le haut des lettres restait à l'écran */
+/* (GTK ne dessine pas un fond d'opacité inférieure à 1/255) */
+.qpage { background-color: rgba(128, 128, 128, 0.005); }
+.qpage.alt { background-color: rgba(128, 128, 128, 0.006); }
 .subagent { margin: 0 8px; }
 .subagent-kind { font-family: monospace; font-size: 0.85em; font-weight: bold; opacity: 0.8; }
 .agent-mark { font-weight: bold; opacity: 0.75; }
