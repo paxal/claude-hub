@@ -33,13 +33,14 @@ from .remotecontrol import PERMISSION, HeadChip, WaitCard
 from .permissions import EXEC_MODES, PLAN_REFUSAL, RequestCard, control_response, plan_allow, plan_deny
 from .planview import PlanPanel
 from .subagents import AGENT_TOOLS, SubagentBlock, with_open_button
-from .agentsview import AGENT_ID, AgentsPanel, agent_state, running_agents, workflow_text
+from .agentsview import (AGENT_ID, AgentsPanel, agent_state, agent_workflows, outside_workflows,
+                         running_agents)
 from .toolcall import ToolCall, ToolRun
 from .feedtime import Timed, day_separator, last_day, unwrap
 from .feedsync import changed_from, unread
 from .todos import TodoList, TodoPanel, created_id
-from .activity import (MAX_HEIGHT as ACTIVITY_MAX_HEIGHT, ActivityPanel,
-                       agent_specs, claude_spec, queued_spec, request_spec, shell_spec)
+from .activity import (MAX_HEIGHT as ACTIVITY_MAX_HEIGHT, ActivityPanel, agent_specs, claude_spec,
+                       queued_spec, request_spec, shell_spec, waiting_for, workflow_spec)
 from .rename import RenamePopover, can_rename, rename_session
 from .shell import ShellBlock, mark_monitor, monitor_started, shell_argv, shell_command, waiting_text
 from .commands import CommandPopover, fetch_commands, match_commands, typed_command
@@ -2514,6 +2515,17 @@ class Hub(Gtk.ApplicationWindow):
         live = [a for a in (stream.get("live_agents") or {}).values() if a["tool"] not in known]
         return running_agents(files + live, self.agents_alive(s))
 
+    def workflows(self, s):
+        """Workflows de s en arrière-plan : relus sur l'hôte (commande « stat ») pour une
+        session de terminal ; pour un claude -p lancé d'ici, dont « stat » n'est pas relu,
+        déduits de la liste des sous-agents."""
+        if not s:
+            return []
+        if s["id"] in self.streams:
+            files = s.get("agents") or [] if self.has_agents_files(s) else []
+            return agent_workflows(files, True, s.get("workflow_runs") or [])
+        return s.get("workflows") or []
+
     def background_shells(self, s):
         """Shells et monitors en arrière-plan de s qui tournent : annoncés par le flux de son
         claude -p, sinon relus sur l'hôte (session de terminal, commande « stat »)."""
@@ -2609,6 +2621,9 @@ class Hub(Gtk.ApplicationWindow):
         self.show_hint()
         s = self.current
         stream = self.streams.get(s["id"], (None, None))[1] if s else None
+        flows = self.workflows(s)
+        # les agents d'un workflow sont résumés par sa ligne
+        agents = outside_workflows(self.running_agents(s), (s or {}).get("agents"))
         rows, busy = [], False
         if s and self.pending.get(s["id"]):
             rows.append(request_spec(self.request_entry(s), jump=self.show_request))
@@ -2617,21 +2632,20 @@ class Hub(Gtk.ApplicationWindow):
             step, detail, since = stream.get("step") or ("Claude réfléchit", None, None)
             if stream.get("idle"):  # tour fini : claude attend ses sous-agents, shells ou monitors
                 shells = self.background_shells(s)
-                if self.running_agents(s):
-                    step, detail = "Claude attend ses sous-agents", None
+                if flows or agents:
+                    step, detail = waiting_for(len(flows), len(agents)), None
                 elif shells:
                     step, detail = waiting_text(shells), None
             rows.append(claude_spec(step, detail, since, stop=self.stop))
         elif s and s.get("live") == "busy":  # dans un terminal ou Cursor (et ses workflows)
             busy = True
             orphan = self.orphan(s)  # claude -p lancé avant le redémarrage : on peut l'arrêter
-            n = len(s.get("workflows") or ()) if s.get("workflows_waiting") else 0
+            n = len(flows) if s.get("workflows_waiting") else 0
             text = ("Cursor génère" if s.get("source") == "cursor"
-                    else "Claude attend un workflow" if n == 1
-                    else f"Claude attend {n} workflows" if n
+                    else waiting_for(n, len(agents)) if n
                     else "Claude travaille (lancé avant le redémarrage)" if orphan
                     else "Claude travaille (dans un terminal)")
-            rows.append(claude_spec(text, workflow_text(s.get("workflows")), self.busy_start(s),
+            rows.append(claude_spec(text, None, self.busy_start(s),
                                     stop=(lambda: self.stop_orphan(s)) if orphan else None,
                                     stop_tip="Arrêter ce Claude (ce qu'il a déjà écrit est gardé)"))
         elif s and s.get("live") in ACTION_STATES:  # on y répond là où tourne claude
@@ -2639,9 +2653,10 @@ class Hub(Gtk.ApplicationWindow):
         if s and not busy:
             s.pop("busy_since", None)
         if busy:
-            rows += agent_specs(self.running_agents(s), indent=True,
+            rows += agent_specs(agents, indent=True,
                                 open_agent=lambda a: self.open_agent(a.get("id") or a.get("tool")),
                                 open_panel=self.show_agents_panel)
+            rows += [workflow_spec(w, indent=True, open_panel=self.show_agents_panel) for w in flows]
         rows += [shell_spec(sh) for sh in self.background_shells(s)]
         self.activity_panel.show(rows)
         self.show_activity_side()
@@ -4135,7 +4150,9 @@ class Hub(Gtk.ApplicationWindow):
                 mark_monitor(s, str(tid))
             if ev.get("task_type") != "local_bash":  # un shell ou un monitor n'est pas un sous-agent
                 s["agents_stale"] = True  # nouveau sous-agent : relire la liste
-                if tool:  # pour le bandeau, avant que la liste relue sur l'hôte le connaisse
+                # pour le bandeau, avant que la liste relue sur l'hôte le connaisse (un workflow
+                # a sa propre ligne, d'après ses agents)
+                if tool and ev.get("task_type") != "local_workflow":
                     live[tool] = {"id": tid, "tool": tool, "type": ev.get("subagent_type"),
                                   "description": ev.get("description"), "start": time.time(),
                                   "end": time.time(), "last": None}

@@ -230,7 +230,8 @@ workflow ; `statusUpdatedAt` (ms) garde l'heure du passage à `busy`.
 
 Dans claude-hub, la commande `stat` des scripts distants renvoie les workflows
 lancés depuis le démarrage du processus claude (`startedAt` ; les plus anciens
-sont morts avec leur processus) et pas encore notifiés, leur avancement, et
+sont morts avec leur processus) et pas encore notifiés, leur avancement, leur run
+(`id`) et l'heure de leur lancement (`start`, epoch, d'après la ligne du lancement), et
 `waiting` (Claude a fini son tour : aucune ligne `assistant`, résultat d'outil ou
 message qui lance un tour depuis le dernier `turn_duration`). Les commandes
 `agents` et `history` donnent à chaque agent son `workflow` (le `runId`, nom de

@@ -183,6 +183,17 @@ class TestVolet(unittest.TestCase):
         self.assertEqual((x["name"], x["summary"], [p for p, _ in x["phases"]]), ("wf_2", None, [""]))
         self.assertEqual(layout([], runs), [])
 
+    def test_groupes(self):
+        """Le volet déplace ensemble un agent et ceux qu'il a lancés (section « En cours »)."""
+        from claude_hub.agentsview import layout, units
+        agents = [{"id": "a", "start": 1}, {"id": "w1", "start": 2, "workflow": "wf_1"},
+                  {"id": "b", "start": 3}, {"id": "c", "start": 4, "parent": "a"},
+                  {"id": "d", "start": 5, "parent": "c"}, {"id": "e", "start": 6}]
+        out = units(layout(agents))
+        self.assertEqual([(k, x["id"] if k == "workflow" else [a["id"] for a in x]) for k, x in out],
+                         [("agents", ["a", "c", "d"]), ("workflow", "wf_1"), ("agents", ["b"]),
+                          ("agents", ["e"])])
+
     def test_etat_workflow(self):
         from claude_hub.agentsview import phase_label, workflow_state
         self.assertEqual(workflow_state(["done", "running"]), "running")
@@ -214,14 +225,31 @@ class TestVolet(unittest.TestCase):
             {"id": "a5", "type": "Plan", "start": 30, "last": {"role": "assistant", "text": "Je  lis\nle code"}},
         ]
         run = running_agents(agents, alive=True)
-        self.assertEqual([a["id"] for a in run], ["a2", "a1", "a5"])  # le plus récemment actif d'abord
-        self.assertEqual([a["id"] for a in running_agents(agents, False, now=100)], ["a2", "a1", "a5"])
+        self.assertEqual([a["id"] for a in run], ["a1", "a2", "a5"])  # par début : un ordre stable
+        self.assertEqual([a["id"] for a in running_agents(agents, False, now=100)], ["a1", "a2", "a5"])
         self.assertEqual(running_agents(agents, False, now=99999), [])  # session arrêtée depuis longtemps
         self.assertEqual(running_agents(None, True), [])
-        self.assertEqual(agent_line(run[0]), "Review fix › Bash cargo test -p shipments")
-        self.assertEqual(agent_line(run[1]), "Trouver les tests › Grep set_sort_func")
+        self.assertEqual(agent_line(run[1]), "Review fix › Bash cargo test -p shipments")
+        self.assertEqual(agent_line(run[0]), "Trouver les tests › Grep set_sort_func")
         self.assertEqual(agent_line(run[2]), "Plan › Je lis le code")  # sans description : le type
         self.assertEqual(agent_line({"id": "x"}), "Agent")
+
+    def test_etape(self):
+        """L'étape d'un agent est la description de son appel, s'il en a une (comme le
+        terminal) ; l'appel tel quel reste dans l'info-bulle."""
+        from claude_hub.agentsview import agent_line, last_step, step_of
+        bash = {"description": "Audit UPS", "last": {"role": "tool", "name": "Bash", "input": {
+            "command": "cd ~/Main; jq .fields fixture.json", "description": "Dump the  WEMYY\nfields"}}}
+        self.assertEqual(step_of(bash), ("Dump the WEMYY fields", False))
+        self.assertEqual(agent_line(bash), "Audit UPS › Bash cd ~/Main; jq .fields fixture.json")
+        # la description d'un appel Agent est celle du sous-agent qu'il lance
+        agent = {"last": {"role": "tool", "name": "Agent", "input": {"description": "Lire la doc",
+                                                                     "prompt": "…"}}}
+        self.assertEqual(step_of(agent), ("Agent  Lire la doc", True))
+        grep = {"last": {"role": "tool", "name": "Grep", "input": {"pattern": "x", "description": " "}}}
+        self.assertEqual(step_of(grep), ("Grep  x", True))
+        self.assertEqual(step_of({"last": {"role": "assistant", "text": "Je  lis"}}), ("Je lis", False))
+        self.assertEqual(last_step({}), "")
 
 
 if __name__ == "__main__":

@@ -951,7 +951,12 @@ textview.composer-input, textview.composer-input > text { background: none; }
 .act-row.claude .act-label { color: #d4860b; }
 .act-row.request .act-label, .act-row.request .act-icon { color: #e5534b; }
 .act-row.queued .act-label, .act-row.queued .act-icon { color: #3d8fd1; }
-.act-row.agent .act-icon { color: #d4860b; }
+.act-row.agent .act-icon, .act-row.workflow .act-icon { color: #d4860b; }
+/* Sous-agents et workflows sur une ligne : padding réduit ; barre d'avancement d'un workflow */
+.act-row.agent, .act-row.workflow { padding-top: 3px; padding-bottom: 3px; }
+.act-row progressbar { min-width: 90px; }
+.act-row progressbar trough, .act-row progressbar progress { min-height: 5px; border-radius: 3px; }
+.act-row progressbar progress { background: #d4860b; border-color: transparent; }
 .act-detail { font-size: 0.92em; opacity: 0.85; }
 .act-detail.mono { font-family: monospace; font-size: 0.88em; }
 .act-sub { font-size: 0.88em; opacity: 0.65; }
@@ -1006,7 +1011,9 @@ DARK_CSS = """
 .sessions > row.session:selected { background-color: #1b313e; }
 .dot { background: #3daee9; }
 .row-time.unread { color: #3daee9; }
-.row-time.busy, .card-kind.busy, .act-row.claude .act-label, .act-row.agent .act-icon { color: #f0b85a; }
+.row-time.busy, .card-kind.busy, .act-row.claude .act-label, .act-row.agent .act-icon,
+.act-row.workflow .act-icon { color: #f0b85a; }
+.act-row progressbar progress { background: #e3a23b; }
 .st-busy, .act-icon spinner, .tool-running { color: #e3a23b; }
 .row-time.action, .st-action, .card-kind.action, .act-row.request .act-label, .act-row.request .act-icon,
 .diff-del, .tool-failed, button.stop, .row-folder.missing { color: #f0716a; }
