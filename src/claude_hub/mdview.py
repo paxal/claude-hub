@@ -57,15 +57,34 @@ def split_row(line):
 
 
 def table(rows):
+    """Tableau de labels non sélectionnables : un label sélectionnable garderait pour
+    lui le glisser parti d'une cellule, qui n'irait ni à la suivante ni au texte autour.
+    Le glisser va au texte, qui sélectionne le tableau en bloc (copié en Markdown) ;
+    une cellule se copie par le clic droit (MdView.on_menu)."""
     grid = Gtk.Grid(css_classes=["mdtable"], halign=Gtk.Align.START, valign=Gtk.Align.START)
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
-            lbl = make_label(md_inline(cell), "th" if r == 0 else "td", cell)
+            markup = md_inline(cell)
+            lbl = make_label(markup, "th" if r == 0 else "td", cell)
+            lbl.set_selectable(False)
+            if "<a " in markup:
+                primary_only(lbl)
             lbl.set_max_width_chars(48)
             if r % 2 == 0 and r:
                 lbl.add_css_class("odd")
             grid.attach(lbl, c, r, 1, 1)
     return grid
+
+
+def primary_only(label):
+    """Clic droit sur un lien d'une cellule : au menu du texte (MdView.on_menu). Celui
+    du Gtk.Label ne s'ouvre pas dans un widget intégré à un TextView (GTK 4.20) ; son
+    geste de clic, qui prend tous les boutons, ne garde que le gauche (ouvrir le lien)."""
+    controllers = label.observe_controllers()
+    for i in range(controllers.get_n_items()):
+        ctrl = controllers.get_item(i)
+        if isinstance(ctrl, Gtk.GestureClick):
+            ctrl.set_button(Gdk.BUTTON_PRIMARY)
 
 
 def valid_markup(markup):
@@ -527,26 +546,41 @@ class MdView(Gtk.TextView):
         else:
             Gtk.UriLauncher(uri=uri).launch(self.get_root(), None, None, None)
 
+    def cell_at(self, x, y):
+        """Cellule de tableau (label de la Gtk.Grid) sous le pointeur, ou None."""
+        widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)
+        while widget is not None and widget is not self:
+            if isinstance(widget, Gtk.Label) and isinstance(widget.get_parent(), Gtk.Grid):
+                return widget
+            widget = widget.get_parent()
+        return None
+
     def on_menu(self, _gesture, _n, x, y):
         """Clic droit : sur un lien, « Ouvrir le lien » et « Copier l'adresse du lien »
-        au menu du texte, comme dans un Gtk.Label (le TextView n'en a pas). Le TextView
-        ouvre son menu après ce geste (phase de capture), et le reconstruit quand
-        extra_menu change."""
-        uri = self.link_at(x, y)
-        if not uri:
+        au menu du texte, comme dans un Gtk.Label (le TextView n'en a pas) ; sur une
+        cellule de tableau, « Copier la cellule », et son lien survolé. Le TextView ouvre
+        son menu après ce geste (phase de capture), et le reconstruit quand extra_menu
+        change."""
+        cell = self.cell_at(x, y)
+        uri = self.link_at(x, y) or (cell.get_current_uri() if cell is not None else None)
+        if not uri and cell is None:
             self.set_extra_menu(None)
             return
         if self.link_actions is None:
             self.link_actions = Gio.SimpleActionGroup()
-            for name, fn in (("open-link", MdView.on_open_link), ("copy-link", MdView.on_copy_link)):
+            for name, fn in (("open-link", MdView.on_open_link), ("copy-text", MdView.on_copy_text)):
                 action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
                 action.connect("activate", weak_handler(self, fn))
                 self.link_actions.add_action(action)
             self.insert_action_group("md", self.link_actions)
-        copy = "Copier le chemin" if uri.startswith(FILE_SCHEME) else "Copier l'adresse du lien"
+        items = []
+        if uri:
+            copy = "Copier le chemin" if uri.startswith(FILE_SCHEME) else "Copier l'adresse du lien"
+            items += [("Ouvrir le lien", "md.open-link", uri), (copy, "md.copy-text", copied_link(uri))]
+        if cell is not None:
+            items.append(("Copier la cellule", "md.copy-text", cell.get_text()))
         section = Gio.Menu()
-        for label, action, value in (("Ouvrir le lien", "md.open-link", uri),
-                                     (copy, "md.copy-link", copied_link(uri))):
+        for label, action, value in items:
             item = Gio.MenuItem.new(label, None)
             item.set_action_and_target_value(action, GLib.Variant.new_string(value))
             section.append_item(item)
@@ -557,7 +591,7 @@ class MdView(Gtk.TextView):
     def on_open_link(self, _action, uri):
         self.open_link(uri.get_string())
 
-    def on_copy_link(self, _action, text):
+    def on_copy_text(self, _action, text):
         self.get_clipboard().set(text.get_string())
 
     def on_motion(self, _ctrl, x, y):
