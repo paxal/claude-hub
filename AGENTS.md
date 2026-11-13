@@ -192,6 +192,10 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
   `.desktop` nommé comme l'app_id (`org.paxal.ClaudeHub.desktop`), sinon il
   affiche le « W ». `install.sh` y met l'icône en chemin absolu : plasmashell
   ne voit une icône ajoutée au thème qu'après son redémarrage.
+- **Widget intégré à un TextView** (`MdView`, tableaux) : le menu du clic droit
+  d'un `Gtk.Label` qui y est ancré ne s'ouvre pas (son popover est créé puis
+  caché, GTK 4.20) ; le clic droit doit aller au menu du texte
+  (`mdview.primary_only`).
 - **Pastilles qui passent à la ligne** : `Gtk.FlowBox` aligne ses enfants en
   colonnes dès la deuxième ligne, et les étire. Utiliser `widgets.WrapBox`.
 - **Largeur de la barre latérale** : un texte long (chemin, statut, libellé de
@@ -266,9 +270,12 @@ Claude Code de ce PC, d'hôtes SSH (`cerberus.stockly.tech`, `rpi4`) et du cloud
 - Supprimer les `__pycache__` créés par les tests (`python3 -B` n'empêche pas
   `py_compile` d'en écrire un).
 - Dire précisément ce qui a été testé et ce qui ne l'a pas été (dialogues
-  natifs, glisser-déposer, vrai pointeur : non simulables). Les contrôleurs
+  natifs, glisser-déposer : non simulables). Les contrôleurs
   (survol, clic droit, clic sur une image) se déclenchent en émettant leur
-  signal, ce qui teste le gestionnaire mais pas le geste.
+  signal, ce qui teste le gestionnaire mais pas le geste. Pour le geste
+  lui-même (qui le prend, quel menu s'ouvre), un vrai pointeur sur un widget
+  seul : Xwayland et `xdotool` sur l'écran virtuel (skill `piloter-claude-hub`,
+  « Limites »).
 
 ## Façon de travailler avec l'utilisateur
 
