@@ -189,9 +189,16 @@ d'un sous-agent est lue à l'ouverture de son bloc.
 Un clic sur un lien d'un message l'ouvre dans le navigateur (un fichier cité
 s'ouvre dans le volet, voir ci-dessous). Le clic droit ajoute « Ouvrir le lien »
 et « Copier l'adresse du lien » au menu ; pour un fichier, « Copier le chemin »
-copie le chemin tel qu'il est cité, ligne comprise (`src/app.py:42`). Dans un
-tableau, une ligne d'outil, la liste des fichiers modifiés ou le chemin du plan,
-c'est « Copier l'adresse du lien » qui copie ce chemin.
+copie le chemin tel qu'il est cité, ligne comprise (`src/app.py:42`). Dans une
+ligne d'outil, la liste des fichiers modifiés ou le chemin du plan, c'est
+« Copier l'adresse du lien » qui copie ce chemin.
+
+## Sélectionner un message
+
+Un message se sélectionne d'un bout à l'autre, paragraphes, listes et code
+compris. Un tableau se sélectionne en bloc, qu'on parte du texte autour ou d'une
+de ses cellules, et se copie en Markdown. Pour une seule cellule, le clic droit
+ajoute « Copier la cellule » au menu (son texte affiché, sans la mise en forme).
 
 ## Volet de droite
 

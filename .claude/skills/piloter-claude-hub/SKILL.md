@@ -133,6 +133,15 @@ requêtes de contrôle).
 
 - Pas de vrais clics, survol, glisser-déposer, raccourcis clavier ni dialogues
   natifs : appeler la fonction qu'ils déclenchent, et le dire dans le compte rendu.
+- Quand le geste lui-même compte (qui le prend : sélection, clic droit, menu qui
+  s'ouvre ou non), un petit script GTK à part (le widget seul, pas l'appli) se
+  pilote avec un vrai pointeur : dans `tests/ecran-virtuel.sh`, lancer un Xwayland
+  à fenêtre (`Xwayland :77 -geometry 1000x700 &`), le script avec
+  `DISPLAY=:77 GDK_BACKEND=x11`, puis `DISPLAY=:77 xdotool mousemove X Y mousedown 1`
+  (`mousemove` par petits pas, `mouseup 1`, `click 3`) et `import -window root
+  capture.png` (menus compris). C'est le backend X11 de GTK, pas Wayland : bon pour
+  les gestes, pas pour le rendu. Vu le 13 novembre 2026 : sélection d'un tableau,
+  menu du clic droit d'un lien dans une cellule.
 - `spectacle` capture ce que le compositeur affiche : laisser GTK redessiner
   (`yield 0.5`) après un changement. S'il ne répond pas en 15 s (vu le 3 novembre
   2026 sur l'écran virtuel), `capture` se rabat sur un rendu GTK de la fenêtre, et
